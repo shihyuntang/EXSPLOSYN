@@ -56,7 +56,7 @@ class Star:
         self.spot_spec = self.read_spec(self.spot_teff_use)
 
         print(
-            '\n Using {}K template for the STAR & {}K template for the SPOT!'.format(
+            '\n Using {}K template for the STAR & {}K template for the SPOT!\n'.format(
                 self.star_teff_use, self.spot_teff_use)
                 )
 
@@ -205,6 +205,44 @@ def compute_bis(RV, CCF):
         stsp.gauss_bis(RV, CCF, err)
     depth=-k
     return depth, bis, span, v0, fwhm
+
+
+def get_line_depth(Star, CCFstar_tot, visible_phi):
+
+    depth_d_fe1 = []
+    depth_d_fe2 = []
+    depth_d_oh0 = []
+    depth_l_fe1 = []
+    depth_l_fe2 = []
+    depth_l_oh0 = []
+
+    vel = Star.star_spec['v']
+
+    for i in range(len(visible_phi)):
+        
+        CCFstar_tot_flip = 1+ -1*CCFstar_tot[i]
+
+        fe_1 = (vel>-150) & (vel<-50)
+        oh_0 = (vel>-50) & (vel<50)
+        fe_2 = (vel>50) & (vel<250)
+
+        fe_1_loc = np.argmax(CCFstar_tot_flip[fe_1])
+        oh_0_loc = np.argmax(CCFstar_tot_flip[oh_0])
+        fe_2_loc = np.argmax(CCFstar_tot_flip[fe_2])
+
+        depth_d_fe1.append(CCFstar_tot_flip[fe_1][fe_1_loc])
+        depth_d_fe2.append(CCFstar_tot_flip[fe_2][fe_2_loc])
+        depth_d_oh0.append(CCFstar_tot_flip[oh_0][oh_0_loc])
+        
+        depth_l_fe1.append(vel[fe_1][fe_1_loc])
+        depth_l_fe2.append(vel[fe_2][fe_2_loc])
+        depth_l_oh0.append(vel[oh_0][oh_0_loc])
+
+    return depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0
+
+
+
+
 
 def calculate_activity_signal_spec(
     nrho, grid, star, psi, ccf, ccf_active_region, active_regions, inst_reso, cpu_use):

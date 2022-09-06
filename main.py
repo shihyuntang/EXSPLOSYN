@@ -150,8 +150,12 @@ if __name__ == '__main__':
         NRHO, GRID, STAR, PSI, SPEC, SPEC_active_region, ACTIVE_REGIONS, INST_RESO, CPU
         )
     
-    outdir = "./outputs/OHFeLineDepth_Prot={:.2f}_i={:.2f}_lon=({:.1f},{:.1f})_lat=({:.1f},{:.1f})_size=({:.4f},{:.4f})" .format(
-        STAR.prot,STAR.incl,
+    depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0 = soap2.get_line_depth(
+        STAR, CCFstar_tot, visible_phi
+        )
+
+    outdir = "./outputs/OHFeLineDepth_Prot={:.2f}_i={:.2f}_teff1={:1.0f}_Deltateff={:1.0f}_lon=({:.1f},{:.1f})_lat=({:.1f},{:.1f})_size=({:.4f},{:.4f})" .format(
+        STAR.prot,STAR.incl,STAR.Temp,STAR.Temp_diff_spot,
         active_region1.long,active_region2.long,
         active_region1.lat,active_region2.lat,
         active_region1.s,active_region2.s
@@ -163,7 +167,21 @@ if __name__ == '__main__':
     else:
         os.mkdir(outdir)   
 
+    text1 =   '{0:12} = {1:<7d}, {2:18} = {3:<8d}\n'.format(    'Grid res.', GRID,          'Circumference res.', NRHO) + \
+              '{0:12} = {1:<7d}, {2:18} = {3:<8d}\n'.format(    'Inst. res.', INST_RESO,    'Rsun [km]', RAD_Sun) + \
+              '{0:12} = {1:<7.2f}, {2:18} = {3:<8.2f}\n'.format('St Prot [d]', STAR.prot,   'St radius [Rsun]', STAR.rad/RAD_Sun) + \
+              '{0:12} = {1:<7.1f}, {2:18} = {3:<8.2f}\n'.format('St incl', STAR.incl,       'St vsini [m/s]', STAR.vrot) + \
+              '{0:12} = {1:<7d}, {2:18} = {3:<8d}\n'.format(    'St Teff [K]', STAR.Temp,   'Spot Diff Teff [K]', STAR.Temp_diff_spot) + \
+              '{0:12} = {1:<7.3f}, {2:18} = {3:<8.3f}\n'.format(  'LimDark lin', STAR.limba1, 'LimDark quad', STAR.limba2) + \
+              '{0:12} = {1:<7}, {2:5} = {3:<4.2f}, {2:5} = {3:<4.2f}'.format( 'Syn template', STAR.spec_type, 'logg', 4.5, '[Fe/H]]', 0.0)
+
+    text2 = 'ActR {0}: lon={1:<5.1f}, lat={2:<4.1f}, size = {3:<5.3f} [Rsun] (={4:.2f}%)\n'.format('1',active_region1.long,active_region1.lat,active_region1.s,active_region1.s**2/2.*100) +\
+            'ActR {0}: lon={1:<5.1f}, lat={2:<4.1f}, size = {3:<5.3f} [Rsun] (={4:.2f}%)\n'.format('2',active_region2.long,active_region2.lat,active_region2.s,active_region2.s**2/2.*100)
+            # 'Act Reg {0}: {1:<6}, lon = {2:<5.1f}, lat = {3:<4.1f}, size = {4:<5.3f} [Rsun] (= {5:.2f}%)\n'.format('3',active_region3.active_region_type_str,active_region3.long,active_region3.lat,active_region3.s,active_region3.s**2/2.*100) +\
+            # 'Act Reg {0}: {1:<6}, lon = {2:<5.1f}, lat = {3:<4.1f}, size = {4:<5.3f} [Rsun] (= {5:.2f}%)'.format('4',active_region4.active_region_type_str,active_region4.long,active_region4.lat,active_region4.s,active_region4.s**2/2.*100)
+
     vis.spot_view(
         STAR, GRID, active_region1.xyz, visible_phi, xyz2_box, CCFstar_tot, 
-        CCFstar_quiet, outdir, CPU
+        CCFstar_quiet, outdir, CPU, depth_d_fe1, depth_d_fe2, depth_d_oh0, 
+        depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2
         )

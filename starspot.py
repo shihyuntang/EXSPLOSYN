@@ -113,10 +113,10 @@ def spot_inverse_rotation(xyz, longitude, latitude, inclination, phase):
 
     # g2 = --phase*(2*pi);  // inverse phase ([0-1] -> [rad])
     g2 = 2*np.pi*(phase-1)
-
-    g   = np.deg2rad(longitude)
-    b   = np.deg2rad(latitude)
     i   = np.deg2rad(inclination)
+    
+    b  =  np.deg2rad(latitude)
+    g  = -np.deg2rad(longitude)
     b2 = -(np.pi/2.-i)
 
     R1 = np.array([
@@ -193,12 +193,17 @@ def spot_area(xlylzl, nrho, grid):
         # won't be on the circumference of the active region. Same for z axis
         if miny*maxy<0:       
             # active region on the z-axis because one point is on the positive side of z, and the other on the negative side of z
-            minz=-1 if minz<0 else 1    # active region on the bottom-z axis (z<0)
-                                        # active region on the top-z axis (z>=0)
+            if minz<0: minz=-1
+            else: maxz=1
+            # active region on the bottom-z axis (z<0)
+            # active region on the top-z axis (z>=0)
+        
         if minz*maxz<0:       
             # active region on the y-axis because one point is on the positive side of y, and the other on the negative side of z
-            miny=-1 if miny<0 else 1   # active region on the left hand-y axis (y<0)
-                                            # active region on the right hand-y axis (y>=0)
+            if miny<0: miny=-1
+            else: maxy=1
+            # active region on the left hand-y axis (y<0)
+            # active region on the right hand-y axis (y>=0)
     visible = 0 if counton==0 else 1
 
 
@@ -293,7 +298,7 @@ def itot(v, i, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
     omega = v
     delta_grid = 2./grid # step of the grid. grid goes from -1 to 1, therefore 2 in total
 
-    inclination = np.deg2rad(i)
+    i = np.deg2rad(i)
 
     # v_interval is from the velocity 0 to the edge of the spectrum taking into 
     # account minimal or maximal rotation (width - v to 0 or 0 to width + v). 
@@ -437,7 +442,7 @@ def spot_scan(
                 xiyizi = spot_inverse_rotation(xayaza, longitude, latitude, i, phase)    
 
                 # if inside the active region when scanning the grid
-                if (xiyizi[0]*xiyizi[0]) >= (1.-s*s):
+                if xiyizi[0]**2 >= (1.-s*s):
                     # x^2 >= 1-sspot_scan_npsi^2, which means that you are inside the active region      
                     
                     # limb-darkening
@@ -500,7 +505,7 @@ def spot_scan(
                         # because we also observe them with different stellar depth depending on their position
                         # f_spot_flux[j]  += intensity_ccf_shift[n-1]*limb*(1 - intensity)
                         # f_spot_bconv[j] += intensity_ccf_shift[n-1]*limb*(1 - 1)        
-                        f_spot_tot[j]   += intensity_ccf_shift[n-1]*limb*(1 - intensity)
+                        f_spot_tot[j]   += intensity_ccf_shift[n-1]*limb * (1-intensity)
                     
                     # calculates the "non contributing" total flux of the active region taking into account the 
                     # limb-darkening and the active region intensity
