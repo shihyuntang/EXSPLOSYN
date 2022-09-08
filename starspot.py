@@ -30,9 +30,9 @@ def spot_init(s, longitude, latitude, inclination, nrho):
     Returns:
         _type_: _description_
     """
-    longitude   = np.deg2rad(longitude)
-    latitude   = np.deg2rad(latitude)
-    inclination   = np.deg2rad(inclination)
+    longitude   *= np.pi/180.
+    latitude    *= np.pi/180.
+    inclination *= np.pi/180.
 
     # A circular active region has a resolution given by nrho, which implies that we
     # will have a point on the disc circumference every 2*pi/(nrho-1). -1 because
@@ -113,10 +113,11 @@ def spot_inverse_rotation(xyz, longitude, latitude, inclination, phase):
 
     # g2 = --phase*(2*pi);  // inverse phase ([0-1] -> [rad])
     g2 = 2*np.pi*(phase-1)
-    i   = np.deg2rad(inclination)
+    # g2 = -(-phase*(2*np.pi))
+    i   = inclination * np.pi/180.
     
-    b  =  np.deg2rad(latitude)
-    g  = -np.deg2rad(longitude)
+    b  =  latitude  * np.pi/180.
+    g  = -longitude * np.pi/180.
     b2 = -(np.pi/2.-i)
 
     R1 = np.array([
@@ -142,10 +143,9 @@ def spot_phase(xyz, inclination, nrho, phase):
 
     # the phase is between 0 and 1, so psi is in radian between -2pi and 0.
     psi = -phase*(2*np.pi) 
-    inclination   = np.deg2rad(inclination)
+    inclination = inclination * np.pi/180.
 
     axe = np.array([cos(inclination), 0, sin(inclination)])
-
 
     R = np.array([
         [(1-cos(psi))*axe[0]*axe[0] + cos(psi), 
@@ -161,7 +161,7 @@ def spot_phase(xyz, inclination, nrho, phase):
     return R@xyz
 
 
-@njit
+@njit 
 def spot_area(xlylzl, nrho, grid):
     visible = 0
     grid_step = 2./grid # The stellar disc goes from -1 to 1, therefore 2
@@ -193,15 +193,27 @@ def spot_area(xlylzl, nrho, grid):
         # won't be on the circumference of the active region. Same for z axis
         if miny*maxy<0:       
             # active region on the z-axis because one point is on the positive side of z, and the other on the negative side of z
-            if minz<0: minz=-1
+            if minz<0: 
+                if np.abs(minz)>np.abs(maxz):
+                    minz = -1
+                else:
+                    maxz = 1
             else: maxz=1
+            
             # active region on the bottom-z axis (z<0)
             # active region on the top-z axis (z>=0)
         
         if minz*maxz<0:       
             # active region on the y-axis because one point is on the positive side of y, and the other on the negative side of z
-            if miny<0: miny=-1
-            else: maxy=1
+            if miny<0: 
+                if np.abs(miny)>np.abs(maxy):
+                    miny = -1
+                else:
+                    maxy = 1
+            else: maxz=1
+
+            # if miny<0: miny=-1
+            # else: maxy=1
             # active region on the left hand-y axis (y<0)
             # active region on the right hand-y axis (y>=0)
     visible = 0 if counton==0 else 1
@@ -252,13 +264,13 @@ def shifting_CCF(_lambda, CCF, v_shift, n1):
     else:
         CCF_derivative[0] = (CCF[1] - CCF[0])/(_lambda[1]-_lambda[0])
 
-    for i in range(n1-1):
+    for i in range(1, n1-1):
         if (_lambda[i+1]-_lambda[i]) == 0:
             CCF_derivative[i] = CCF_derivative[i-1]
         else:
             CCF_derivative[i] = (CCF[i+1] - CCF[i])/(_lambda[i+1]-_lambda[i])   
 
-    CCF_derivative[-1] = 0.
+    CCF_derivative[n1] = 0.
     
     for i in range(n1):
         if (v_shift >= 0) | (i == 0) :
@@ -271,7 +283,7 @@ def shifting_CCF(_lambda, CCF, v_shift, n1):
 
 
 @njit
-def itot(v, i, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte, 
+def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte, 
     grid, vrad_ccf, intensity_ccf, v_interval, n_v, n):
     """Calculates the flux and CCF in each cell of the grid and integrate
     over the entire stellar disc to have the integrated flux and CCF
@@ -295,10 +307,11 @@ def itot(v, i, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
     f_star = np.zeros(n_v, dtype=np.float64)
     sum_star = 0
 
-    omega = v
     delta_grid = 2./grid # step of the grid. grid goes from -1 to 1, therefore 2 in total
 
-    i = np.deg2rad(i)
+    i = np.deg2rad(incl)
+
+    quite_surface = np.zeros((grid, grid), dtype=np.float64)
 
     # v_interval is from the velocity 0 to the edge of the spectrum taking into 
     # account minimal or maximal rotation (width - v to 0 or 0 to width + v). 
@@ -309,13 +322,15 @@ def itot(v, i, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
     delta_v = 2*v_interval/(n_v-1) # step in speed of the CCF. There is (n_v-1) intervals
 
     # Scan of each cell on the grid
-    for iy in range(grid):
+    for iy in range(grid+1):
         y = -1. + iy*delta_grid; # y between -1 et 1
-        delta = y * omega * sin(i) # Give the velocity of the rotation for the given grid 
+        delta = y * v * sin(i) # Give the velocity of the rotation for the given grid 
                                    # cell as a function of y. For y=-1 => Vrot min, 
                                    # for y=1 => Vrot max, and for y=0 => Vrot = 0.
         
-        for iz in range(grid):
+        for iz in range(grid+1):
+            f_star_once = np.zeros(n_v, dtype=np.float64)
+
             z = -1. + iz*delta_grid # z between -1 et 1
             if (y*y + z*z)<=1: 
                 # projected radius on the sky smaller than 1, which means that 
@@ -349,7 +364,7 @@ def itot(v, i, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
                 # shifting the CCF with the remainder of n_v_shifted, the quotient will be taken into 
                 # account by shifting all the points of the spectrum
                 intensity_ccf_shift = shifting_CCF(
-                    vrad_ccf, intensity_ccf,v_shift,n
+                    vrad_ccf, intensity_ccf, v_shift, n
                     )
                 
                 # difference in number of steps between the CCF without any rotation and the one with rotation
@@ -363,24 +378,33 @@ def itot(v, i, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
                     # extrapolation on the left of the CCF with the value of the left boundary, weighted 
                     # by the limb-darkening
                     f_star[j] += intensity_ccf_shift[0]*limb
+                    f_star_once[j] += intensity_ccf_shift[0]*limb
                 
                 for j in range(
-                    int(diff_CCF_non_v_and_v+n_v_shifted_quotient), int(n+(diff_CCF_non_v_and_v+n_v_shifted_quotient))
+                    int(diff_CCF_non_v_and_v+n_v_shifted_quotient), 
+                    int(n+(diff_CCF_non_v_and_v+n_v_shifted_quotient))
                     ):
                     # value of the CCF, weighted by the limb-darkening
-                    f_star[j] += intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))] * limb
+                    f_star[j] += \
+                        intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb
+                    f_star_once[j] += \
+                        intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb
 
                 for j in range(
-                    int(n+(diff_CCF_non_v_and_v+n_v_shifted_quotient)), n_v
+                    int(n+(diff_CCF_non_v_and_v+n_v_shifted_quotient)), 
+                    n_v
                     ):
                     # extrapolation on the right of the CCF with the value of the right boundary, 
                     # weighted by the limb-darkening
                     f_star[j] += intensity_ccf_shift[n-1]*limb
+                    f_star_once[j] += intensity_ccf_shift[n-1]*limb
                 
                 # calculates the total flux taking into account the limb-darkening 
                 # (intensity_ccf_shift[0] is very close to 1)
                 sum_star += intensity_ccf_shift[0]*limb
-    return f_star, sum_star
+                quite_surface[iz][iy] = np.sum(f_star_once)
+
+    return f_star, sum_star, quite_surface
 
 @njit
 def loi_Planck(lambda0, Temp):
@@ -403,19 +427,18 @@ def spot_scan(
     actual position. Thus, we have to do an inverse rotation to replace the
     grid point where it would be in the initial configuration. Indeed, in the
     initial configuration, the spot has a well known geometry of a circle
-    centered on the x-axis.
+    centered on the x-axis.f
     """
-    
+
     delta_grid = 2./grid
     delta_v = 2.*v_interval/(n_v-1)
 
     xayaza = np.ones(3, dtype=np.float64) # actual coordinates
     xiyizi = np.ones(3, dtype=np.float64) # coordinates transformed back to the initial configuration
 
-    # f_spot_flux = np.zeros(n_v, dtype=np.float64)
-    # f_spot_bconv = np.zeros(n_v, dtype=np.float64)
     f_spot_tot = np.zeros(n_v, dtype=np.float64)
-    sum_spot = 0 
+
+    active_surface = np.zeros((grid, grid), dtype=np.float64)
 
     # the wavelength of the Kitt peak spectrum goes from 3921.2441+6665.5789, the mean being 5293.4115
     # IGRINS H band OH line center 15631.3246 A
@@ -425,15 +448,15 @@ def spot_scan(
     # Scan of each cell on the grid
     for iy in range(iminy, imaxy):
         y = -1. + iy*delta_grid; # y between -1 et 1
-        delta = y * v * sin(i*np.pi/180.) # Give the velocity of the rotation for the given grid 
+        delta = y * v * sin(i*np.pi/180.)     # Give the velocity of the rotation for the given grid 
                                    # cell as a function of y. For y=-1 => Vrot min, 
                                    # for y=1 => Vrot max, and for y=0 => Vrot = 0.
         xayaza[1] = y
 
         for iz in range(iminz, imaxz):
+
             z = -1. + iz*delta_grid # z between -1 et 1
-            
-            if (y*y + z*z)<=1: 
+            if (y*y + z*z)<1: 
                 xayaza[0] = np.sqrt(1.-(y*y+z*z)) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
                                                   # and 0 on the limb. This is often referred in the literature as cos(theta)
                 xayaza[2] = z
@@ -443,10 +466,12 @@ def spot_scan(
 
                 # if inside the active region when scanning the grid
                 if xiyizi[0]**2 >= (1.-s*s):
+
+                    f_star_once = np.zeros(n_v, dtype=np.float64)
                     # x^2 >= 1-sspot_scan_npsi^2, which means that you are inside the active region      
                     
                     # limb-darkening
-                    r_cos = np.sqrt(1.-(y*y+z*z)) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
+                    r_cos = np.sqrt( 1-(y*y+z*z) ) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
                                                   # and 0 on the limb. This is often referred in the literature as cos(theta)
                     limb = 1. - limba1*(1-r_cos) - limba2*(1-r_cos)**2
                     
@@ -459,14 +484,19 @@ def spot_scan(
                         intensity = loi_Planck(use_wave_center,T_plage)/loi_Planck_star
                     
                     n_v_shifted = delta/delta_v # by how much steps the CCF is shifted due to rotation
-                    n_v_shifted_quotient = rndup(n_v_shifted,0) # integer number of steps
+                    n_v_shifted_quotient = rndup(n_v_shifted, 0) # integer number of steps
                     n_v_shifted_remainder = (delta - n_v_shifted_quotient*delta_v)
                         
                     v_shift = n_v_shifted_remainder
+
                     # shifting the CCF with the remainder of n_v_shifted, the quotient will be taken into account by 
                     # shifting all the points of the spectrum
-                    intensity_ccf_shift = shifting_CCF(vrad_ccf, intensity_ccf, v_shift, n)
-                    intensity_ccf_spot_shift = shifting_CCF(vrad_ccf, intensity_ccf_spot, v_shift, n)
+                    intensity_ccf_shift = shifting_CCF(
+                        vrad_ccf, intensity_ccf, v_shift, n
+                        )
+                    intensity_ccf_spot_shift = shifting_CCF(
+                        vrad_ccf, intensity_ccf_spot, v_shift, n
+                        )
                     
                     # difference in number of step between the CCF without any rotation and the one with rotation
                     diff_CCF_non_v_and_v = (n_v - n) / 2.
@@ -479,6 +509,7 @@ def spot_scan(
                         # f_spot_bconv[j] += intensity_ccf_shift[0]*limb*(1 - 1);         # only convective blueshift effect. 
                         #                                                                 # The convective blueshift does not affect the boundaries of the CCF
                         f_spot_tot[j]   += intensity_ccf_shift[0]*limb*(1 - intensity)  # combined effect
+                        f_star_once[j]   += intensity_ccf_shift[0]*limb*(1 - intensity)  # combined effect
                     for j in range(
                         int(diff_CCF_non_v_and_v+n_v_shifted_quotient),
                         int(n+(diff_CCF_non_v_and_v+n_v_shifted_quotient))
@@ -495,6 +526,9 @@ def spot_scan(
                         f_spot_tot[j] += \
                             intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb \
                                 - intensity * (intensity_ccf_spot_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))])*limb
+                        f_star_once[j] += \
+                            intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb \
+                                - intensity * (intensity_ccf_spot_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))])*limb
                     
                     for j in range(
                         int(n+(diff_CCF_non_v_and_v+n_v_shifted_quotient)),
@@ -506,58 +540,14 @@ def spot_scan(
                         # f_spot_flux[j]  += intensity_ccf_shift[n-1]*limb*(1 - intensity)
                         # f_spot_bconv[j] += intensity_ccf_shift[n-1]*limb*(1 - 1)        
                         f_spot_tot[j]   += intensity_ccf_shift[n-1]*limb * (1-intensity)
+                        f_star_once[j]   += intensity_ccf_shift[n-1]*limb * (1-intensity)
                     
                     # calculates the "non contributing" total flux of the active region taking into account the 
                     # limb-darkening and the active region intensity
                     # sum_spot += intensity_ccf_shift[0]*limb*(1.-intensity)
-    # return f_spot_flux, f_spot_bconv, f_spot_tot, sum_spot
-    return f_spot_tot
+                    active_surface[iz][iy] = np.sum(f_star_once)
 
-# @njit
-# def spot_scan_npsi(
-#     xyz, nrho, psi, npsi, v, inclination, limba1, limba2, modif_bis_quad, 
-#     modif_bis_lin, modif_bis_cte, grid, vrad_ccf, intensity_ccf, 
-#     intensity_ccf_spot, v_interval, n_v, n, s, longitude, latitude, 
-#     magn_feature_type, T_star, T_diff_spot
-#     ):
-#     """Scans the yz-area where the spot is for different phases (psi) and        
-#     returns the spot's "non-contribution" to the total flux and its           
-#     "non-contribution" to the ccf, for each phase.
-#     Thus the result is to be subtracted to the output of the itot() function.
-#     """
-
-#     f_spot_flux_box = []
-#     f_spot_bconv_box = []
-#     f_spot_tot_box = []
-#     sum_spot_box = []
-#     visible_phi_box = []
-#     xyz2_box = []
-
-#     for ipsi in range(npsi):
-#         xyz2 = spot_phase(xyz, inclination, nrho, psi[ipsi])
-#         vis, iminy, iminz, imaxy, imaxz = spot_area(xyz2, nrho, grid)
-        
-#         if vis==1:
-#             f_spot_flux, f_spot_bconv, f_spot_tot, sum_spot =\
-#                 spot_scan(
-#                     v, inclination, limba1, limba2, modif_bis_quad, 
-#                     modif_bis_lin, modif_bis_cte, grid, vrad_ccf, 
-#                     intensity_ccf, intensity_ccf_spot, v_interval, n_v, n, 
-#                     s, longitude, psi[ipsi], latitude, 
-#                     iminy, iminz, imaxy, imaxz,
-#                     magn_feature_type, T_star, T_diff_spot
-#                 )
-
-#             f_spot_flux_box.append(f_spot_flux)
-#             f_spot_bconv_box.append(f_spot_bconv)
-#             f_spot_tot_box.append(f_spot_tot)
-#             sum_spot_box.append(sum_spot)
-#             visible_phi_box.append(psi[ipsi])
-#             xyz2_box.append(xyz2)
-
-#     return (f_spot_flux_box, f_spot_bconv_box, f_spot_tot_box, sum_spot_box, 
-#                 visible_phi_box, xyz2_box)
-
+    return f_spot_tot, active_surface
 
 def spot_scan_npsi_pal(
     xyz, inclination, nrho, psi, grid, v, limba1, limba2, 
@@ -571,7 +561,7 @@ def spot_scan_npsi_pal(
     # vis.debug_plot(grid, psi[ipsi], iminy, iminz, imaxy, imaxz, xyz2 )
 
     if visual==1:
-        f_spot_tot =\
+        f_spot_tot, active_surface =\
             spot_scan(
                 v, inclination, limba1, limba2, modif_bis_quad, 
                 modif_bis_lin, modif_bis_cte, grid, vrad_ccf, 
@@ -582,9 +572,9 @@ def spot_scan_npsi_pal(
             )
     else:
         f_spot_tot = np.zeros(n_v, dtype=np.float64)
+        active_surface = np.zeros((grid, grid), dtype=np.float64)
 
-    return f_spot_tot, psi[ipsi], xyz2
-        # return f_spot_flux, f_spot_bconv, f_spot_tot, sum_spot, psi[ipsi], xyz2
+    return f_spot_tot, psi[ipsi], active_surface
 
 def spot_scan_npsi(
     xyz, nrho, psi, npsi, v, inclination, limba1, limba2, modif_bis_quad, 
@@ -598,12 +588,9 @@ def spot_scan_npsi(
     Thus the result is to be subtracted to the output of the itot() function.
     """
 
-    f_spot_flux_box = []
-    f_spot_bconv_box = []
     f_spot_tot_box = []
-    sum_spot_box = []
     visible_phi_box = []
-    xyz2_box = []
+    active_surface_box = []
 
     func = partial(
         spot_scan_npsi_pal, 
@@ -612,27 +599,16 @@ def spot_scan_npsi(
         intensity_ccf, intensity_ccf_spot, v_interval, n_v, n, 
         s, longitude, latitude, magn_feature_type, T_star, T_diff_spot )
 
-    # for ii in np.arange(npsi):
-    #     spot_scan_npsi_pal( 
-    #     xyz, inclination, nrho, psi, grid, v, limba1, limba2, 
-    #     modif_bis_quad, modif_bis_lin, modif_bis_cte, vrad_ccf, 
-    #     intensity_ccf, intensity_ccf_spot, v_interval, n_v, n, 
-    #     s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, ii)
-
     outs = pqdm(np.arange(npsi), func, n_jobs=cpu_use)
     
     for i in range(npsi):
         outsbox = outs[i]
-        # f_spot_flux_box.append(outsbox[0])
-        # f_spot_bconv_box.append(outsbox[1])
-        f_spot_tot_box.append(outsbox[0])
-        # sum_spot_box.append(outsbox[3])
-        visible_phi_box.append(outsbox[1])
-        xyz2_box.append(outsbox[2])
 
-    return f_spot_tot_box, visible_phi_box, xyz2_box
-    # return (f_spot_flux_box, f_spot_bconv_box, f_spot_tot_box, sum_spot_box, 
-    #             visible_phi_box, xyz2_box)
+        f_spot_tot_box.append(outsbox[0])
+        visible_phi_box.append(outsbox[1])
+        active_surface_box.append(outsbox[2])
+
+    return f_spot_tot_box, visible_phi_box, active_surface_box
 
 
     

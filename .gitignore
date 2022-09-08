@@ -16,6 +16,8 @@ outputs/
 *.so
 *.pyc
 *.DS_Store
+*.png
+._*
 
 # Packages #
 ############

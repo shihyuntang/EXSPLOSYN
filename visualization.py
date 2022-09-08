@@ -26,114 +26,11 @@ mpl.rcParams['ytick.right'] = True
 mpl.rcParams['ytick.direction'] = 'in'
 
 
-@njit
-def limb_dark(grid, radius, limba1, limba2):
-
-    st_surface_limb = np.ones((grid, grid), dtype=np.float64)
-
-    for i in np.arange(-radius, radius):
-        for j in np.arange(-radius, radius):
-            i_nor, j_nor = i/radius, j/radius
-
-            r_cos = np.sqrt( 1 - (i_nor**2+j_nor**2) )  
-
-            # intensity due to limb-darkening (Mandel & Agol 2002)
-            limb = 1 - limba1*(1-r_cos) - limba2*(1-r_cos)**2 
-            st_surface_limb[i+radius,j+radius] = limb
-    
-    return st_surface_limb
-
-
-@njit
-def init_surface(grid, limba1, limba2):
-    
-    grid_use = grid+1 if grid%2==0 else grid
-    st_surface = np.ones((grid_use, grid_use), dtype=np.float64)
-
-    radius = grid_use//2
-
-    # for i in np.arange(-radius, radius):
-    #     for j in np.arange(-radius, radius):
-
-    #         if np.sqrt(i**2+j**2)>=radius:
-    #             st_surface[i+radius,j+radius] = 0
-
-    st_surface_limb = limb_dark(grid_use, radius, limba1, limba2)
-
-    return st_surface*st_surface_limb, radius
-
-
-
-def spot_patch_selec(vis_yes, vis_no, xyz2_box, j, visible, radius, size, phi):    
-    if (vis_yes==1) & (vis_no==0):
-        y_vis_coord = xyz2_box[j][1,:][visible]*radius 
-        z_vis_coord = xyz2_box[j][2,:][visible]*radius
-
-        boundpoints = np.concatenate([ [y_vis_coord], [z_vis_coord] ]).T
-        bound = path.Path(boundpoints)
-
-        patch = patches.PathPatch(bound, facecolor='tab:red', lw=0.5, edgecolor='tab:red')
-        # ax1.add_patch(patch)
-    else:
-        y_vis_coord = xyz2_box[j][1,:]*radius 
-        z_vis_coord = xyz2_box[j][2,:]*radius
-
-        x_coord = xyz2_box[j][0, :].copy()
-        asign = np.sign(x_coord)
-        signchange = ((np.roll(asign, 1) - asign) != 0).astype(bool)
-        edge_loc = np.arange(len(signchange))[signchange]
-        if np.sign(x_coord[0]) == 1:
-            edge_loc[0] = edge_loc[0]-1
-        else:
-            edge_loc[1] = edge_loc[1]-1
-        
-        y_edge = y_vis_coord[edge_loc]
-        z_edge = z_vis_coord[edge_loc]
-
-        slope = np.diff(z_edge)/np.diff(y_edge)
-        slope = -np.abs(slope) if phi<=0.5 else np.abs(slope)
-        movey = radius/2 if phi<=0.5 else -radius/2
-        movez = movey * -1/slope
-
-        extended_y_edge = y_edge+movey
-        extended_z_edge = z_edge+movez
-
-        y_vis_coord = y_vis_coord[visible]
-        z_vis_coord = z_vis_coord[visible]
-        if np.sign(x_coord[0]) == 1:
-            try:
-                y_vis_coord = np.insert(y_vis_coord, edge_loc[0]+1, extended_y_edge)
-                z_vis_coord = np.insert(z_vis_coord, edge_loc[0]+1, extended_z_edge)
-            except:
-                pass
-        else:
-            y_vis_coord = np.insert(extended_y_edge, 1, y_vis_coord)
-            z_vis_coord = np.insert(extended_z_edge, 1, z_vis_coord)
-
-        boundpoints = np.concatenate([ [y_vis_coord], [z_vis_coord] ]).T
-        bound = path.Path(boundpoints)
-        patch = patches.PathPatch(bound, facecolor='tab:red', lw=0.5, edgecolor='tab:red')
-        # ax1.add_patch(patch)
-
-        # ax1.plot(y_edge, z_edge, 'x', ms=5)
-        # ax1.plot(extended_y_edge, extended_z_edge, 'x', ms=5)
-
-    coord_xx = []; coord_yy = []
-    for xx in np.arange(radius, -radius-1, -1):
-        for yy in np.arange(-radius, radius+1):
-            coord_xx.append(yy)
-            coord_yy.append(xx)
-
-    points1 = np.concatenate([[coord_xx], [coord_yy]]).T
-    spot_mask = bound.contains_points(points1)
-    return spot_mask, patch
-
 def spot_view_pel(
-    Star, grid, xyz, visible_phi, xyz2_box, CCFstar_tot, CCFstar_quiet, 
+    Star, grid, visible_phi, CCFstar_tot, quite_surface_2d, 
     outdir, depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, 
     depth_l_oh0, text1, text2, j
     ):
-    st_surface, radius = init_surface(grid, Star.limba1, Star.limba2)
     f = plt.figure(figsize=(7, 3.5))
 
     gs1 = gridspec.GridSpec(1, 1)
@@ -145,28 +42,22 @@ def spot_view_pel(
     ax2 = plt.subplot(gs2[0])
     ax3 = plt.subplot(gs2[1])
 
+    radius = grid//2
 
-    vis_yes, vis_no = any(xyz2_box[j][0, :]>0), any(xyz2_box[j][0, :]<0)
-    visible = xyz2_box[j][0,:]>0
-
-    spot_mask, patch = spot_patch_selec(
-        vis_yes, vis_no, xyz2_box, j, visible, radius, st_surface.shape[0], visible_phi[j]
-        )
-    spot_mask = spot_mask.reshape([int(st_surface.shape[0]), int(st_surface.shape[0])])
-    spot_surface = ~spot_mask*np.ones([int(st_surface.shape[0]), int(st_surface.shape[0])])*0.15
-
-    st_spot_surface = st_surface + spot_surface
-
-    ax1.imshow(st_spot_surface, extent=[-radius, radius, -radius, radius], cmap='Oranges_r')
+    st_spot_surface = quite_surface_2d[j]/np.max(quite_surface_2d[j])
+    st_spot_surface[st_spot_surface == 0.0] = np.nan
+    ax1.imshow(
+        st_spot_surface, extent=[-radius, radius, -radius, radius], 
+        cmap='Oranges_r', vmin=0, vmax=1, origin='lower')
     ax1.text(
-        0.5, -0.1, f'Phase {visible_phi[j]:.2f}', va='center', ha='center', size='small',
+        0.5, -0.1, f'Phase {visible_phi[j]:.3f}', va='center', ha='center', size='small',
         transform=ax1.transAxes)
     
     ax2.plot(Star.star_spec['v'], CCFstar_tot[j], '-k', lw=1)
     ax2.plot(
         [depth_l_fe1[j], depth_l_fe2[j], depth_l_oh0[j]],
         (np.array([depth_d_fe1[j], depth_d_fe2[j], depth_d_oh0[j]])-1)/-1,
-        's', ms=1, mew=1, color='tab:grey')
+        's', ms=.6, mew=.6, color='tab:grey')
 
     ax2.set_ylim(np.min(CCFstar_tot)-0.05, 1.05)
     ax2.set_xlim(-300, 300)
@@ -204,11 +95,11 @@ def spot_view_pel(
 
 
     f.savefig(
-        f'{outdir}/phase{visible_phi[j]:1.2f}.png', format='png', bbox_inches='tight')
+        f'{outdir}/phase{visible_phi[j]:1.3f}.png', format='png', bbox_inches='tight')
     plt.close()
 
 def spot_view(
-    Star, grid, xyz, visible_phi, xyz2_box, CCFstar_tot, CCFstar_quiet, 
+    Star, grid, visible_phi, CCFstar_tot, quite_surface_2d, 
     outdir, cpu_use, depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, 
     depth_l_fe2, depth_l_oh0, text1, text2
     ):
@@ -217,10 +108,15 @@ def spot_view(
     print('\nPlotting...\n')
 
     func = partial(
-        spot_view_pel, Star, grid, xyz, visible_phi, xyz2_box, 
-        CCFstar_tot, CCFstar_quiet, outdir, depth_d_fe1, depth_d_fe2, 
+        spot_view_pel, Star, grid, visible_phi, 
+        CCFstar_tot, quite_surface_2d, outdir, depth_d_fe1, depth_d_fe2, 
         depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2
         )
+    
+    # for ii in np.arange(len(visible_phi)):
+    #     spot_view_pel(Star, grid, visible_phi, 
+    #     CCFstar_tot, quite_surface_2d, outdir, depth_d_fe1, depth_d_fe2, 
+    #     depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2, ii)
     pqdm(np.arange(len(visible_phi)), func, n_jobs=cpu_use)
    
     status, _ = subprocess.getstatusoutput('convert')
@@ -233,28 +129,4 @@ def spot_view(
     else:
         print('\n"convert" function not found, skip making .gif\n')
     # return xyz2_box, spot_surface, st_surface
-
-
-def debug_plot(grid, phase, iminy, iminz, imaxy, imaxz, xyz2):
-    f, ax = plt.subplots(1, 1, figsize=(5, 5))
-
-    st_surface, radius = init_surface(grid, 0.1797, 0.3463)
-    ax.imshow(
-        st_surface, extent=[-radius, radius, -radius, radius], cmap='Oranges_r')
-
-    ax.axvline(iminy-radius, lw=1, color='tab:red')
-    ax.axvline(imaxy-radius, lw=1, color='tab:blue')
-    ax.axhline(iminz-radius, lw=1, color='tab:green')
-    ax.axhline(imaxz-radius, lw=1, color='k')
-
-    visible = xyz2[0, :] > 0
-    ax.plot(xyz2[1, :][visible]*radius, xyz2[2, :][visible]*radius, '-', lw=1, c='k')
-
-    if os.path.exists('./debug'):
-        shutil.rmtree('./debug')
-        os.mkdir('./debug')
-    else:
-        os.mkdir('./debug')   
-    f.savefig(
-            f'./debug/phase{phase:1.2f}.png', format='png', bbox_inches='tight')
 
