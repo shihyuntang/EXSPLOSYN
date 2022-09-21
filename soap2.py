@@ -36,32 +36,85 @@ class Star:
         self.rad            = rad            
         self.Temp           = Temp           
         self.Temp_diff_spot = Temp_diff_spot 
+        self.Temp_spot      = Temp-Temp_diff_spot
     
     def find_spec(self, spec_type):
         self.spec_type = spec_type
 
         spec_dir = f'./syn_spec'
         spec_list = os.listdir(spec_dir)
-        spec_list = [i for i in spec_list if spec_type in i]
+        spec_list = [i for i in spec_list if spec_type in i and '.pdf' not in i]
 
-        teffs = np.array([ int(t.split('_')[-4]) for t in spec_list ])
-        star_teff_use_loc = np.argmin(np.abs(self.Temp - teffs))
-        spot_teff_use_loc = np.argmin(
-            np.abs((self.Temp-self.Temp_diff_spot) - teffs)
-            )
-        self.star_teff_use = teffs[star_teff_use_loc]
-        self.spot_teff_use = teffs[spot_teff_use_loc]
+        teffs = np.array([ int(t.split('_')[-3]) for t in spec_list ])
 
-        self.star_spec = self.read_spec(self.star_teff_use)
-        self.spot_spec = self.read_spec(self.spot_teff_use)
-
-        print(
-            '\n Using {}K template for the STAR & {}K template for the SPOT!\n'.format(
-                self.star_teff_use, self.spot_teff_use)
+        if self.Temp in teffs:
+            self.star_teff_use = self.Temp
+            self.star_spec = self.read_spec(self.star_teff_use)
+            print(f'\n Using {self.star_teff_use}K template for the stellar photosphere')
+        else:
+            abs_differ = np.abs(self.Temp - teffs)
+            _temptab = Table(
+                data=(teffs, abs_differ), 
+                names=['teffs', 'abs_differ']
                 )
+            _temptab.sort('abs_differ')
+            temp1 = _temptab['teffs'][0]; diff1 = _temptab['abs_differ'][0]
+            temp2 = _temptab['teffs'][1]; diff2 = _temptab['abs_differ'][1]
+
+            ratio1 = 1 - (diff1/(diff1+diff2))
+            ratio2 = 1 - (diff2/(diff1+diff2))
+
+            spec1 = self.read_spec(temp1)
+            spec2 = self.read_spec(temp2)
+
+            spec = {'v': spec1['v'], 'f': ratio1*spec1['f']+ratio2*spec2['f']}
+            self.star_spec = spec
+
+            print(f'\nUsing {ratio1:1.1%} of {temp1}K template and {ratio2:1.1%} of {temp2}K template for the stellar photosphere')
+
+        if self.Temp_spot in teffs:
+            self.spot_teff_use = self.Temp_spot
+            self.spot_spec = self.read_spec(self.spot_teff_use)
+            print(f'Using {self.star_teff_use}K template for the spot spectrum')
+        else:
+            abs_differ = np.abs(self.Temp_spot - teffs)
+            _temptab = Table(
+                data=(teffs, abs_differ), 
+                names=['teffs', 'abs_differ']
+                )
+            _temptab.sort('abs_differ')
+            temp1 = _temptab['teffs'][0]; diff1 = _temptab['abs_differ'][0]
+            temp2 = _temptab['teffs'][1]; diff2 = _temptab['abs_differ'][1]
+
+            ratio1 = 1 - (diff1/(diff1+diff2))
+            ratio2 = 1 - (diff2/(diff1+diff2))
+
+            spec1 = self.read_spec(temp1)
+            spec2 = self.read_spec(temp2)
+
+            spec = {'v': spec1['v'], 'f': ratio1*spec1['f']+ratio2*spec2['f']}
+            self.spot_spec = spec
+
+            print(f'Using {ratio1:1.1%} of {temp1}K template and {ratio2:1.1%} of {temp2}K template for the spot spectrum')
+
+        # # find the two closest temp to use for interpolate 
+        # star_teff_use_loc = np.abs(self.Temp - teffs)
+        # spot_teff_use_loc = np.argmin(
+        #     np.abs((self.Temp-self.Temp_diff_spot) - teffs)
+        #     )
+        # self.star_teff_use = teffs[star_teff_use_loc]
+        # self.spot_teff_use = teffs[spot_teff_use_loc]
+
+        # self.star_spec = self.read_spec(self.star_teff_use)
+        # self.spot_spec = self.read_spec(self.spot_teff_use)
+
+        # print(
+        #     '\n Using {}K template for the STAR & {}K template for the SPOT!\n'.format(
+        #         self.star_teff_use, self.spot_teff_use)
+        #         )
 
     def read_spec(self, teff):
-        file_star = f'./syn_spec/{self.spec_type}_for_SOAP_LineDepthRatio_{teff}_4.5_0.0_NotEvenlySampled.csv'
+        file_star = f'./syn_spec/{self.spec_type}_for_SOAP_LineDepthRatio_{teff}_4.5_0.0.csv'
         t = Table.read(file_star, format='csv')
 
         t_dict = {}
@@ -241,18 +294,35 @@ def get_line_depth(Star, CCFstar_tot, visible_phi):
     return depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0
 
 
-
-
-
 def calculate_activity_signal_spec(
-    nrho, grid, star, psi, ccf, ccf_active_region, active_regions, inst_reso, cpu_use):
+    nrho, grid, star, psi, 
+    Spec, Spec_active_region, Ccf, Ccf_active_region, 
+    active_regions, inst_reso, cpu_use
+    ):
+    """
 
-    # Calculates the flux and CCF in each cell of the grid and integrate
-    # over the entire stellar disc to have the integrated flux (FLUXstar) and CCF (CCFstar).
-    # Calculate the CCF (CCFstar) and the total flux (FLUXstar) for the quiet star
-    CCFstar_quiet, FLUXstar_quiet, quite_surface = stsp.itot(
-        star.vrot, star.incl, star.limba1, star.limba2, 0., 0., 0., grid, ccf.rv, 
-        ccf.intensity, ccf.v_interval, ccf.n_v, ccf.n
+    Args:
+        nrho (int): resolution for the spot's circumference
+        grid (int): model grid resolution NxN
+        star (class): input star pars
+        psi (float): initial phase
+        spec (class): quite model spec 
+        spec_active_region (class): active model spec 
+        ccf (class): quite model ccf 
+        ccf_active_region (class): active model ccf 
+        active_regions (class): input info. on the spot(s)
+        inst_reso (float): instrumental resolution (R)
+        cpu_use (int): cpu to use while multiprocessing
+
+    Returns:
+        _type_: _description_
+    """
+
+    # initiate the quite surface
+    CCFstar_quiet, SPECstar_quiet, quite_surface = stsp.itot(
+        star.vrot, star.incl, star.limba1, star.limba2, 0., 0., 0., grid, 
+        Spec.rv, Spec.intensity, Spec.v_interval, Spec.n_v, Spec.n,
+        Ccf.rv, Ccf.intensity, Ccf.v_interval, Ccf.n_v, Ccf.n
         )
 
     # initialization of the variables
@@ -260,9 +330,10 @@ def calculate_activity_signal_spec(
     # CCFstar_flux  = CCFstar_quiet
     # CCFstar_bconv = CCFstar_quiet
     CCFstar_tot   = CCFstar_quiet
+    SPECstar_tot  = SPECstar_quiet
 
     #Loop over the different active regions
-    print('Calculate Activate Regions...\n')
+    print('\nCalculate Activate Regions...\n')
     for active_region in active_regions:
         # active_region.check = 1 if the active region is activated, 0 otherwise
         if not active_region.check: 
@@ -277,11 +348,14 @@ def calculate_activity_signal_spec(
         # returns the spot's "non-contribution" to the total flux and its
         # "non-contribution" to the ccf, for each phase.
         # Thus the result is to be subtracted to the output of the itot() function.
-        CCFactive_region_tot, visible_phi, active_surface_box =\
+        CCFactive_region_tot, SPECactive_region_tot, visible_phi, active_surface_box =\
                 stsp.spot_scan_npsi(
                     xyz, nrho, psi, len(psi), star.vrot, star.incl, star.limba1, 
-                    star.limba2, 0., 0., 0., grid, ccf.rv, ccf.intensity, 
-                    ccf_active_region.intensity, ccf.v_interval, ccf.n_v, ccf.n, 
+                    star.limba2, 0., 0., 0., grid, 
+                    Spec.rv, Spec.intensity, Spec_active_region.intensity, 
+                    Spec.v_interval, Spec.n_v, Spec.n, 
+                    Ccf.rv, Ccf.intensity, Ccf_active_region.intensity, 
+                    Ccf.v_interval, Ccf.n_v, Ccf.n, 
                     active_region.s, active_region.long, active_region.lat, 
                     active_region.active_region_type, star.Temp, star.Temp_diff_spot, cpu_use
                     )
@@ -297,16 +371,17 @@ def calculate_activity_signal_spec(
         
         # Calculate the CCF of the star affected by the total effect of active regions
         CCFstar_tot   = CCFstar_tot-np.array(CCFactive_region_tot)  
+        SPECstar_tot   = SPECstar_tot-np.array(SPECactive_region_tot)  
         quite_surface_2d = quite_surface - np.array(active_surface_box)
 
 
     # Calculate where the extrapolated CCF corresponds to the boundaries of the non-extrapolated CCF.
-    istart = (ccf.n_v-len(ccf.rv))//2   # ccf.n_v is odd given our definition, like len(ccf.rv), therefore 
+    istart = (Ccf.n_v-len(Ccf.rv))//2   # ccf.n_v is odd given our definition, like len(ccf.rv), therefore 
                                         # the difference can be divided by 2. The CCF has been extrapolated 
                                         # the same way on each boundary, so dividing the difference between 
                                         # the extrapolated and non extrapolated CCF by 2 gives by how many 
                                         # points the CCF was extrapolated on each side
-    iend   = istart+len(ccf.rv)
+    iend   = istart+len(Ccf.rv)
 
     # truncate the extrapolated rotating CCF to the same interval as the non-rotating CCF
     # CCFstar_flux  = CCFstar_flux[:,istart:iend]
@@ -314,43 +389,107 @@ def calculate_activity_signal_spec(
     CCFstar_tot   = CCFstar_tot[:,istart:iend]
     CCFstar_quiet = CCFstar_quiet[istart:iend]
 
+    # -- Spec ---
+    istart = (Spec.n_v-len(Spec.rv))//2         
+    iend   = istart+len(Spec.rv)
+    SPECstar_tot   = SPECstar_tot[:,istart:iend]
+    SPECstar_quiet = SPECstar_quiet[istart:iend]
+
+
     # Normalization, loop through diff phases
     # CCFstar_flux  = np.array([f/np.max(f) for f in CCFstar_flux], dtype=np.float64)
     # CCFstar_bconv = np.array([f/np.max(f) for f in CCFstar_bconv], dtype=np.float64)
     CCFstar_tot   = np.array([f/np.percentile(f,95) for f in CCFstar_tot], dtype=np.float64)
     CCFstar_quiet = CCFstar_quiet/np.percentile(CCFstar_quiet, 95)
-    
+
+    SPECstar_tot   = np.array([f/np.percentile(f,95) for f in SPECstar_tot], dtype=np.float64)
+    SPECstar_quiet = SPECstar_quiet/np.percentile(SPECstar_quiet, 95)
+
     # Convolution with a Gaussian instrumental profile of a given resolution, 
     # given by the "instrument_reso" variable in the "config.cfg" file
     if inst_reso != 0:
-        
-        c = 299792458. # speed of light in m/s
-        HARPS_resolution         = inst_reso # resolution R = lambda / Delta(lambda)
-        HARPS_inst_profile_FWHM  = c/HARPS_resolution/1000. # Resolution = c/Delta_v -> Delta_v = c/R
-        HARPS_inst_profile_sigma = HARPS_inst_profile_FWHM/(2*np.sqrt(2*np.log(2)))
-        Gaussian_low_reso        = np.exp(-ccf.rv**2/(2*(HARPS_inst_profile_sigma)**2))
-        
-        CCFstar_quiet_tmp = signal.convolve(
-            -CCFstar_quiet+1, Gaussian_low_reso, 'same'
-            )
-        CCFstar_quiet = 1-CCFstar_quiet_tmp\
-            *(1-np.min(CCFstar_quiet))/np.max(CCFstar_quiet_tmp) # normalization
-        
-        # Convolution of the CCF with the Gaussian instrumental profile to reduce 
-        # the resolution of the CCF
-        for i in np.arange(len(CCFstar_tot)):
-            # CCFstar_flux_tmp  = signal.convolve(-CCFstar_flux[i]+1,Gaussian_low_reso,'same')
-            # CCFstar_flux[i]   = 1-CCFstar_flux_tmp*(1-np.min(CCFstar_flux[i]))/np.max(CCFstar_flux_tmp)
-            # CCFstar_bconv_tmp = signal.convolve(-CCFstar_bconv[i]+1,Gaussian_low_reso,'same')
-            # CCFstar_bconv[i]  = 1-CCFstar_bconv_tmp*(1-np.min(CCFstar_bconv[i]))/np.max(CCFstar_bconv_tmp)
-            CCFstar_tot_tmp   = signal.convolve(-CCFstar_tot[i]+1,Gaussian_low_reso,'same')
-            CCFstar_tot[i]    = 1-CCFstar_tot_tmp*(1-np.min(CCFstar_tot[i]))/np.max(CCFstar_tot_tmp)
 
-    # sys.exit('done')
-
+        CCFstar_tot, CCFstar_quiet = _inst_broaden(inst_reso, Ccf.rv, CCFstar_tot, CCFstar_quiet)
+        SPECstar_tot, SPECstar_quiet = _inst_broaden(inst_reso, Spec.rv, SPECstar_tot, SPECstar_quiet)
     
-    #return the variables
-    return visible_phi, CCFstar_tot, CCFstar_quiet, quite_surface, quite_surface_2d
+
+    return (visible_phi, CCFstar_tot, CCFstar_quiet, SPECstar_tot, SPECstar_quiet, 
+                quite_surface, quite_surface_2d)
+
+
+def _inst_broaden(inst_reso, rv, star_tot, star_quiet):
+    c = 299792458. # speed of light in m/s
+    inst_resolution         = inst_reso # resolution R = lambda / Delta(lambda)
+    inst_inst_profile_FWHM  = c/inst_resolution/1000. # Resolution = c/Delta_v -> Delta_v = c/R
+    inst_inst_profile_sigma = inst_inst_profile_FWHM/(2*np.sqrt(2*np.log(2)))
+    Gaussian_low_reso        = np.exp(-rv**2/(2*(inst_inst_profile_sigma)**2))
+    
+    star_quiet_tmp = signal.convolve(
+        -star_quiet+1, Gaussian_low_reso, 'same'
+        )
+    star_quiet = 1-star_quiet_tmp\
+        *(1-np.min(star_quiet))/np.max(star_quiet_tmp) # normalization
+    
+    # Convolution of the CCF with the Gaussian instrumental profile to reduce 
+    # the resolution of the CCF
+    for i in np.arange(len(star_tot)):
+        # CCFstar_flux_tmp  = signal.convolve(-CCFstar_flux[i]+1,Gaussian_low_reso,'same')
+        # CCFstar_flux[i]   = 1-CCFstar_flux_tmp*(1-np.min(CCFstar_flux[i]))/np.max(CCFstar_flux_tmp)
+        # CCFstar_bconv_tmp = signal.convolve(-CCFstar_bconv[i]+1,Gaussian_low_reso,'same')
+        # CCFstar_bconv[i]  = 1-CCFstar_bconv_tmp*(1-np.min(CCFstar_bconv[i]))/np.max(CCFstar_bconv_tmp)
+        star_tot_tmp   = signal.convolve(-star_tot[i]+1,Gaussian_low_reso,'same')
+        star_tot[i]    = 1-star_tot_tmp*(1-np.min(star_tot[i]))/np.max(star_tot_tmp)
+
+    return star_tot, star_quiet
+
+@njit
+def _cc(CCFstar_tot, vel, tw):
+    
+    drvs = np.arange(-10, 10, 0.01)
+    spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
+
+    for ii in range(len(CCFstar_tot)):
+        f = 1 - CCFstar_tot[ii]
+
+        tf = np.zeros(len(tw))
+        tf[tw==0] = np.max(f)
+
+        # Calculate the cross correlation
+        cc = np.zeros(len(drvs))
+        for i, rv in enumerate(drvs):
+            cc[i] = np.sum(f * np.interp(vel, tw+rv, tf))
+            
+        spot_cc4rv[ii] = drvs[np.argmax(cc)]
+
+    return spot_cc4rv
+
+
+def cal_ccf_rv(CCFstar_tot, Ccf):
+
+    vel = Ccf.rv
+
+    exrtra_len = len(vel)//2
+    l_extra = np.zeros(exrtra_len) + CCFstar_tot[0][0]
+    r_extra = np.zeros(exrtra_len) + CCFstar_tot[0][-1]
+
+    # CCF_quiet = np.append(l_extra, CCFstar_quiet)
+    # CCF_quiet = np.append(CCF_quiet, r_extra)
+
+    del_vel = vel[1] - vel[0]
+    vel_temp = np.arange(
+        vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, 
+        del_vel
+        )
+
+    del_vel = stsp.rndup(vel[1] - vel[0], 2)
+    vel_temp = np.arange(vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, del_vel)
+    vel_temp = np.array([stsp.rndup(i, 2) for i in vel_temp])
+
+    ccf_rv_shift = _cc(CCFstar_tot, vel, vel_temp)
+
+    return ccf_rv_shift
+
+
 
 
 

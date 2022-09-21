@@ -17,6 +17,7 @@ outputs/
 *.pyc
 *.DS_Store
 *.png
+*.npy
 ._*
 
 # Packages #
