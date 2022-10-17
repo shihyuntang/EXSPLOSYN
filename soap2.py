@@ -7,7 +7,7 @@ from scipy import signal
 from astropy.table import Table
 
 import starspot as stsp
-
+import visualization as vis
 
 class Star:
     def __init__(self, prot, vrot, incl, limba1, limba2, psi, rad_sun, rad, Temp, Temp_diff_spot):
@@ -442,50 +442,119 @@ def _inst_broaden(inst_reso, rv, star_tot, star_quiet):
 
     return star_tot, star_quiet
 
-@njit
-def _cc(CCFstar_tot, vel, tw):
+# @njit
+# def _cc(CCFstar_tot, vel, tw):
     
-    drvs = np.arange(-10, 10, 0.01)
+#     drvs = np.arange(-10, 10, 0.01)
+#     spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
+
+#     for ii in range(len(CCFstar_tot)):
+#         f = 1 - CCFstar_tot[ii]
+
+#         tf = np.zeros(len(tw))
+#         tf[tw==0] = np.max(f)
+
+#         # Calculate the cross correlation
+#         cc = np.zeros(len(drvs))
+#         for i, rv in enumerate(drvs):
+#             cc[i] = np.sum(f * np.interp(vel, tw+rv, tf))
+            
+#         spot_cc4rv[ii] = drvs[np.argmax(cc)]
+
+#     return spot_cc4rv
+
+# def cal_ccf_rv(CCFstar_tot, Ccf):
+
+#     vel = Ccf.rv
+
+#     exrtra_len = len(vel)//2
+#     l_extra = np.zeros(exrtra_len) + CCFstar_tot[0][0]
+#     r_extra = np.zeros(exrtra_len) + CCFstar_tot[0][-1]
+
+#     # CCF_quiet = np.append(l_extra, CCFstar_quiet)
+#     # CCF_quiet = np.append(CCF_quiet, r_extra)
+
+#     del_vel = vel[1] - vel[0]
+#     vel_temp = np.arange(
+#         vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, 
+#         del_vel
+#         )
+
+#     del_vel = stsp.rndup(vel[1] - vel[0], 2)
+#     vel_temp = np.arange(vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, del_vel)
+#     vel_temp = np.array([stsp.rndup(i, 2) for i in vel_temp])
+
+#     ccf_rv_shift = _cc(CCFstar_tot, vel, vel_temp)
+
+#     return ccf_rv_shift
+
+@njit
+# @njit(parallel=True)
+def _cc(CCFstar_tot, vel, tw, tf, visible_phi):
+    # the res for the vel is 25m/s, thus moving 
+    # -10km to 10km is moving 400 pixles
+    # on both sides.
+    # drvs_pixels = np.arange(-400, 401)
+    # drvs = drvs_pixels * 0.025
+
+    drvs = np.arange(-5, 5, 0.03)
     spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
 
+    tf =  1-tf
     for ii in range(len(CCFstar_tot)):
-        f = 1 - CCFstar_tot[ii]
-
-        tf = np.zeros(len(tw))
-        tf[tw==0] = np.max(f)
+        f =  1-CCFstar_tot[ii]
 
         # Calculate the cross correlation
         cc = np.zeros(len(drvs))
         for i, rv in enumerate(drvs):
             cc[i] = np.sum(f * np.interp(vel, tw+rv, tf))
-            
-        spot_cc4rv[ii] = drvs[np.argmax(cc)]
+            # tw_shifted = tw+rv
+            # tf_shifted = tf[(tw_shifted >= vel[0]) & (tw_shifted <= vel[-1])]
+            # cc[i] = np.sum(f * tf_shifted )
+        cc = np.max(cc) - cc   
+
+        # vis.plot_cc(drvs, cc, visible_phi[ii])
+        # vis.plot_cc_spec(vel, f, tw, tf, visible_phi[ii], drvs[np.argmin(cc)])
+        
+        n_min = sum( cc == np.min(cc) )
+        if n_min == 1:
+            spot_cc4rv[ii] = drvs[np.argmin(cc)]
+        else:
+            drvs_temp = drvs[cc == np.min(cc)]
+            spot_cc4rv[ii] = np.mean(drvs_temp)
 
     return spot_cc4rv
 
 
-def cal_ccf_rv(CCFstar_tot, Ccf):
+def cal_ccf_rv(star_tot, Star, visible_phi):
 
-    vel = Ccf.rv
+    vel = Star.star_spec['v']
 
-    exrtra_len = len(vel)//2
-    l_extra = np.zeros(exrtra_len) + CCFstar_tot[0][0]
-    r_extra = np.zeros(exrtra_len) + CCFstar_tot[0][-1]
+    spec_temp = star_tot[np.argmin(np.abs(visible_phi))]
 
-    # CCF_quiet = np.append(l_extra, CCFstar_quiet)
-    # CCF_quiet = np.append(CCF_quiet, r_extra)
+    print('Using Phase {:1.3f} as CCF template...'.format(
+        visible_phi[np.argmin(np.abs(visible_phi))]
+    ))
 
-    del_vel = vel[1] - vel[0]
+
+    exrtra_len = 1000
+    del_vel = stsp.rndup(vel[1] - vel[0], 3)
     vel_temp = np.arange(
         vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, 
         del_vel
         )
+    # vel_temp = np.append(
+    #     np.arange(vel[0]-exrtra_len*del_vel, vel[0], del_vel), vel
+    #     )
+    # vel_temp = np.append(
+    #     vel_temp, np.arange(vel[-1], vel[-1]+exrtra_len*del_vel, del_vel)
+    #     )
+    vel_temp = np.array([stsp.rndup(i, 3) for i in vel_temp])
 
-    del_vel = stsp.rndup(vel[1] - vel[0], 2)
-    vel_temp = np.arange(vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, del_vel)
-    vel_temp = np.array([stsp.rndup(i, 2) for i in vel_temp])
+    spec_temp = np.append(np.zeros(exrtra_len)+spec_temp[0], spec_temp)
+    spec_temp = np.append(spec_temp, np.zeros(exrtra_len)+spec_temp[-1])
 
-    ccf_rv_shift = _cc(CCFstar_tot, vel, vel_temp)
+    ccf_rv_shift = _cc(star_tot, vel, vel_temp, spec_temp, np.array(visible_phi))
 
     return ccf_rv_shift
 

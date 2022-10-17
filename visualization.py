@@ -60,29 +60,44 @@ def spot_view_pel(
         's', ms=.6, mew=.6, color='tab:grey')
 
     ax2.set_ylim(np.min(SPECstar_tot)-0.05, 1.05)
-    ax2.set_xlim(-300, 300)
-    ax2.set_xlabel(fr'Velocity [km s$^{-1}$]',  size='small')
+    ax2.set_xlim(-250, 250)
+    ax2.set_xlabel(r'Velocity [km s$^{-1}$]',  size='small')
     ax2.set_ylabel(f'Relative Flux',  size='small')
 
     oh_line = np.array(depth_d_oh0)
     fe_line = (np.array(depth_d_fe1) + np.array(depth_d_fe2)) / 2
     line_ratio = oh_line/fe_line
 
-    ax3.plot(visible_phi[:j], line_ratio[:j], 'o', c='tab:grey', ms=3, mew=3)
-    ax3.plot(visible_phi[j], line_ratio[j], 'o', c='k', ms=3, mew=3)
+    ax3.plot(visible_phi[:j], line_ratio[:j], '-o', c='tab:grey', ms=2, mew=2)
+    ax3.plot(visible_phi[j], line_ratio[j], 'o', c='k', ms=2, mew=2)
 
     ax3.set_ylim(np.min(line_ratio)-0.1, np.max(line_ratio)+0.1)
     ax3.set_xlim(-0.3, 1.3)
     ax3.set_xlabel(r'Phase',  size='small')
     ax3.set_ylabel('Line depth ratio (OH/Fe)',  size='small')
 
+# --- ccf rv from normal soap2 procedure ---
     ax3right = ax3.twinx()
-    ax3right.plot(visible_phi[:j], ccf_rv_shift[:j], 'o', c='skyblue', ms=3, mew=3)
-    ax3right.plot(visible_phi[j], ccf_rv_shift[j], 'o', c='tab:blue', ms=3, mew=3)
+    ax3right.plot(visible_phi[:j], ccf_rv_shift[:j], '-o', c='skyblue', ms=2, mew=2)
+    ax3right.plot(visible_phi[j], ccf_rv_shift[j], 'o', c='tab:blue', ms=2, mew=2)
+
+# --- ccf rv from normal taking the vel var of min in left Fe line ---
+    # Fe_left_zero_vel = -103.599
+    # ax3right.plot(
+    #     visible_phi[:j], np.array(depth_l_fe1[:j])-Fe_left_zero_vel, '-o', 
+    #     c='wheat', ms=2, mew=2
+    #     )
+    # ax3right.plot(
+    #     visible_phi[j], np.array(depth_l_fe1[j])-Fe_left_zero_vel, 'o', 
+    #     c='tab:orange', ms=2, mew=2
+    #     )
+    
 
     ax3right.set_ylim(np.min(ccf_rv_shift)-1, np.max(ccf_rv_shift)+1)
     ax3right.set_ylabel(
-        'Spot induced RV [km/s]', size='small', color='tab:blue', rotation=270, labelpad=10)
+        r'Spot induced RV [km s$^{-1}$]', size='small', color='tab:blue', 
+        rotation=270, labelpad=10
+        )
 
     ax3.tick_params(axis='x', which='both', labelsize='small', 
                     top=True, direction='in', width=.7)
@@ -131,6 +146,7 @@ def spot_view(
     #     spot_view_pel(Star, grid, visible_phi, 
     #     SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, depth_d_fe1, depth_d_fe2, 
     #     depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2, ii)
+    
     pqdm(np.arange(len(visible_phi)), func, n_jobs=cpu_use)
    
     status, _ = subprocess.getstatusoutput('convert')
@@ -144,3 +160,51 @@ def spot_view(
         print('\n"convert" function not found, skip making .gif\n')
     # return xyz2_box, spot_surface, st_surface
 
+
+
+def plot_cc(drvs, cc, phase):
+    drvs_temp = drvs[cc == np.min(cc)]
+
+    f, ax = plt.subplots(1, 1, figsize=(4, 3))
+
+    ax.plot(drvs, cc, 'k-', lw=.7)
+
+    ax.axvline(
+        np.mean(drvs_temp), ls='-', lw=1, alpha=0.5, c='tab:blue'
+        )
+    
+    ax.set_xlabel(r'Velocity [km/s]',  size='small')
+    ax.set_ylabel('CCF',  size='small')
+    ax.tick_params(
+        axis='both', which='both', labelsize='small', right=True, 
+        top=True, direction='in', width=.7)
+    
+    f.savefig(
+        f'./outputs/CCF/phase{phase:1.3f}.png', format='png', 
+        bbox_inches='tight'
+        )
+    plt.close()
+
+
+def plot_cc_spec(vel, f, tw, tf, phase, delrv):
+
+    fig, ax = plt.subplots(1, 1, figsize=(4, 3))
+
+    ax.plot(vel, f, 'k-', lw=.7)
+
+    tf = np.interp(vel, tw+delrv, tf)
+    ax.plot(vel, tf, '-', c='tab:red', alpha=0.5, lw=1)
+    
+    ax.set_xlabel(r'Velocity [km/s]',  size='small')
+    ax.set_ylabel('Flux',  size='small')
+    ax.tick_params(
+        axis='both', which='both', labelsize='small', right=True, 
+        top=True, direction='in', width=.7)
+    
+    fig.savefig(
+        f'./outputs/CCF/phase{phase:1.3f}_spec.png', format='png', 
+        bbox_inches='tight'
+        )
+    plt.close()
+
+    

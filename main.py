@@ -28,6 +28,7 @@ if __name__ == '__main__':
 
     config = configparser.ConfigParser(inline_comment_prefixes=';')
     config.read("config_v830tau.cfg")
+    # config.read("config_test1.cfg")
 
     GRID        = int(config.get('main','grid' ))
     NRHO        = int(config.get('main','nrho' ))
@@ -166,12 +167,16 @@ if __name__ == '__main__':
         STAR, SPECstar_tot, visible_phi
         )
 
-    ccf_rv_shift = soap2.cal_ccf_rv(CCFstar_tot, CCF)
+    # use gaussian
+    # ccf_rv_shift = soap2.cal_ccf_rv(CCFstar_tot, CCF)
 
+    # use Fe OH lines
+    ccf_rv_shift = soap2.cal_ccf_rv(SPECstar_tot, STAR, visible_phi)
 
-    np.save('test_CCFstar_tot', CCFstar_tot)
-    np.save('test_CCFstar_quiet', CCFstar_quiet)
-    np.save('test_v', np.array(STAR.star_spec['v']))
+    # np.save('test_SPECstar_tot', SPECstar_tot)
+    # np.save('test_phase', visible_phi)
+    # np.save('test_SPEC_template', SPECstar_tot[np.argmin(np.abs(visible_phi))])
+    # np.save('test_v', np.array(STAR.star_spec['v']))
     # sys.exit()
 
     outdir = "./outputs/OHFeLineDepth_{}_Prot={:.2f}_i={:.2f}_teff1={:1.0f}_Deltateff={:1.0f}_lon=({:.1f},{:.1f})_lat=({:.1f},{:.1f})_size=({:.4f},{:.4f})" .format(
