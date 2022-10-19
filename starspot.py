@@ -11,6 +11,7 @@ from numpy import cos, sin
 from numba import njit
 from scipy import signal
 from pqdm.processes import pqdm
+import pysynphot as pysynphot
 
 import visualization as vis
 
@@ -424,13 +425,13 @@ def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
 
     return f_star_ccf, f_star_spec, quite_surface
 
-@njit
-def loi_Planck(lambda0, Temp):
-    c   = 299792458.;     # speed of light m/s
-    h   = 6.62606896e-34; # Planck constant
-    k_b = 1.380e-23;      # Boltzmann constant
+# @njit
+# def loi_Planck(lambda0, Temp):
+#     c   = 299792458.;     # speed of light m/s
+#     h   = 6.62606896e-34; # Planck constant
+#     k_b = 1.380e-23;      # Boltzmann constant
     
-    return 2*h*c**2*1./lambda0**5*1./(np.exp((h*c)/(lambda0*k_b*Temp))-1)
+#     return 2*h*c**2*1./lambda0**5*1./(np.exp((h*c)/(lambda0*k_b*Temp))-1)
 
 @njit
 def spot_scan(
@@ -438,7 +439,7 @@ def spot_scan(
     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
     vrad_ccf, intensity_ccf, intensity_ccf_spot, v_interval_ccf, n_v_ccf, n_ccf,  
     s, longitude, phase, latitude, iminy, iminz, imaxy, imaxz, 
-    magn_feature_type, T_star, T_diff_spot
+    magn_feature_type, T_star, T_diff_spot, intensity
     ):
     """Scan of the yz-area where the spot is.
     For each grid-point (y,z) we need to check whether it belongs to the spot
@@ -463,8 +464,8 @@ def spot_scan(
 
     # the wavelength of the Kitt peak spectrum goes from 3921.2441+6665.5789, the mean being 5293.4115
     # IGRINS H band OH line center 15631.3246 A
-    use_wave_center = 15631.3246e-10
-    loi_Planck_star = loi_Planck(use_wave_center, T_star) 
+    # use_wave_center = 15631.3246e-10
+    # loi_Planck_star = loi_Planck(use_wave_center, T_star) 
 
     # Scan of each cell on the grid
     for iy in range(iminy, imaxy):
@@ -497,12 +498,12 @@ def spot_scan(
                     limb = 1. - limba1*(1-r_cos) - limba2*(1-r_cos)**2
                     
                     # intensity of the spot (magn_feature_type==0) or the plage (magn_feature_type==1)
-                    if magn_feature_type==0:
-                        T_spot = T_star-T_diff_spot
-                        intensity = loi_Planck(use_wave_center,T_spot)/loi_Planck_star
-                    else:
-                        T_plage = T_star+250.9-407.7*r_cos+190.9*r_cos**2 # plages are brighter on the limb Meunier 2010
-                        intensity = loi_Planck(use_wave_center,T_plage)/loi_Planck_star
+                    # if magn_feature_type==0:
+                    #     T_spot = T_star-T_diff_spot
+                    #     intensity = loi_Planck(use_wave_center,T_spot)/loi_Planck_star
+                    # else:
+                    #     T_plage = T_star+250.9-407.7*r_cos+190.9*r_cos**2 # plages are brighter on the limb Meunier 2010
+                    #     intensity = loi_Planck(use_wave_center,T_plage)/loi_Planck_star
                     
                     ##### modify SOAP2 code from only cal CCF to also cal SPEC #####
                     # -------------------------- CCF ------------------------------
@@ -605,7 +606,7 @@ def spot_scan_npsi_pal(
     modif_bis_quad, modif_bis_lin, modif_bis_cte, 
     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
     vrad_ccf, intensity_ccf, intensity_ccf_spot, v_interval_ccf, n_v_ccf, n_ccf,  
-    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, ipsi
+    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, intensity, ipsi
     ):
 
     xyz2 = spot_phase(xyz, inclination, nrho, psi[ipsi])
@@ -622,7 +623,7 @@ def spot_scan_npsi_pal(
                 v_interval_ccf, n_v_ccf, n_ccf,  
                 s, longitude, psi[ipsi], latitude, 
                 iminy, iminz, imaxy, imaxz,
-                magn_feature_type, T_star, T_diff_spot
+                magn_feature_type, T_star, T_diff_spot, intensity
             )
     else:
         f_ccf_spot_tot = np.zeros(n_v_ccf, dtype=np.float64)
@@ -630,6 +631,37 @@ def spot_scan_npsi_pal(
         active_surface = np.zeros((grid, grid), dtype=np.float64)
 
     return f_ccf_spot_tot, f_spec_spot_tot, psi[ipsi], active_surface
+
+def _get_intensity_ratio(T_star, T_diff_spot):
+    # IGRINS H band OH line center 15631.3246 A
+    # query phx syn model and intergral \pm 0.02 
+    # micron reigon's flux from the OH line
+    
+    use_wave_center_m = 15631.3246e-10 #m
+    use_wave_center_mu = 15631.3246e-10*1e6 #mu
+    use_wave_range_mu = [use_wave_center_mu-0.02, use_wave_center_mu+0.02]
+
+    # --- for photosphere (star) ---
+    sp = pysynphot.Icat('phoenix', T_star, 0.0, 4.0)
+    sp.convert('um')
+    
+    inter_range = (sp.wave>=use_wave_range_mu[0]) & (sp.wave<=use_wave_range_mu[1])
+    inter_wave = sp.wave[inter_range]
+    inter_flux = sp.flux[inter_range]
+    phx_star_flux = np.trapz(inter_flux, inter_wave)
+
+    # --- for spot ---
+    sp = pysynphot.Icat('phoenix', T_star-T_diff_spot, 0.0, 4.0)
+    sp.convert('um')
+    
+    inter_range = (sp.wave>=use_wave_range_mu[0]) & (sp.wave<=use_wave_range_mu[1])
+    inter_wave = sp.wave[inter_range]
+    inter_flux = sp.flux[inter_range]
+    phx_spot_flux = np.trapz(inter_flux, inter_wave)
+
+    return phx_spot_flux/phx_star_flux
+
+
 
 def spot_scan_npsi(
     xyz, nrho, psi, npsi, v, inclination, limba1, limba2, modif_bis_quad, 
@@ -649,13 +681,15 @@ def spot_scan_npsi(
     visible_phi_box = []
     active_surface_box = []
 
+    intensity = _get_intensity_ratio(T_star, T_diff_spot)
+
     func = partial(
         spot_scan_npsi_pal, 
         xyz, inclination, nrho, psi, grid, v, limba1, limba2, 
         modif_bis_quad, modif_bis_lin, modif_bis_cte, 
         vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
         vrad_ccf, intensity_ccf, intensity_ccf_spot, v_interval_ccf, n_v_ccf, n_ccf,  
-        s, longitude, latitude, magn_feature_type, T_star, T_diff_spot
+        s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, intensity
         )
 
     outs = pqdm(np.arange(npsi), func, n_jobs=cpu_use)

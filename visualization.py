@@ -25,6 +25,171 @@ mpl.rcParams['xtick.direction'] = 'in'
 mpl.rcParams['ytick.right'] = True
 mpl.rcParams['ytick.direction'] = 'in'
 
+def RAxisAngle(axis=[0, 1, 0], theta=0):
+    """
+    Rotate an arbitrary point by an axis and an angle.
+    from Starry: https://github.com/rodluger/paparazzi/blob/119743ec26bbca8b3240c38be36b0c47cb2c9880/src/figures/linalg.py
+    """
+    cost = np.cos(theta)
+    sint = np.sin(theta)
+
+    return np.reshape(
+        [
+            cost + axis[0] * axis[0] * (1 - cost),
+            axis[0] * axis[1] * (1 - cost) - axis[2] * sint,
+            axis[0] * axis[2] * (1 - cost) + axis[1] * sint,
+            axis[1] * axis[0] * (1 - cost) + axis[2] * sint,
+            cost + axis[1] * axis[1] * (1 - cost),
+            axis[1] * axis[2] * (1 - cost) - axis[0] * sint,
+            axis[2] * axis[0] * (1 - cost) - axis[1] * sint,
+            axis[2] * axis[1] * (1 - cost) + axis[0] * sint,
+            cost + axis[2] * axis[2] * (1 - cost),
+        ],
+        [3, 3],
+    )
+
+def get_ortho_latitude_lines(
+    radius, inc=np.pi / 2, obl=0, dlat=np.pi / 6, npts=1000):
+    """
+    Return the lines of constant latitude on an orthographic projection.
+    from Starry: https://github.com/rodluger/paparazzi/blob/119743ec26bbca8b3240c38be36b0c47cb2c9880/src/figures/linalg.py
+    """
+    # Angular quantities
+    ci = np.cos(inc)
+    si = np.sin(inc)
+    co = np.cos(obl)
+    so = np.sin(obl)
+
+    # Latitude lines
+    res = []
+    latlines = np.arange(-np.pi / 2, np.pi / 2, dlat)[1:]
+    for lat in latlines:
+
+        # Figure out the equation of the ellipse
+        y0 = np.sin(lat) * si
+        a = np.cos(lat)
+        b = a * ci
+        x = np.linspace(-a, a, npts)
+        y1 = y0 - b * np.sqrt(1 - (x / a) ** 2)
+        y2 = y0 + b * np.sqrt(1 - (x / a) ** 2)
+
+        # Mask lines on the backside
+        if si != 0:
+            if inc > np.pi / 2:
+                ymax = y1[np.argmax(x ** 2 + y1 ** 2)]
+                y1[y1 < ymax] = np.nan
+                ymax = y2[np.argmax(x ** 2 + y2 ** 2)]
+                y2[y2 < ymax] = np.nan
+            else:
+                ymax = y1[np.argmax(x ** 2 + y1 ** 2)]
+                y1[y1 > ymax] = np.nan
+                ymax = y2[np.argmax(x ** 2 + y2 ** 2)]
+                y2[y2 > ymax] = np.nan
+
+        # Rotate them
+        for y in (y1, y2):
+            xr = -x * co + y * so
+            yr = x * so + y * co
+            res.append((xr*radius, y*radius))
+
+    return res
+
+
+def get_ortho_longitude_lines(
+    radius, inc=np.pi / 2, obl=0, theta=0, dlon=np.pi / 6, npts=1000
+):
+    """
+    Return the lines of constant longitude on an orthographic projection.
+    from Starry: https://github.com/rodluger/paparazzi/blob/119743ec26bbca8b3240c38be36b0c47cb2c9880/src/figures/linalg.py
+    """
+
+    # Angular quantities
+    ci = np.cos(inc)
+    si = np.sin(inc)
+    co = np.cos(obl)
+    so = np.sin(obl)
+
+    # Are we (essentially) equator-on?
+    equator_on = (inc > 88 * np.pi / 180) and (inc < 92 * np.pi / 180)
+
+    # Longitude grid lines
+    res = []
+    if equator_on:
+        offsets = np.arange(-np.pi / 2, np.pi / 2, dlon)
+    else:
+        offsets = np.arange(0, 2 * np.pi, dlon)
+
+    for offset in offsets:
+
+        # Super hacky, sorry. This can probably
+        # be coded up more intelligently.
+        if equator_on:
+            sgns = [1]
+            if np.cos(theta + offset) >= 0:
+                bsgn = 1
+            else:
+                bsgn = -1
+        else:
+            bsgn = 1
+            if np.cos(theta + offset) >= 0:
+                sgns = np.array([1, -1])
+            else:
+                sgns = np.array([-1, 1])
+
+        for lon, sgn in zip([0, np.pi], sgns):
+
+            # Viewed at i = 90
+            y = np.linspace(-1, 1, npts)
+            b = bsgn * np.sin(lon - theta - offset)
+            x = b * np.sqrt(1 - y ** 2)
+            z = sgn * np.sqrt(np.abs(1 - x ** 2 - y ** 2))
+
+            if equator_on:
+
+                pass
+
+            else:
+
+                # Rotate by the inclination
+                R = RAxisAngle([1, 0, 0], np.pi / 2 - inc)
+                v = np.vstack(
+                    (x.reshape(1, -1), y.reshape(1, -1), z.reshape(1, -1))
+                )
+                x, y, _ = np.dot(R, v)
+
+                # Mask lines on the backside
+                if si != 0:
+                    if inc < np.pi / 2:
+                        imax = np.argmax(x ** 2 + y ** 2)
+                        y[: imax + 1] = np.nan
+                    else:
+                        imax = np.argmax(x ** 2 + y ** 2)
+                        y[imax:] = np.nan
+
+            # Rotate by the obliquity
+            xr = -x * co + y * so 
+            yr = x * so + y * co
+            res.append((xr*radius, yr*radius))
+
+    return res
+
+def map_add_grid(axins, incl, radius):
+    theta = 0
+    # x = np.linspace(-radius, radius, 10000)
+    # y = np.sqrt(radius**2 - x**2)
+    # axins.plot(x, y, "k-", lw=1, zorder=10)
+    # axins.plot(x, -y, "k-", lw=1, zorder=10)
+
+    lat_lines = get_ortho_latitude_lines(radius, inc=incl * np.pi / 180)
+    for x, y in lat_lines:
+        axins.plot(x, y, "#aaaaaa", lw=0.5, alpha=0.3, zorder=11)
+    lon_lines = get_ortho_longitude_lines(
+        radius, inc=incl * np.pi / 180, 
+        theta=np.pi + theta * np.pi / 180
+    )
+    for n, l in enumerate(lon_lines):
+        axins.plot(l[0], l[1], "#aaaaaa", lw=0.5, alpha=0.3, zorder=11)
+    return axins
 
 def spot_view_pel(
     Star, grid, visible_phi, SPECstar_tot, ccf_rv_shift, quite_surface_2d, 
@@ -49,6 +214,8 @@ def spot_view_pel(
     ax1.imshow(
         st_spot_surface, extent=[-radius, radius, -radius, radius], 
         cmap='Oranges_r', vmin=0, vmax=1, origin='lower')
+    ax1 = map_add_grid(ax1, Star.incl, radius)
+    
     ax1.text(
         0.5, -0.1, f'Phase {visible_phi[j]:.3f}', va='center', ha='center', size='small',
         transform=ax1.transAxes)
@@ -62,7 +229,7 @@ def spot_view_pel(
     ax2.set_ylim(np.min(SPECstar_tot)-0.05, 1.05)
     ax2.set_xlim(-250, 250)
     ax2.set_xlabel(r'Velocity [km s$^{-1}$]',  size='small')
-    ax2.set_ylabel(f'Relative Flux',  size='small')
+    ax2.set_ylabel(f'Normalized Flux',  size='small')
 
     oh_line = np.array(depth_d_oh0)
     fe_line = (np.array(depth_d_fe1) + np.array(depth_d_fe2)) / 2
