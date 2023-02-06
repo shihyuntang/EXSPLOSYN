@@ -173,8 +173,9 @@ def get_ortho_longitude_lines(
 
     return res
 
-def map_add_grid(axins, incl, radius):
-    theta = 0
+def map_add_grid(axins, incl, radius, phase):
+    theta = phase*(2*np.pi) 
+    # theta = 0
     # x = np.linspace(-radius, radius, 10000)
     # y = np.sqrt(radius**2 - x**2)
     # axins.plot(x, y, "k-", lw=1, zorder=10)
@@ -182,13 +183,14 @@ def map_add_grid(axins, incl, radius):
 
     lat_lines = get_ortho_latitude_lines(radius, inc=incl * np.pi / 180)
     for x, y in lat_lines:
-        axins.plot(x, y, "#aaaaaa", lw=0.5, alpha=0.3, zorder=11)
+        axins.plot(x, y, "#aaaaaa", lw=0.3, alpha=0.3, zorder=11)
+    
     lon_lines = get_ortho_longitude_lines(
         radius, inc=incl * np.pi / 180, 
-        theta=np.pi + theta * np.pi / 180
+        theta=np.pi + theta # * np.pi / 180
     )
     for n, l in enumerate(lon_lines):
-        axins.plot(l[0], l[1], "#aaaaaa", lw=0.5, alpha=0.3, zorder=11)
+        axins.plot(l[0], l[1], "#aaaaaa", lw=0.3, alpha=0.3, zorder=11)
     return axins
 
 def spot_view_pel(
@@ -214,7 +216,7 @@ def spot_view_pel(
     ax1.imshow(
         st_spot_surface, extent=[-radius, radius, -radius, radius], 
         cmap='Oranges_r', vmin=0, vmax=1, origin='lower')
-    ax1 = map_add_grid(ax1, Star.incl, radius)
+    ax1 = map_add_grid(ax1, Star.incl, radius, visible_phi[j])
     
     ax1.text(
         0.5, -0.1, f'Phase {visible_phi[j]:.3f}', va='center', ha='center', size='small',
@@ -289,9 +291,10 @@ def spot_view_pel(
         0.05, -0.45, text2, family='monospace', size=5, 
         transform=ax1.transAxes, ha='left', va='top')
 
-
+    # f.savefig(
+    #     f'{outdir}/phase{visible_phi[j]:1.3f}.png', format='png', bbox_inches='tight')
     f.savefig(
-        f'{outdir}/phase{visible_phi[j]:1.3f}.png', format='png', bbox_inches='tight')
+        f'{outdir.split("/")[1]}/phase{visible_phi[j]:1.3f}.png', format='png', bbox_inches='tight')
     plt.close()
 
 def spot_view(
@@ -319,13 +322,16 @@ def spot_view(
     status, _ = subprocess.getstatusoutput('convert')
     if status <= 1:
         print('\nNow making .gif\n')
-        os.chdir(outdir)
+        working_dir = os.getcwd()
+        os.chdir(f'{outdir.split("/")[1]}')
         os.system('convert -delay 20 +dither $(ls *.png | sort -k 1.6g) temp.gif')
         os.system('convert temp.gif \( +clone -set delay 300 \) +swap +delete temp.gif')
         os.system(f'mv temp.gif "{outdir.split("/")[-1]}.gif"')
+        os.system(f'rm *.png')
+        os.chdir(working_dir)
     else:
         print('\n"convert" function not found, skip making .gif\n')
-    # return xyz2_box, spot_surface, st_surface
+
 
 
 

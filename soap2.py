@@ -10,7 +10,9 @@ import starspot as stsp
 import visualization as vis
 
 class Star:
-    def __init__(self, prot, vrot, incl, limba1, limba2, psi, rad_sun, rad, Temp, Temp_diff_spot):
+    def __init__(
+        self, prot, vrot, incl, limba1, limba2, psi, rad_sun, rad, 
+        Temp, Temp_diff_spot, logg):
         """_summary_
 
         Args:
@@ -37,19 +39,24 @@ class Star:
         self.Temp           = Temp           
         self.Temp_diff_spot = Temp_diff_spot 
         self.Temp_spot      = Temp-Temp_diff_spot
+        self.logg      = logg
     
     def find_spec(self, spec_type):
         self.spec_type = spec_type
 
         spec_dir = f'./syn_spec'
         spec_list = os.listdir(spec_dir)
-        spec_list = [i for i in spec_list if spec_type in i and '.pdf' not in i]
+        spec_list = [i for i in spec_list if (spec_type in i) and ('.pdf' not in i) and (i[0] != '.')]
+        spec_list = [i for i in spec_list if i.split('_')[-2] == str(self.logg)]
+        # print('spec_list', spec_list)
 
         teffs = np.array([ int(t.split('_')[-3]) for t in spec_list ])
+        # print('teffs', teffs)
+        # sys.exit('')
 
         if self.Temp in teffs:
             self.star_teff_use = self.Temp
-            self.star_spec = self.read_spec(self.star_teff_use)
+            self.star_spec = self.read_spec(self.star_teff_use, self.logg)
             print(f'\n Using {self.star_teff_use}K template for the stellar photosphere')
         else:
             abs_differ = np.abs(self.Temp - teffs)
@@ -73,9 +80,10 @@ class Star:
             print(f'\nUsing {ratio1:1.1%} of {temp1}K template and {ratio2:1.1%} of {temp2}K template for the stellar photosphere')
 
         if self.Temp_spot in teffs:
+            
             self.spot_teff_use = self.Temp_spot
-            self.spot_spec = self.read_spec(self.spot_teff_use)
-            print(f'Using {self.star_teff_use}K template for the spot spectrum')
+            self.spot_spec = self.read_spec(self.spot_teff_use, self.logg)
+            print(f'Using {self.spot_teff_use}K template for the spot spectrum')
         else:
             abs_differ = np.abs(self.Temp_spot - teffs)
             _temptab = Table(
@@ -89,8 +97,8 @@ class Star:
             ratio1 = 1 - (diff1/(diff1+diff2))
             ratio2 = 1 - (diff2/(diff1+diff2))
 
-            spec1 = self.read_spec(temp1)
-            spec2 = self.read_spec(temp2)
+            spec1 = self.read_spec(temp1, self.logg)
+            spec2 = self.read_spec(temp2, self.logg)
 
             spec = {'v': spec1['v'], 'f': ratio1*spec1['f']+ratio2*spec2['f']}
             self.spot_spec = spec
@@ -113,8 +121,8 @@ class Star:
         #         self.star_teff_use, self.spot_teff_use)
         #         )
 
-    def read_spec(self, teff):
-        file_star = f'./syn_spec/{self.spec_type}_for_SOAP_LineDepthRatio_{teff}_4.5_0.0.csv'
+    def read_spec(self, teff, logg):
+        file_star = f'./syn_spec/{self.spec_type}_for_SOAP_LineDepthRatio_{teff}_{logg}_0.0.csv'
         t = Table.read(file_star, format='csv')
 
         t_dict = {}
@@ -296,7 +304,7 @@ def get_line_depth(Star, CCFstar_tot, visible_phi):
 
 def calculate_activity_signal_spec(
     nrho, grid, star, psi, 
-    Spec, Spec_active_region, Ccf, Ccf_active_region, 
+    Spec, Spec_active_region,
     active_regions, inst_reso, cpu_use
     ):
     """
@@ -319,26 +327,26 @@ def calculate_activity_signal_spec(
     """
 
     # initiate the quite surface
-    CCFstar_quiet, SPECstar_quiet, quite_surface = stsp.itot(
+    SPECstar_quiet, quite_surface = stsp.itot(
         star.vrot, star.incl, star.limba1, star.limba2, 0., 0., 0., grid, 
-        Spec.rv, Spec.intensity, Spec.v_interval, Spec.n_v, Spec.n,
-        Ccf.rv, Ccf.intensity, Ccf.v_interval, Ccf.n_v, Ccf.n
+        Spec.rv, Spec.intensity, Spec.v_interval, Spec.n_v, Spec.n
         )
-
+    quite_surface_2d = quite_surface.copy()
     # initialization of the variables
     # FLUXstar      = FLUXstar_quiet
     # CCFstar_flux  = CCFstar_quiet
     # CCFstar_bconv = CCFstar_quiet
-    CCFstar_tot   = CCFstar_quiet
+    # CCFstar_tot   = CCFstar_quiet
     SPECstar_tot  = SPECstar_quiet
 
     #Loop over the different active regions
     print('\nCalculate Activate Regions...\n')
-    for active_region in active_regions:
+    for rr, active_region in enumerate(active_regions):
         # active_region.check = 1 if the active region is activated, 0 otherwise
         if not active_region.check: 
             continue 
-        
+            
+        print(f'\nCalculate Active Region {rr+1}')
         # Calculates the position of the spot initialized at the disc center
         xyz = stsp.spot_init(
             active_region.s, active_region.long, active_region.lat, star.incl, nrho
@@ -348,14 +356,12 @@ def calculate_activity_signal_spec(
         # returns the spot's "non-contribution" to the total flux and its
         # "non-contribution" to the ccf, for each phase.
         # Thus the result is to be subtracted to the output of the itot() function.
-        CCFactive_region_tot, SPECactive_region_tot, visible_phi, active_surface_box =\
+        SPECactive_region_tot, visible_phi, active_surface_box =\
                 stsp.spot_scan_npsi(
                     xyz, nrho, psi, len(psi), star.vrot, star.incl, star.limba1, 
                     star.limba2, 0., 0., 0., grid, 
                     Spec.rv, Spec.intensity, Spec_active_region.intensity, 
                     Spec.v_interval, Spec.n_v, Spec.n, 
-                    Ccf.rv, Ccf.intensity, Ccf_active_region.intensity, 
-                    Ccf.v_interval, Ccf.n_v, Ccf.n, 
                     active_region.s, active_region.long, active_region.lat, 
                     active_region.active_region_type, star.Temp, star.Temp_diff_spot, cpu_use
                     )
@@ -370,24 +376,24 @@ def calculate_activity_signal_spec(
         # CCFstar_bconv = CCFstar_bconv-np.array(CCFactive_region_bconv) 
         
         # Calculate the CCF of the star affected by the total effect of active regions
-        CCFstar_tot   = CCFstar_tot-np.array(CCFactive_region_tot)  
-        SPECstar_tot   = SPECstar_tot-np.array(SPECactive_region_tot)  
-        quite_surface_2d = quite_surface - np.array(active_surface_box)
+        # CCFstar_tot   = CCFstar_tot - np.array(CCFactive_region_tot)  
+        SPECstar_tot   = SPECstar_tot - np.array(SPECactive_region_tot)  
+        quite_surface_2d = quite_surface_2d - np.array(active_surface_box)
 
 
     # Calculate where the extrapolated CCF corresponds to the boundaries of the non-extrapolated CCF.
-    istart = (Ccf.n_v-len(Ccf.rv))//2   # ccf.n_v is odd given our definition, like len(ccf.rv), therefore 
-                                        # the difference can be divided by 2. The CCF has been extrapolated 
-                                        # the same way on each boundary, so dividing the difference between 
-                                        # the extrapolated and non extrapolated CCF by 2 gives by how many 
-                                        # points the CCF was extrapolated on each side
-    iend   = istart+len(Ccf.rv)
+    # istart = (Ccf.n_v-len(Ccf.rv))//2   # ccf.n_v is odd given our definition, like len(ccf.rv), therefore 
+    #                                     # the difference can be divided by 2. The CCF has been extrapolated 
+    #                                     # the same way on each boundary, so dividing the difference between 
+    #                                     # the extrapolated and non extrapolated CCF by 2 gives by how many 
+    #                                     # points the CCF was extrapolated on each side
+    # iend   = istart+len(Ccf.rv)
 
     # truncate the extrapolated rotating CCF to the same interval as the non-rotating CCF
     # CCFstar_flux  = CCFstar_flux[:,istart:iend]
     # CCFstar_bconv = CCFstar_bconv[:,istart:iend]
-    CCFstar_tot   = CCFstar_tot[:,istart:iend]
-    CCFstar_quiet = CCFstar_quiet[istart:iend]
+    # CCFstar_tot   = CCFstar_tot[:,istart:iend]
+    # CCFstar_quiet = CCFstar_quiet[istart:iend]
 
     # -- Spec ---
     istart = (Spec.n_v-len(Spec.rv))//2         
@@ -399,8 +405,8 @@ def calculate_activity_signal_spec(
     # Normalization, loop through diff phases
     # CCFstar_flux  = np.array([f/np.max(f) for f in CCFstar_flux], dtype=np.float64)
     # CCFstar_bconv = np.array([f/np.max(f) for f in CCFstar_bconv], dtype=np.float64)
-    CCFstar_tot   = np.array([f/np.percentile(f,95) for f in CCFstar_tot], dtype=np.float64)
-    CCFstar_quiet = CCFstar_quiet/np.percentile(CCFstar_quiet, 95)
+    # CCFstar_tot   = np.array([f/np.percentile(f,95) for f in CCFstar_tot], dtype=np.float64)
+    # CCFstar_quiet = CCFstar_quiet/np.percentile(CCFstar_quiet, 95)
 
     SPECstar_tot   = np.array([f/np.percentile(f,95) for f in SPECstar_tot], dtype=np.float64)
     SPECstar_quiet = SPECstar_quiet/np.percentile(SPECstar_quiet, 95)
@@ -409,11 +415,10 @@ def calculate_activity_signal_spec(
     # given by the "instrument_reso" variable in the "config.cfg" file
     if inst_reso != 0:
 
-        CCFstar_tot, CCFstar_quiet = _inst_broaden(inst_reso, Ccf.rv, CCFstar_tot, CCFstar_quiet)
+        # CCFstar_tot, CCFstar_quiet = _inst_broaden(inst_reso, Ccf.rv, CCFstar_tot, CCFstar_quiet)
         SPECstar_tot, SPECstar_quiet = _inst_broaden(inst_reso, Spec.rv, SPECstar_tot, SPECstar_quiet)
     
-
-    return (visible_phi, CCFstar_tot, CCFstar_quiet, SPECstar_tot, SPECstar_quiet, 
+    return (visible_phi, SPECstar_tot, SPECstar_quiet, 
                 quite_surface, quite_surface_2d)
 
 
@@ -497,7 +502,7 @@ def _cc(CCFstar_tot, vel, tw, tf, visible_phi):
     # drvs_pixels = np.arange(-400, 401)
     # drvs = drvs_pixels * 0.025
 
-    drvs = np.arange(-5, 5, 0.03)
+    drvs = np.arange(-7, 7, 0.03)
     spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
 
     tf =  1-tf
@@ -532,7 +537,7 @@ def cal_ccf_rv(star_tot, Star, visible_phi):
 
     spec_temp = star_tot[np.argmin(np.abs(visible_phi))]
 
-    print('Using Phase {:1.3f} as CCF template...'.format(
+    print('\nUsing Phase {:1.3f} as CCF template...'.format(
         visible_phi[np.argmin(np.abs(visible_phi))]
     ))
 
