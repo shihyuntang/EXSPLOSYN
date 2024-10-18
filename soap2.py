@@ -5,14 +5,17 @@ from numpy import cos, sin
 from numba import njit
 from scipy import signal
 from astropy.table import Table
+import pandas as pd
 
 import starspot as stsp
 import visualization as vis
+import synspecprep as ssp
 
 class Star:
     def __init__(
         self, prot, vrot, incl, limba1, limba2, psi, rad_sun, rad, 
-        Temp, Temp_diff_spot, logg):
+        Temp, Tdiff_spot, Tdiff_faculae, logg, FeH, wvmin, wvmax
+        ):
         """_summary_
 
         Args:
@@ -37,73 +40,129 @@ class Star:
         self.rad_sun        = rad_sun        
         self.rad            = rad            
         self.Temp           = Temp           
-        self.Temp_diff_spot = Temp_diff_spot 
-        self.Temp_spot      = Temp-Temp_diff_spot
-        self.logg      = logg
+        self.Tdiff_spot     = Tdiff_spot 
+        self.Tdiff_faculae  = Tdiff_faculae
+        self.Tspot          = Temp-Tdiff_spot
+        self.Tfaculae       = Temp+Tdiff_faculae
+        self.logg           = logg
+        self.FeH            = FeH
+        self.wvmin          = wvmin
+        self.wvmax          = wvmax
     
-    def find_spec(self, spec_type):
+    def find_spec(self, spec_type, rassine_path):
         self.spec_type = spec_type
 
-        spec_dir = f'./syn_spec'
-        spec_list = os.listdir(spec_dir)
-        spec_list = [i for i in spec_list if (spec_type in i) and ('.pdf' not in i) and (i[0] != '.')]
-        spec_list = [i for i in spec_list if i.split('_')[-2] == str(self.logg)]
+        # spec_dir = f'./syn_spec'
+        # spec_list = os.listdir(spec_dir)
+        # spec_list = [i for i in spec_list if i.endswith('.csv') and i.startswith(spec_type) ]
+        # spec_list = [i for i in spec_list if (spec_type in i) and ('.pdf' not in i) and (i[0] != '.')]
+        # spec_list = [i for i in spec_list if i.split('_')[-2] == str(self.logg)]
         # print('spec_list', spec_list)
-
-        teffs = np.array([ int(t.split('_')[-3]) for t in spec_list ])
+        # teffs = np.array([ int(t.split('_')[-3]) for t in spec_list ])
         # print('teffs', teffs)
         # sys.exit('')
 
-        if self.Temp in teffs:
-            self.star_teff_use = self.Temp
-            self.star_spec = self.read_spec(self.star_teff_use, self.logg)
-            print(f'\n Using {self.star_teff_use}K template for the stellar photosphere')
-        else:
-            abs_differ = np.abs(self.Temp - teffs)
-            _temptab = Table(
-                data=(teffs, abs_differ), 
-                names=['teffs', 'abs_differ']
-                )
-            _temptab.sort('abs_differ')
-            temp1 = _temptab['teffs'][0]; diff1 = _temptab['abs_differ'][0]
-            temp2 = _temptab['teffs'][1]; diff2 = _temptab['abs_differ'][1]
+        if spec_type.lower() == 'phx':
+            out_path = f'{os.getcwd()}/syn_spec/'            
+            temp_list = [self.Temp, self.Tspot, self.Tfaculae]
 
-            ratio1 = 1 - (diff1/(diff1+diff2))
-            ratio2 = 1 - (diff2/(diff1+diff2))
-
-            spec1 = self.read_spec(temp1)
-            spec2 = self.read_spec(temp2)
-
-            spec = {'v': spec1['v'], 'f': ratio1*spec1['f']+ratio2*spec2['f']}
-            self.star_spec = spec
-
-            print(f'\nUsing {ratio1:1.1%} of {temp1}K template and {ratio2:1.1%} of {temp2}K template for the stellar photosphere')
-
-        if self.Temp_spot in teffs:
+            print('\nChecking spectra templates for')
+            print(f'   {temp_list} K\n')
             
-            self.spot_teff_use = self.Temp_spot
-            self.spot_spec = self.read_spec(self.spot_teff_use, self.logg)
-            print(f'Using {self.spot_teff_use}K template for the spot spectrum')
-        else:
-            abs_differ = np.abs(self.Temp_spot - teffs)
-            _temptab = Table(
-                data=(teffs, abs_differ), 
-                names=['teffs', 'abs_differ']
-                )
-            _temptab.sort('abs_differ')
-            temp1 = _temptab['teffs'][0]; diff1 = _temptab['abs_differ'][0]
-            temp2 = _temptab['teffs'][1]; diff2 = _temptab['abs_differ'][1]
+            if self.FeH >= 0:
+                alpha = 0
+            else:
+                sys.exit('\n!!!! Sub solar FeH is not supported yet!!!')
+            
+            for tt, nn in zip(temp_list, ['star', 'spot', 'faculae']):
+                
+                sim_spec_name = f'SimUse_PHX_ACES_spec_{int(tt)}_{self.logg}_{self.FeH}_wv{self.wvmin}_{self.wvmax}.p'
+                sim_spec_path = f'{out_path}{sim_spec_name}'
+                
+                if (tt > 15000) | (tt < 2300) | (tt is None):
+                    if nn=='star':
+                        self.star_spec = None
+                    elif nn=='spot':
+                        self.spot_spec = None
+                    elif nn=='faculae':
+                        self.faculae_spec = None
 
-            ratio1 = 1 - (diff1/(diff1+diff2))
-            ratio2 = 1 - (diff2/(diff1+diff2))
+                if os.path.exists(sim_spec_path):
+                    print('   Already have the spec:', sim_spec_name)
+                    spec = pd.read_pickle(sim_spec_path)
+                    
+                    
+                else:    
+                    ssp.get_phx_spec(
+                        tt, self.logg, self.FeH, alpha, out_path, self.wvmin, 
+                        self.wvmax
+                        )
+                    outname = ssp.flatten_spec(
+                        rassine_path, out_path, tt,self. wvmin, self.wvmax)
+                    ssp.final_spec(outname, sim_spec_path, self.wvmin, self.wvmax)
+                    spec = pd.read_pickle(sim_spec_path)
 
-            spec1 = self.read_spec(temp1, self.logg)
-            spec2 = self.read_spec(temp2, self.logg)
+                spec = {'v': spec['v'].to_numpy(), 'f': spec['f'].to_numpy()}
 
-            spec = {'v': spec1['v'], 'f': ratio1*spec1['f']+ratio2*spec2['f']}
-            self.spot_spec = spec
+                if nn=='star':
+                    self.star_spec = spec
+                elif nn=='spot':
+                    self.spot_spec = spec
+                elif nn=='faculae':
+                    self.faculae_spec = spec
+                
 
-            print(f'Using {ratio1:1.1%} of {temp1}K template and {ratio2:1.1%} of {temp2}K template for the spot spectrum')
+
+        # if self.Temp in teffs:
+        #     self.star_teff_use = self.Temp
+        #     self.star_spec = self.read_spec(self.star_teff_use, self.logg)
+        #     print(f'\n Using {self.star_teff_use}K template for the stellar photosphere')
+        # else:
+        #     abs_differ = np.abs(self.Temp - teffs)
+        #     _temptab = Table(
+        #         data=(teffs, abs_differ), 
+        #         names=['teffs', 'abs_differ']
+        #         )
+        #     _temptab.sort('abs_differ')
+        #     temp1 = _temptab['teffs'][0]; diff1 = _temptab['abs_differ'][0]
+        #     temp2 = _temptab['teffs'][1]; diff2 = _temptab['abs_differ'][1]
+
+        #     ratio1 = 1 - (diff1/(diff1+diff2))
+        #     ratio2 = 1 - (diff2/(diff1+diff2))
+
+        #     spec1 = self.read_spec(temp1, self.logg)
+        #     spec2 = self.read_spec(temp2, self.logg)
+
+        #     spec = {'v': spec1['v'], 'f': ratio1*spec1['f']+ratio2*spec2['f']}
+        #     self.star_spec = spec
+
+        #     print(f'\nUsing {ratio1:1.1%} of {temp1}K template and {ratio2:1.1%} of {temp2}K template for the stellar photosphere')
+
+        # if self.Temp_spot in teffs:
+            
+        #     self.spot_teff_use = self.Temp_spot
+        #     self.spot_spec = self.read_spec(self.spot_teff_use, self.logg)
+        #     print(f'Using {self.spot_teff_use}K template for the spot spectrum')
+        # else:
+        #     abs_differ = np.abs(self.Temp_spot - teffs)
+        #     _temptab = Table(
+        #         data=(teffs, abs_differ), 
+        #         names=['teffs', 'abs_differ']
+        #         )
+        #     _temptab.sort('abs_differ')
+        #     temp1 = _temptab['teffs'][0]; diff1 = _temptab['abs_differ'][0]
+        #     temp2 = _temptab['teffs'][1]; diff2 = _temptab['abs_differ'][1]
+
+        #     ratio1 = 1 - (diff1/(diff1+diff2))
+        #     ratio2 = 1 - (diff2/(diff1+diff2))
+
+        #     spec1 = self.read_spec(temp1, self.logg)
+        #     spec2 = self.read_spec(temp2, self.logg)
+
+        #     spec = {'v': spec1['v'], 'f': ratio1*spec1['f']+ratio2*spec2['f']}
+        #     self.spot_spec = spec
+
+        #     print(f'Using {ratio1:1.1%} of {temp1}K template and {ratio2:1.1%} of {temp2}K template for the spot spectrum')
 
         # # find the two closest temp to use for interpolate 
         # star_teff_use_loc = np.abs(self.Temp - teffs)
@@ -121,15 +180,15 @@ class Star:
         #         self.star_teff_use, self.spot_teff_use)
         #         )
 
-    def read_spec(self, teff, logg):
-        file_star = f'./syn_spec/{self.spec_type}_for_SOAP_LineDepthRatio_{teff}_{logg}_0.0.csv'
-        t = Table.read(file_star, format='csv')
+    # def read_spec(self, teff, logg):
+    #     file_star = f'./syn_spec/{self.spec_type}_for_SOAP_LineDepthRatio_{teff}_{logg}_0.0.csv'
+    #     t = Table.read(file_star, format='csv')
 
-        t_dict = {}
-        # t_dict['w'] = np.array(t['wave[AA]'])
-        t_dict['v'] = np.array(t['vel[kms]'])
-        t_dict['f'] = np.array(t['flux'])
-        return t_dict
+    #     t_dict = {}
+    #     # t_dict['w'] = np.array(t['wave[AA]'])
+    #     t_dict['v'] = np.array(t['vel[kms]'])
+    #     t_dict['f'] = np.array(t['flux'])
+    #     return t_dict
 
 
 
@@ -241,12 +300,15 @@ class Spec:
         self.step       = step            
         self.n          = len(self.rv)   # Number of points of the CCF
 
-        # The CCF has a width of self.width. This CCF has a rotational velocity of 0 because taken in the stellar disk 
-        # center. To consider rotation when simulating the emerging spectrum on the limb of the star 
-        # (velocity different from 0), We have to extrapolate outside of the range [-self.width;self.width]. This is 
-        # done by calculating self.n_v which is the number of point of the CCF required to consider a stellar rotation 
-        # of star.vrot. 
-        # self.n_v must by an odd integer so that we have as many values on the positive side of the CCF than on the 
+        # The CCF has a width of self.width. This CCF has a rotational 
+        # velocity of 0 because taken in the stellar disk center. 
+        # To consider rotation when simulating the emerging spectrum on 
+        # the limb of the star (velocity different from 0). 
+        # We have to extrapolate outside of the range [-self.width;self.width]. 
+        # This is done by calculating self.n_v which is the number of point 
+        # of the CCF required to consider a stellar rotation of star.vrot. 
+        # self.n_v must by an odd integer so that we have as many values on 
+        # the positive side of the CCF than on the 
         # negative one (because 0 is present).
         
         if np.round(((1.1*star.vrot)/self.step)*2)%2 == 0:
@@ -254,10 +316,11 @@ class Spec:
         else:
             self.n_v = int(self.n + round(((1.1*star.vrot)/self.step)*2)+1)
         
-        # self.v_interval gives the difference in radial velocity between the minimum and maximum values of the CCF, once 
-        # the extrapolation is done. 
-        # self.n_v gives the number of points of the extrapolated CCF. (self.n_v-1) gives the number of intervals, which 
-        # is then multiplied by the sampling of the CCF self.step to give self.v_interval
+        # self.v_interval gives the difference in radial velocity between the
+        # minimum and maximum values of the CCF, once the extrapolation is done. 
+        # self.n_v gives the number of points of the extrapolated CCF. 
+        # (self.n_v-1) gives the number of intervals, which is then 
+        # multiplied by the sampling of the CCF self.step to give self.v_interval
         self.v_interval = self.step*(self.n_v-1) / 2.
 
 def compute_bis(RV, CCF):
@@ -363,7 +426,7 @@ def calculate_activity_signal_spec(
                     Spec.rv, Spec.intensity, Spec_active_region.intensity, 
                     Spec.v_interval, Spec.n_v, Spec.n, 
                     active_region.s, active_region.long, active_region.lat, 
-                    active_region.active_region_type, star.Temp, star.Temp_diff_spot, cpu_use
+                    active_region.active_region_type, star.Temp, star.Tdiff_spot, cpu_use
                     )
 
         # Calculate the total flux of the star affected by active regions

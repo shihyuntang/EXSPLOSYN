@@ -1,62 +1,72 @@
 import os, sys, argparse
 import shutil
+import warnings
+warnings.filterwarnings("ignore")
 
 import numpy as np
-from scipy import signal
-import matplotlib.pyplot as plt
-
-import matplotlib as mpl
+# from scipy import signal
+# import matplotlib.pyplot as plts
+# import matplotlib as mpl
 import configparser
-from astropy.table import Table
-from numba import njit
+# from astropy.table import Table
+# from numba import njit
 
 import starspot as stsp
 import soap2 as soap2
 import visualization as vis
 
-from matplotlib.ticker import (MultipleLocator, FormatStrFormatter,
-                               AutoMinorLocator)
-import matplotlib.path as path
-import matplotlib.patches as patches
-
-
 
 if __name__ == '__main__':
-    ############################################################################
-    #                    INITITIALIZATION                    ###################
-    ############################################################################
-
+    # -- INITIALIZATION --
     config = configparser.ConfigParser(inline_comment_prefixes=';')
     # config.read("config_v830tau.cfg")
-    # config.read("config_test1.cfg")
-    config.read("config_citau.cfg")
+    config.read("config_multi_spot_test.cfg")
+    # config.read("config_citau.cfg")
+    RASSINE_PATH = config.get('path','rassine_path')
 
-    GRID        = int(config.get('main','grid' ))
-    NRHO        = int(config.get('main','nrho' ))
-    INST_RESO   = int(config.get('main','instrument_reso' ))
-    CPU         = int(config.get('main','cpu' ))
-    RAD_Sun     = int(config.get('star','radius_sun' ))
-    RAD         = float(config.get('star','radius' )) * RAD_Sun
-    PROT        = float(config.get('star','prot' ))
-    STAR        = soap2.Star(
-                    prot           = PROT,
-                    vrot           = (2.*np.pi*RAD)/(PROT*86400.),
-                    incl           = float(config.get('star','I')),
-                    limba1         = float(config.get('star','limb1')),
-                    limba2         = float(config.get('star','limb2')),
-                    psi            = float(config.get('star','psi')),
-                    rad_sun        = RAD_Sun,
-                    rad            = RAD,
-                    Temp           = int(config.get('star','Tstar')),
-                    Temp_diff_spot = int(config.get('star','Tdiff_spot')),
-                    logg        = float(config.get('star', 'logg' ))
-                    )
+
+    GRID = int(config.get('main','grid' ))
+    NRHO = int(config.get('main','nrho' ))
+    INST_RESO = int(config.get('main','instrument_reso' ))
+    CPU = int(config.get('main','cpu' ))
+    band = str(config.get('main','band' ))
+
+    if band == 'H':
+        line_cen = (1.56310 + 1.56317) / 2 * 1e4
+        wvmin, wvmax = (line_cen-15, line_cen+15)
+        wvmin = int(wvmin)
+        wvmax = int(wvmax)
+    else:
+        sys.exit('Only H band is supported now...')
+
+    RAD_Sun = int(config.get('star','radius_sun' ))
+    RAD = float(config.get('star','radius' )) * RAD_Sun
+    PROT = float(config.get('star','prot' ))
+
+    STAR = soap2.Star(
+        prot = PROT,
+        vrot = (2.*np.pi*RAD)/(PROT*86400.),
+        incl = float(config.get('star','I')),
+        limba1 = float(config.get('star','limb1')),
+        limba2 = float(config.get('star','limb2')),
+        psi = float(config.get('star','psi')),
+        rad_sun = RAD_Sun,
+        rad = RAD,
+        Temp = int(config.get('star','Tstar')),
+        # Tdiff_spot = int(config.get('star','Tdiff_spot')),
+        Tdiff_faculae = int(config.get('star','Tdiff_faculae')),
+        logg = float(config.get('star', 'logg' )),
+        FeH = float(config.get('star', 'FeH' )),
+        wvmin = wvmin,
+        wvmax = wvmax
+        )
+
     STAR.vsini = STAR.vrot * np.sin(np.deg2rad(STAR.incl))
-    STAR.find_spec(config.get('star','syn_type'))
-    
-    ######################################################################
-    ###                    Read syn spectra/ccf                    #######
-    ######################################################################
+    STAR.find_spec(config.get('star','syn_type'), RASSINE_PATH)
+
+    # -- Read syn spectra/ccf --
+    # For spectra, instead of wavelength, we transfer it into velocity 
+    # center from selected lines, e.g., the OH lines in H band.
 
     rv_spec = STAR.star_spec['v']
     rv_spec_magn_region =  STAR.spot_spec['v']
@@ -114,20 +124,20 @@ if __name__ == '__main__':
     ######################################################################
 
     active_region1    = soap2.Active_region(
-                    check              = int(config.get('active_regions','check1')),
-                    long               = float(config.get('active_regions','long1')),
-                    lat                = float(config.get('active_regions','lat1')),
-                    size               = float(config.get('active_regions','size1')),
-                    active_region_type = int(config.get('active_regions','act_reg_type1'))
-                    )
+        check              = int(config.get('active_regions','check1')),
+        long               = float(config.get('active_regions','long1')),
+        lat                = float(config.get('active_regions','lat1')),
+        size               = float(config.get('active_regions','size1')),
+        active_region_type = int(config.get('active_regions','act_reg_type1'))
+        )
 
     active_region2    = soap2.Active_region(
-                    check              = int(config.get('active_regions','check2')),
-                    long               = float(config.get('active_regions','long2')),
-                    lat                = float(config.get('active_regions','lat2')),
-                    size               = float(config.get('active_regions','size2')),
-                    active_region_type = int(config.get('active_regions','act_reg_type2'))
-                    )
+        check              = int(config.get('active_regions','check2')),
+        long               = float(config.get('active_regions','long2')),
+        lat                = float(config.get('active_regions','lat2')),
+        size               = float(config.get('active_regions','size2')),
+        active_region_type = int(config.get('active_regions','act_reg_type2'))
+        )
 
     # active_region3    = soap2.Active_region(
     #             check              = int(config.get('active_regions','check3')),
@@ -144,14 +154,14 @@ if __name__ == '__main__':
 
     if len(ACTIVE_REGIONS) == 1:
         outdir = "./outputs/OHFeLDR_{}_P={:.2f}_i={:.2f}_T1={:1.0f}_DelT={:1.0f}_logg={:1.1f}_lon={:.1f}_lat={:.1f}_size={:.4f}" .format(
-            STAR.spec_type, STAR.prot,STAR.incl,STAR.Temp,STAR.Temp_diff_spot,STAR.logg,
+            STAR.spec_type, STAR.prot,STAR.incl,STAR.Temp,STAR.Tdiff_spot,STAR.logg,
             active_region1.long,
             active_region1.lat,
             active_region1.s
             )
     elif len(ACTIVE_REGIONS) == 2:
         outdir = "./outputs/OHFeLineDepth_{}P={:.2f}_i={:.2f}_tefT1f1={:1.0f}DelT={:1.0f}_logg={:1.1f}_lon=({:.1f},{:.1f})_lat=({:.1f},{:.1f})_size=({:.4f},{:.4f})" .format(
-            STAR.spec_type, STAR.prot,STAR.incl,STAR.Temp,STAR.Temp_diff_spot,STAR.logg,
+            STAR.spec_type, STAR.prot,STAR.incl,STAR.Temp,STAR.Tdiff_spot,STAR.logg,
             active_region1.long,active_region2.long,
             active_region1.lat,active_region2.lat,
             active_region1.s,active_region2.s
@@ -174,7 +184,7 @@ if __name__ == '__main__':
     active_region1.calc_maps(STAR, GRID, NRHO)
     # active_region2.calc_maps(STAR, GRID, NRHO)
 
-    # Phase at which the signal we be generated
+    # Phase at which the signal will be generated
     phase_step  = float(config.get('output','ph_step'))
     phase_in    = config.get('output','ph_in')
 
@@ -227,7 +237,7 @@ if __name__ == '__main__':
               '{0:12} = {1:<8d}, {2:18} = {3:<8d}\n'.format(    'Inst. res.', INST_RESO,    'Rsun [km]', RAD_Sun) + \
               '{0:12} = {1:<8.2f}, {2:18} = {3:<8.2f}\n'.format('St Prot [d]', STAR.prot,   'St radius [Rsun]', STAR.rad/RAD_Sun) + \
               '{0:12} = {1:<8.1f}, {2:18} = {3:<8.2f}\n'.format('St incl', STAR.incl,       'St vsini [km/s]', STAR.vsini) + \
-              '{0:12} = {1:<8d}, {2:18} = {3:<8d}\n'.format(    'St Teff [K]', STAR.Temp,   'Spot Diff Teff [K]', STAR.Temp_diff_spot) + \
+              '{0:12} = {1:<8d}, {2:18} = {3:<8d}\n'.format(    'St Teff [K]', STAR.Temp,   'Spot Diff Teff [K]', STAR.Tdiff_spot) + \
               '{0:12} = {1:<8.3f}, {2:18} = {3:<8.3f}\n'.format(  'LimDark lin', STAR.limba1, 'LimDark quad', STAR.limba2) + \
               '{0:12} = {1:<8}, {2:5} = {3:<4.2f}, {4:5} = {5:<4.2f}'.format( 'Syn template', STAR.spec_type, 'logg', STAR.logg, '[Fe/H]', 0.0)
 

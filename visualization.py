@@ -294,7 +294,8 @@ def spot_view_pel(
     # f.savefig(
     #     f'{outdir}/phase{visible_phi[j]:1.3f}.png', format='png', bbox_inches='tight')
     f.savefig(
-        f'{outdir.split("/")[1]}/phase{visible_phi[j]:1.3f}.png', format='png', bbox_inches='tight')
+        f'{outdir.split("/")[1]}/phase{visible_phi[j]:1.3f}.png', 
+        format='png', bbox_inches='tight')
     plt.close()
 
 def spot_view(
@@ -319,18 +320,18 @@ def spot_view(
     
     pqdm(np.arange(len(visible_phi)), func, n_jobs=cpu_use)
    
-    status, _ = subprocess.getstatusoutput('convert')
+    status, _ = subprocess.getstatusoutput('magick')
     if status <= 1:
         print('\nNow making .gif\n')
         working_dir = os.getcwd()
         os.chdir(f'{outdir.split("/")[1]}')
-        os.system('convert -delay 20 +dither $(ls *.png | sort -k 1.6g) temp.gif')
-        os.system('convert temp.gif \( +clone -set delay 300 \) +swap +delete temp.gif')
+        os.system('magick -delay 20 +dither $(ls *.png | sort -k 1.6g) temp.gif')
+        os.system('magick temp.gif \( +clone -set delay 300 \) +swap +delete temp.gif')
         os.system(f'mv temp.gif "{outdir.split("/")[-1]}.gif"')
         os.system(f'rm *.png')
         os.chdir(working_dir)
     else:
-        print('\n"convert" function not found, skip making .gif\n')
+        print('\n"magick" function not found, skip making .gif\n')
 
 
 
