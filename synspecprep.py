@@ -84,7 +84,9 @@ PHX_FTP_prefix = 'ftp://phoenix.astro.physik.uni-goettingen.de/HiResFITS/PHOENIX
 PHX_FTP_wave_prefix = 'ftp://phoenix.astro.physik.uni-goettingen.de/HiResFITS/'
 WAVE_FILE = 'WAVE_PHOENIX-ACES-AGSS-COND-2011.fits'
 
-def get_phx_spec(temp, grav, FeH, alpha, out_path, wvmin, wvmax):
+def get_phx_spec(temp, grav, FeH, alpha, out_path):
+
+    wvmin, wvmax = (5000, 30000)
 
     index_logg = np.argmin(np.abs(LOGG_ARRAY - grav))
     index_FeH = np.argmin(np.abs(FeH_ARRAY - FeH))
@@ -133,8 +135,8 @@ def get_phx_spec(temp, grav, FeH, alpha, out_path, wvmin, wvmax):
     wave_data_vac = fits.getdata(out_path+WAVE_FILE)
     
     waveIndex = (wave_data_vac >= (wvmin-500)) & (wave_data_vac <= (wvmax+500))
+    
     wavelength_vac = wave_data_vac[waveIndex]
-
     spec_low_vac = fits.getdata(out_path+name_low)[waveIndex]
     spec_high_vac = fits.getdata(out_path+name_high)[waveIndex]
 
@@ -144,26 +146,41 @@ def get_phx_spec(temp, grav, FeH, alpha, out_path, wvmin, wvmax):
     # spec_low_air = spec_low[waveIndex_new]
     # spec_high_air = spec_high[waveIndex_new]
     
-    flux_temp = np.zeros(wavelength_vac.size)
+    # flux_temp = np.zeros(wavelength_vac.size)
+    # for i in np.arange(wavelength_vac.size):
+    #     flux_temp[i] = spec_low_vac[i] + ( (temp - temp_low)/(temp_high - temp_low) )*(spec_high_vac[i] - spec_low_vac[i])
+    
+    flux_temp = spec_low_vac + ( (temp - temp_low)/(temp_high - temp_low) )*(spec_high_vac - spec_low_vac)
 
-    for i in np.arange(wavelength_vac.size):
-        flux_temp[i] = spec_low_vac[i] + ( (temp - temp_low)/(temp_high - temp_low) )*(spec_high_vac[i] - spec_low_vac[i])
-
-    data_name = out_path + f'Phoenix_ACES_spec_T{int(temp)}_wv{wvmin}_{wvmax}.p'
+    integrated_flux = np.trapz(flux_temp, wavelength_vac)
+    data_name = out_path + f'PHX_ACES_spec_{int(temp)}_{grav}_{FeH}_wv{wvmin}_{wvmax}.p'
     spec_df = pd.DataFrame({'wave':wavelength_vac,'flux':flux_temp})
     spec_df.to_pickle(data_name)
 
-def flatten_spec(rassine_path, out_path, temp, wvmin, wvmax):
+    ########################################################
+    # f, ax = plt.subplots(1, 1, figsize=(6, 3), facecolor='white', dpi=200)
+    # ax.plot(wavelength_vac, flux_temp, '-', lw=1)
+    # # f.savefig(out_path+f'RASSINE_figs/PHX_ACES_spec_{int(temp)}_{grav}_{FeH}_wv{wvmin}_{wvmax}.png', dpi=200)
+    # # ax.set_xscale('log')
+    # plt.show()
+
+
+def flatten_spec(rassine_path, out_path, temp, grav, FeH, wvmin, wvmax):
+    outname = f'{out_path}RASSINE_PHX_ACES_spec_{int(temp)}_{grav}_{FeH}_wv5000_30000.p'
+
+    if os.path.exists(outname):
+        # print('Already have the spec:', outname)
+        return outname
+
     # cmds = 'python3 '+rassine_path+'Rassine.py '+out_path+'New_Phoenix_'+str(int(temp))+'.p '+out_path+' '+rassine_path
-    cmds = f'python3 {rassine_path}Rassine.py {out_path}Phoenix_ACES_spec_T{int(temp)}_wv{wvmin}_{wvmax}.p {out_path} {rassine_path}'
+    cmds = f'python3 {rassine_path}Rassine.py {out_path}PHX_ACES_spec_{int(temp)}_{grav}_{FeH}_wv5000_30000.p {out_path} {rassine_path}'
     print('\nUse Rassine to flatten the spectrum...\n')
     print(f'Running > {cmds}\n')
     os.system(cmds)
     # remove the original file
-    os.system(f'rm {out_path}Phoenix_ACES_spec_T{int(temp)}_wv{wvmin}_{wvmax}.p')
+    # os.system(f'rm {out_path}PHX_ACES_spec_{int(temp)}_{grav}_wv{wvmin}_{wvmax}.p')
 
     # only save wave, flux, and continuum_cubic
-    outname = f'{out_path}RASSINE_Phoenix_ACES_spec_T{int(temp)}_wv{wvmin}_{wvmax}.p'
     rassine_result = pd.read_pickle(outname)
 
     rassine_clean = pd.DataFrame(
@@ -175,10 +192,10 @@ def flatten_spec(rassine_path, out_path, temp, wvmin, wvmax):
     return outname
 
 
-def final_spec(outname, sim_spec_path, wvmin, wvmax):
+def final_spec(flatt_spec_dir, sim_spec_path, wvmin, wvmax):
     # -----------------------
     # prep for SOAP3 use syn spec
-    rassine_result = pd.read_pickle(outname)
+    rassine_result = pd.read_pickle(flatt_spec_dir)
 
     wave = np.array(rassine_result['wave'])
     flux = np.array(rassine_result['flux']/rassine_result['continuum_cubic'])
@@ -204,23 +221,45 @@ def final_spec(outname, sim_spec_path, wvmin, wvmax):
     f_new = interpolate.splev(v_new, tck, der=0)
 
     simulation_spec = pd.DataFrame({'v':v_new,'f':f_new})
+
     simulation_spec.to_pickle(sim_spec_path)
-    return simulation_spec
+    
+    ########################################################
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(6, 4), facecolor='white', dpi=200)
+    
+    ax1.plot(w, f, '-', lw=1)
+    ax2.plot(v_new, f_new, '-', lw=1)
+    
+    ax1.set_xlabel('Wavelength (AA)', fontsize='small')
+    ax2.set_xlabel('Velocity (km/s)', fontsize='small')
+    ax1.set_ylabel('Flux', fontsize='small')
+    ax2.set_ylabel('Flux', fontsize='small')
+
+    ax1.set_ylim(0, 1.1)
+    ax2.set_ylim(0, 1.1)
+    fig.savefig(sim_spec_path.replace('.p', '_output.png'))    
+    # plt.show()
+
+    # return simulation_spec
 
 
 if __name__ == '__main__':
-    grav, wvmin, wvmax, FeH, alpha = 4.5, 15600, 15660, 0.1, 0.0
-    temp = 4321
+    # grav, wvmin, wvmax, FeH, alpha = 4.5, 15600, 15660, 0.1, 0.0
+    grav, wvmin, wvmax, FeH, alpha = 4.5, 5000, 30000, 0.0, 0.0
+    temps = [2500, 3000, 3500, 4000, 5000, 6500]
+    # temps = [3000]
     
     out_path = f'{os.getcwd()}/syn_spec/'
     rassine_path = './external/Rassine_public/'
 
     print('\nChecking spectra templates for')
-    print(f'   {temp} K\n')
+    for temp in temps:
+        
+        print(f'   {temp} K\n')
+        get_phx_spec(temp, grav, FeH, alpha, out_path)
+        flatten_spec(rassine_path, out_path, temp, grav, FeH, wvmin, wvmax)
 
-    get_phx_spec(temp, grav, FeH, alpha, out_path)
-    flatten_spec(rassine_path, out_path, temp)
-
-    # print('\n Phoenix spectra are ready for use.')
+        # print('\n Phoenix spectra are ready for use.')
 
 

@@ -196,7 +196,7 @@ def map_add_grid(axins, incl, radius, phase):
 def spot_view_pel(
     Star, grid, visible_phi, SPECstar_tot, ccf_rv_shift, quite_surface_2d, 
     outdir, depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, 
-    depth_l_oh0, text1, text2, j
+    depth_l_oh0, text1, text2, band, j
     ):
     f = plt.figure(figsize=(7, 3.5))
 
@@ -222,25 +222,27 @@ def spot_view_pel(
         0.5, -0.1, f'Phase {visible_phi[j]:.3f}', va='center', ha='center', size='small',
         transform=ax1.transAxes)
     
-    ax2.plot(Star.star_spec['v'], SPECstar_tot[j], '-k', lw=1)
-    ax2.plot(
-        [depth_l_fe1[j], depth_l_fe2[j], depth_l_oh0[j]],
-        (np.array([depth_d_fe1[j], depth_d_fe2[j], depth_d_oh0[j]])-1)/-1,
-        's', ms=.6, mew=.6, color='tab:grey')
+    ax2.plot(Star.star_spec[f'{band}_v'], SPECstar_tot[j], '-k', lw=1)
+    # ax2.plot(
+    #     [depth_l_fe1[j], depth_l_fe2[j], depth_l_oh0[j]],
+    #     (np.array([depth_d_fe1[j], depth_d_fe2[j], depth_d_oh0[j]])-1)/-1,
+    #     's', ms=.6, mew=.6, color='tab:grey')
 
     ax2.set_ylim(np.min(SPECstar_tot)-0.05, 1.05)
-    ax2.set_xlim(-250, 250)
+    # ax2.set_xlim(-250, 250)
+    ax2.set_xlim(Star.star_spec[f'{band}_v'][0], Star.star_spec[f'{band}_v'][-1])
     ax2.set_xlabel(r'Velocity [km s$^{-1}$]',  size='small')
     ax2.set_ylabel(f'Normalized Flux',  size='small')
+    
+    if 'OH' in band:
+        oh_line = np.array(depth_d_oh0)
+        fe_line = (np.array(depth_d_fe1) + np.array(depth_d_fe2)) / 2
+        line_ratio = oh_line/fe_line
 
-    oh_line = np.array(depth_d_oh0)
-    fe_line = (np.array(depth_d_fe1) + np.array(depth_d_fe2)) / 2
-    line_ratio = oh_line/fe_line
+        ax3.plot(visible_phi[:j], line_ratio[:j], '-o', c='tab:grey', ms=2, mew=2)
+        ax3.plot(visible_phi[j], line_ratio[j], 'o', c='k', ms=2, mew=2)
 
-    ax3.plot(visible_phi[:j], line_ratio[:j], '-o', c='tab:grey', ms=2, mew=2)
-    ax3.plot(visible_phi[j], line_ratio[j], 'o', c='k', ms=2, mew=2)
-
-    ax3.set_ylim(np.min(line_ratio)-0.1, np.max(line_ratio)+0.1)
+        ax3.set_ylim(np.min(line_ratio)-0.1, np.max(line_ratio)+0.1)
     ax3.set_xlim(-0.3, 1.3)
     ax3.set_xlabel(r'Phase',  size='small')
     ax3.set_ylabel('Line depth ratio (OH/Fe)',  size='small')
@@ -294,14 +296,14 @@ def spot_view_pel(
     # f.savefig(
     #     f'{outdir}/phase{visible_phi[j]:1.3f}.png', format='png', bbox_inches='tight')
     f.savefig(
-        f'{outdir.split("/")[1]}/phase{visible_phi[j]:1.3f}.png', 
+        f'{outdir.split("/")[1]}/phase{visible_phi[j]:1.3f}_{band}.png', 
         format='png', bbox_inches='tight')
     plt.close()
 
 def spot_view(
     Star, grid, visible_phi, SPECstar_tot, ccf_rv_shift, quite_surface_2d, 
     outdir, cpu_use, depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, 
-    depth_l_fe2, depth_l_oh0, text1, text2
+    depth_l_fe2, depth_l_oh0, text1, text2, band
     ):
 
     # ------------------------------------------
@@ -310,13 +312,13 @@ def spot_view(
     func = partial(
         spot_view_pel, Star, grid, visible_phi, 
         SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, depth_d_fe1, depth_d_fe2, 
-        depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2
+        depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2, band
         )
     
     # for ii in np.arange(len(visible_phi)):
     #     spot_view_pel(Star, grid, visible_phi, 
     #     SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, depth_d_fe1, depth_d_fe2, 
-    #     depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2, ii)
+    #     depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2, band, ii)
     
     pqdm(np.arange(len(visible_phi)), func, n_jobs=cpu_use)
    
@@ -327,7 +329,7 @@ def spot_view(
         os.chdir(f'{outdir.split("/")[1]}')
         os.system('magick -delay 20 +dither $(ls *.png | sort -k 1.6g) temp.gif')
         os.system('magick temp.gif \( +clone -set delay 300 \) +swap +delete temp.gif')
-        os.system(f'mv temp.gif "{outdir.split("/")[-1]}.gif"')
+        os.system(f'mv temp.gif "{outdir.split("/")[-1]}_{band}.gif"')
         os.system(f'rm *.png')
         os.chdir(working_dir)
     else:

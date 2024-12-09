@@ -1,5 +1,5 @@
 """
-This .py is a modification of the origian starspot.c 
+This .py is a modification of the original starspot.c 
 from the SOAP2 software
 
 by Shih-Yun Tang 2022/09/04
@@ -457,8 +457,10 @@ def spot_scan(
 
     # f_spot_ccf_tot = np.zeros(n_v_ccf, dtype=np.float64)
     f_spot_spec_tot = np.zeros(n_v_spec, dtype=np.float64)
+    f_photo_duplicated = np.zeros(n_v_spec, dtype=np.float64)
 
     active_surface = np.zeros((grid, grid), dtype=np.float64)
+    quite_surface_duplicate = np.zeros((grid, grid), dtype=np.float64)
 
     # the wavelength of the Kitt peak spectrum goes from 3921.2441+6665.5789, the mean being 5293.4115
     # IGRINS H band OH line center 15631.3246 A
@@ -487,7 +489,9 @@ def spot_scan(
                 # if inside the active region when scanning the grid
                 if xiyizi[0]**2 >= (1.-s*s):
 
-                    f_star_once = np.zeros(n_v_spec, dtype=np.float64)
+                    flux_spot_once = np.zeros(n_v_spec, dtype=np.float64)
+                    flux_quite_once = np.zeros(n_v_spec, dtype=np.float64)
+                    
                     # x^2 >= 1-sspot_scan_npsi^2, which means that you are inside the active region      
                     
                     # limb-darkening
@@ -574,30 +578,62 @@ def spot_scan(
                     # difference in number of step between the CCF without any rotation and the one with rotation
                     diff_SPEC_non_v_and_v = (n_v_spec - n_spec) / 2.
 
+                    # for j in range(int(diff_SPEC_non_v_and_v+n_v_shifted_quotient)):
+                    #     f_spot_spec_tot[j]   += intensity_spec_shift[0]*limb*(1 - intensity)  # combined effect
+                    #     f_star_once[j]   += intensity_spec_shift[0]*limb*(1 - intensity)  # combined effect
+                    # for j in range(
+                    #     int(diff_SPEC_non_v_and_v+n_v_shifted_quotient),
+                    #     int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient))
+                    #     ):
+                    #     f_spot_spec_tot[j] += \
+                    #         intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb \
+                    #             - intensity * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
+                    #     f_star_once[j] += \
+                    #         intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb \
+                    #             - intensity * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
+                    
+                    # for j in range(
+                    #     int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient)),
+                    #     n_v_spec
+                    #     ):      
+                    #     f_spot_spec_tot[j]   += intensity_spec_shift[n_spec-1]*limb * (1-intensity)
+                    #     f_star_once[j]   += intensity_spec_shift[n_spec-1]*limb * (1-intensity)
+
                     for j in range(int(diff_SPEC_non_v_and_v+n_v_shifted_quotient)):
-                        f_spot_spec_tot[j]   += intensity_spec_shift[0]*limb*(1 - intensity)  # combined effect
-                        f_star_once[j]   += intensity_spec_shift[0]*limb*(1 - intensity)  # combined effect
+                        f_spot_spec_tot[j] += intensity_spec_spot_shift[0]*limb*(intensity)  # combined effect
+                        flux_spot_once[j] += intensity_spec_spot_shift[0]*limb*(intensity)  # combined effect
+                        
+                        f_photo_duplicated[j] += intensity_spec_shift[0]*limb*(1)  # combined effect
+                        flux_quite_once[j] += intensity_spec_shift[0]*limb*(1)  # combined effect
+               
                     for j in range(
                         int(diff_SPEC_non_v_and_v+n_v_shifted_quotient),
                         int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient))
-                        ):
+                        ):                   
                         f_spot_spec_tot[j] += \
-                            intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb \
-                                - intensity * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
-                        f_star_once[j] += \
-                            intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb \
-                                - intensity * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
-                    
+                            intensity * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
+                        flux_spot_once[j] += \
+                             intensity * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
+                        
+                        f_photo_duplicated[j] += \
+                            (1) * intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb  # combined effect
+                        flux_quite_once[j] += \
+                            (1) * intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb  # combined effect
+
                     for j in range(
                         int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient)),
                         n_v_spec
                         ):      
-                        f_spot_spec_tot[j]   += intensity_spec_shift[n_spec-1]*limb * (1-intensity)
-                        f_star_once[j]   += intensity_spec_shift[n_spec-1]*limb * (1-intensity)
-                    
-                    active_surface[iz][iy] = np.sum(f_star_once)
+                        f_spot_spec_tot[j]   += intensity_spec_spot_shift[n_spec-1]*limb * (intensity)
+                        flux_spot_once[j]   += intensity_spec_spot_shift[n_spec-1]*limb * (intensity)
 
-    return f_spot_spec_tot, active_surface
+                        f_photo_duplicated[j]   += intensity_spec_shift[n_spec-1]*limb * (1)
+                        flux_quite_once[j]   += intensity_spec_shift[n_spec-1]*limb * (1)
+                                                                
+                    active_surface[iz][iy] = np.sum(flux_spot_once)
+                    quite_surface_duplicate[iz][iy] = np.sum(flux_quite_once)
+
+    return f_spot_spec_tot, f_photo_duplicated, active_surface, quite_surface_duplicate
 
 def spot_scan_npsi_pal(
     xyz, inclination, nrho, psi, grid, v, limba1, limba2, 
@@ -610,7 +646,7 @@ def spot_scan_npsi_pal(
     visual, iminy, iminz, imaxy, imaxz = spot_area(xyz2, nrho, grid)
     
     if visual==1:
-        f_spec_spot_tot, active_surface =\
+        f_spec_spot_tot, f_photo_duplicated, active_surface, quite_surface_duplicate =\
             spot_scan(
                 v, inclination, limba1, limba2, modif_bis_quad, 
                 modif_bis_lin, modif_bis_cte, grid, 
@@ -623,38 +659,40 @@ def spot_scan_npsi_pal(
     else:
         # f_ccf_spot_tot = np.zeros(n_v_ccf, dtype=np.float64)
         f_spec_spot_tot = np.zeros(n_v_spec, dtype=np.float64)
+        f_photo_duplicated = np.zeros(n_v_spec, dtype=np.float64)
         active_surface = np.zeros((grid, grid), dtype=np.float64)
+        quite_surface_duplicate = np.zeros((grid, grid), dtype=np.float64)
 
-    return f_spec_spot_tot, psi[ipsi], active_surface
+    return f_spec_spot_tot, f_photo_duplicated, psi[ipsi], active_surface, quite_surface_duplicate
 
-def _get_intensity_ratio(T_star, T_diff_spot):
-    # IGRINS H band OH line center 15631.3246 A
-    # query phx syn model and intergral \pm 0.02 
-    # micron reigon's flux from the OH line
+# def _get_intensity_ratio(T_star, T_diff_spot):
+#     # IGRINS H band OH line center 15631.3246 A
+#     # query phx syn model and intergral \pm 0.02 
+#     # micron reigon's flux from the OH line
     
-    use_wave_center_m = 15631.3246e-10 #m
-    use_wave_center_mu = 15631.3246e-10*1e6 #mu
-    use_wave_range_mu = [use_wave_center_mu-0.02, use_wave_center_mu+0.02]
+#     use_wave_center_m = 15631.3246e-10 #m
+#     use_wave_center_mu = 15631.3246e-10*1e6 #mu
+#     use_wave_range_mu = [use_wave_center_mu-0.02, use_wave_center_mu+0.02]
 
-    # --- for photosphere (star) ---
-    sp = pysynphot.Icat('phoenix', T_star, 0.0, 4.0)
-    sp.convert('um')
+#     # --- for photosphere (star) ---
+#     sp = pysynphot.Icat('phoenix', T_star, 0.0, 4.0)
+#     sp.convert('um')
     
-    inter_range = (sp.wave>=use_wave_range_mu[0]) & (sp.wave<=use_wave_range_mu[1])
-    inter_wave = sp.wave[inter_range]
-    inter_flux = sp.flux[inter_range]
-    phx_star_flux = np.trapz(inter_flux, inter_wave)
+#     inter_range = (sp.wave>=use_wave_range_mu[0]) & (sp.wave<=use_wave_range_mu[1])
+#     inter_wave = sp.wave[inter_range]
+#     inter_flux = sp.flux[inter_range]
+#     phx_star_flux = np.trapz(inter_flux, inter_wave)
 
-    # --- for spot ---
-    sp = pysynphot.Icat('phoenix', T_star-T_diff_spot, 0.0, 4.0)
-    sp.convert('um')
+#     # --- for spot ---
+#     sp = pysynphot.Icat('phoenix', T_star-T_diff_spot, 0.0, 4.0)
+#     sp.convert('um')
     
-    inter_range = (sp.wave>=use_wave_range_mu[0]) & (sp.wave<=use_wave_range_mu[1])
-    inter_wave = sp.wave[inter_range]
-    inter_flux = sp.flux[inter_range]
-    phx_spot_flux = np.trapz(inter_flux, inter_wave)
+#     inter_range = (sp.wave>=use_wave_range_mu[0]) & (sp.wave<=use_wave_range_mu[1])
+#     inter_wave = sp.wave[inter_range]
+#     inter_flux = sp.flux[inter_range]
+#     phx_spot_flux = np.trapz(inter_flux, inter_wave)
 
-    return phx_spot_flux/phx_star_flux
+#     return phx_spot_flux/phx_star_flux
 
 
 
@@ -662,7 +700,7 @@ def spot_scan_npsi(
     xyz, nrho, psi, npsi, v, inclination, limba1, limba2, modif_bis_quad, 
     modif_bis_lin, modif_bis_cte, grid, 
     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
-    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, cpu_use
+    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, cpu_use, int_ratio
     ):
     """Scans the yz-area where the spot is for different phases (psi) and        
     returns the spot's "non-contribution" to the total flux and its           
@@ -672,17 +710,19 @@ def spot_scan_npsi(
 
     f_ccf_spot_tot_box = []
     f_spec_spot_tot_box = []
+    f_photo_duplicated_box = []
     visible_phi_box = []
     active_surface_box = []
+    quite_surface_duplicated_box = []
 
-    intensity = _get_intensity_ratio(T_star, T_diff_spot)
+    # intensity = _get_intensity_ratio(T_star, T_diff_spot)
 
     func = partial(
         spot_scan_npsi_pal, 
         xyz, inclination, nrho, psi, grid, v, limba1, limba2, 
         modif_bis_quad, modif_bis_lin, modif_bis_cte, 
         vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
-        s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, intensity
+        s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, int_ratio
         )
 
     outs = pqdm(np.arange(npsi), func, n_jobs=cpu_use)
@@ -692,10 +732,12 @@ def spot_scan_npsi(
 
         # f_ccf_spot_tot_box.append(outsbox[0])
         f_spec_spot_tot_box.append(outsbox[0])
-        visible_phi_box.append(outsbox[1])
-        active_surface_box.append(outsbox[2])
+        f_photo_duplicated_box.append(outsbox[1])
+        visible_phi_box.append(outsbox[2])
+        active_surface_box.append(outsbox[3])
+        quite_surface_duplicated_box.append(outsbox[4])
 
-    return f_spec_spot_tot_box, visible_phi_box, active_surface_box
+    return f_spec_spot_tot_box, f_photo_duplicated_box, visible_phi_box, active_surface_box, quite_surface_duplicated_box
 
 
     
