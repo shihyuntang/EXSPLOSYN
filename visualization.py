@@ -245,7 +245,8 @@ def spot_view_pel(
         ax3.set_ylim(np.min(line_ratio)-0.1, np.max(line_ratio)+0.1)
     ax3.set_xlim(-0.3, 1.3)
     ax3.set_xlabel(r'Phase',  size='small')
-    ax3.set_ylabel('Line depth ratio (OH/Fe)',  size='small')
+    # ax3.set_ylabel('Line depth ratio (OH/Fe)',  size='small')
+    ax3.set_ylabel('Equivalent Width Ratio  (OH/Fe)',  size='small')
 
 # --- ccf rv from normal soap2 procedure ---
     ax3right = ax3.twinx()
@@ -263,8 +264,9 @@ def spot_view_pel(
     #     c='tab:orange', ms=2, mew=2
     #     )
     
-
-    ax3right.set_ylim(np.min(ccf_rv_shift)-1, np.max(ccf_rv_shift)+1)
+    rv_std = np.std(ccf_rv_shift)
+    ax3right.set_ylim(
+        np.min(ccf_rv_shift)-3*rv_std, np.max(ccf_rv_shift)+3*rv_std)
     ax3right.set_ylabel(
         r'Spot induced RV [km s$^{-1}$]', size='small', color='tab:blue', 
         rotation=270, labelpad=10

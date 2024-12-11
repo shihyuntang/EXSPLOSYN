@@ -13,7 +13,6 @@ syn_spec
 *.exe
 *.o
 *.so
-*.cfg
 *.so
 *.pyc
 *.DS_Store

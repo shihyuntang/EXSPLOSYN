@@ -9,9 +9,9 @@ from functools import partial
 import numpy as np
 from numpy import cos, sin
 from numba import njit
-from scipy import signal
+# from scipy import signal
 from pqdm.processes import pqdm
-import pysynphot as pysynphot
+# import pysynphot as pysynphot
 
 import visualization as vis
 
@@ -19,35 +19,50 @@ import visualization as vis
 @njit
 def spot_init(s, longitude, latitude, inclination, nrho):
     """Calculate the coordinates (x,y,z) of points of the active region's 
-    circumference
+    circumference. Position of the spot initialized at the disc center
+     (star rotates around the z axis) 
 
     Args:
         s (float): spot radius [Rstar]
         longitude (float): spot longitude [deg]
         latitude (float): spot latitude [deg]
         inclination (float): star inclination angl [deg] 
+            i = 0 (pole-on); = 90 (edge-on)
         nrho (int): resolution for the spot's circumference
 
     Returns:
         _type_: _description_
     """
-    longitude   *= np.pi/180.
-    latitude    *= np.pi/180.
-    inclination *= np.pi/180.
 
-    # A circular active region has a resolution given by nrho, which implies that we
-    # will have a point on the disc circumference every 2*pi/(nrho-1). -1 because
-    # there is (nrho-1) intervals
-    rho_step = 2.*np.pi/(nrho-1)
+    # deg -> rad
+    longitude   *= np.pi/180
+    latitude    *= np.pi/180
+    inclination *= np.pi/180
 
-    rho = [-np.pi + j*rho_step for j in range(nrho)] # rho goes from -pi to pi
+    # Here, 
+    # xyz: real position of the spot on the stellar disc
+    # xyz2: position of the spot when it is on the disc center
+
+    # A circular active region has a resolution given by nrho, implies that we
+    # will have a point on the disc circumference every 2*pi/(nrho-1). 
+    # The -1 is because there is (nrho-1) intervals
+
+    # rho_step = 2*np.pi/(nrho-1)
+    # rho = [-np.pi + j*rho_step for j in range(nrho)] # rho goes from -pi to pi
     
-    xyz2 = np.ones((3, nrho), dtype=np.float64)
-    for j in range(nrho):
-        # see Boisse+2012 fig. 1 for coord. setup
-        xyz2[0][j] = np.sqrt(1-s*s)   # x=sqrt(r^2-s^2), where r==1
-        xyz2[1][j] = s*cos(rho[j]) # projection of the circumference on the y axis
-        xyz2[2][j] = s*sin(rho[j]) # projection of the circumference on the x axis
+    # xyz2 = np.ones((3, nrho), dtype=np.float64)
+    # for j in range(nrho):
+    #     # see Boisse+2012 fig. 1 for coord. setup
+    #     xyz2[0][j] = np.sqrt(1 - s**2)   # x=sqrt(r^2-s^2), where r==1
+    #     xyz2[1][j] = s*cos(rho[j]) # projection of the circumference on the y axis
+    #     xyz2[2][j] = s*sin(rho[j]) # projection of the circumference on the x axis
+
+    rho = np.linspace(-np.pi, np.pi, nrho) # rho goes from -pi to pi
+    xyz2 = np.zeros((3, nrho), dtype=np.float64)
+    xyz2[0, :] = np.sqrt(1 - s**2)  # x=sqrt(r^2-s^2), where r==1
+    xyz2[1, :] = s * np.cos(rho) # projection of the circumference on the y axis
+    xyz2[2, :] = s * np.sin(rho) # projection of the circumference on the x axis
+
 
     # to account for the real projection of the spot, we rotate the star and look how the coordinates of the
     # circumference of the spot change
@@ -77,7 +92,7 @@ def spot_init(s, longitude, latitude, inclination, nrho):
 
     b = -latitude
     g = longitude
-    b2 = np.pi/2. - inclination
+    b2 = np.pi/2 - inclination
 
     R = np.array([
         [  cos(b2)*cos(g)*cos(b)-sin(b)*sin(b2), -sin(g)*cos(b2),  cos(b2)*cos(g)*sin(b)+sin(b2)*cos(b) ], 
@@ -85,7 +100,8 @@ def spot_init(s, longitude, latitude, inclination, nrho):
         [ -sin(b2)*cos(g)*cos(b)-cos(b2)*sin(b),  sin(b2)*sin(g), -sin(b2)*cos(g)*sin(b)+cos(b2)*cos(b) ]
         ])
 
-    return R@xyz2
+    xyz = R@xyz2
+    return xyz
 
 @njit
 def spot_inverse_rotation(xyz, longitude, latitude, inclination, phase):
@@ -101,46 +117,81 @@ def spot_inverse_rotation(xyz, longitude, latitude, inclination, phase):
     - and sky plane = yz-plane
 
     Args:
-        xyz (_type_): _description_
-        longitude (_type_): _description_
-        latitude (_type_): _description_
-        inclination (_type_): _description_
-        phase (_type_): _description_
-        xiyizi (_type_): _description_
+        xyz (np.ndarray): The current position [x, y, z].
+        longitude (float): Spot longitude [deg].
+        latitude (float): Spot latitude [deg].
+        inclination (float): Stellar inclination angle [deg].
+        phase (float): Rotation phase [0-1].
 
     Returns:
-        _type_: _description_
+        np.ndarray: The relocated position [xi, yi, zi].
     """
 
     # g2 = --phase*(2*pi);  // inverse phase ([0-1] -> [rad])
-    g2 = 2*np.pi*(phase-1)
+    g2 = 2*np.pi*(phase - 1)
     # g2 = -(-phase*(2*np.pi))
-    i   = inclination * np.pi/180.
+    i   = inclination * np.pi/180
     
-    b  =  latitude  * np.pi/180.
-    g  = -longitude * np.pi/180.
-    b2 = -(np.pi/2.-i)
+    b  =  latitude  * np.pi/180
+    g  = -longitude * np.pi/180
+    b2 = -(np.pi/2 - i)
 
+    # R1 = np.array([
+    #     [ (1-cos(g2))*cos(i)*cos(i) + cos(g2),  sin(g2)*sin(i),   (1-cos(g2))*cos(i)*sin(i)           ],
+    #     [ -sin(g2)*sin(i),                      cos(g2),           sin(g2)*cos(i)                     ],
+    #     [ (1-cos(g2))*sin(i)*cos(i),           -sin(g2)*cos(i),   (1-cos(g2))*sin(i)*sin(i) + cos(g2) ]
+    #     ])
+    # R2 = np.array([
+    #     [  cos(b)*cos(g)*cos(b2)-sin(b2)*sin(b), -sin(g)*cos(b),   cos(b)*cos(g)*sin(b2)+sin(b)*cos(b2) ],
+    #     [  sin(g)*cos(b2),                        cos(g),          sin(g)*sin(b2)                       ],
+    #     [ -sin(b)*cos(g)*cos(b2)-cos(b)*sin(b2),  sin(b)*sin(g),  -sin(b)*cos(g)*sin(b2)+cos(b)*cos(b2) ]
+    # ])
+    # R3 = R2@R1
+
+    # Precompute reused terms
+    cos_g, sin_g = cos(g), sin(g)
+    cos_g2, sin_g2 = cos(g2), sin(g2)
+    cos_i, sin_i = cos(i), sin(i)
+    cos_b, sin_b = cos(b), sin(b)
+    cos_b2, sin_b2 = cos(b2), sin(b2)
+
+    # Rotation matrix R1
     R1 = np.array([
-        [ (1-cos(g2))*cos(i)*cos(i) + cos(g2),  sin(g2)*sin(i),   (1-cos(g2))*cos(i)*sin(i)           ],
-        [ -sin(g2)*sin(i),                      cos(g2),           sin(g2)*cos(i)                     ],
-        [ (1-cos(g2))*sin(i)*cos(i),           -sin(g2)*cos(i),   (1-cos(g2))*sin(i)*sin(i) + cos(g2) ]
-        ])
-    
-    R2 = np.array([
-        [  cos(b)*cos(g)*cos(b2)-sin(b2)*sin(b), -sin(g)*cos(b),   cos(b)*cos(g)*sin(b2)+sin(b)*cos(b2) ],
-        [  sin(g)*cos(b2),                        cos(g),          sin(g)*sin(b2)                       ],
-        [ -sin(b)*cos(g)*cos(b2)-cos(b)*sin(b2),  sin(b)*sin(g),  -sin(b)*cos(g)*sin(b2)+cos(b)*cos(b2) ]
+        [(1 - cos_g2) * cos_i**2 + cos_g2,    sin_g2 * sin_i,   (1 - cos_g2) * cos_i * sin_i],
+        [-sin_g2 * sin_i,                     cos_g2,            sin_g2 * cos_i],
+        [(1 - cos_g2) * sin_i * cos_i,       -sin_g2 * cos_i,   (1 - cos_g2) * sin_i**2 + cos_g2]
     ])
 
-    R3 = R2@R1
+    # Rotation matrix R2
+    R2 = np.array([
+        [cos_b * cos_g * cos_b2 - sin_b2 * sin_b,   -sin_g * cos_b,    cos_b * cos_g * sin_b2 + sin_b * cos_b2],
+        [sin_g * cos_b2,                             cos_g,            sin_g * sin_b2],
+        [-sin_b * cos_g * cos_b2 - cos_b * sin_b2,   sin_b * sin_g,   -sin_b * cos_g * sin_b2 + cos_b * cos_b2]
+    ])
 
-    return R3@xyz
+    # Combined rotation matrix R3
+    R3 = R2 @ R1
+
+    # Apply rotation to xyz
+    xiyizi = R3 @ xyz
+
+    return xiyizi
 
 
 
 @njit
 def spot_phase(xyz, inclination, nrho, phase):
+    """Calculate the xyz positions of the active region circumference at a given phase.
+
+    Args:
+        xyz (np.ndarray): Initial positions (shape: (nrho, 3)).
+        inclination (float): Stellar inclination [deg].
+        nrho (int): Number of points on the active region's circumference.
+        phase (float): Rotation phase [0-1].
+
+    Returns:
+        np.ndarray: Rotated positions (shape: (nrho, 3)).
+    """
 
     # the phase is between 0 and 1, so psi is in radian between -2pi and 0.
     psi = -phase*(2*np.pi) 
@@ -148,22 +199,52 @@ def spot_phase(xyz, inclination, nrho, phase):
 
     axe = np.array([cos(inclination), 0, sin(inclination)])
 
+    # Precompute reused terms
+    cos_psi = cos(psi)
+    sin_psi = sin(psi)
+    one_minus_cos_psi = 1 - cos_psi
+
+    # Rotation matrix
     R = np.array([
-        [(1-cos(psi))*axe[0]*axe[0] + cos(psi), 
-         (1-cos(psi))*axe[0]*axe[1] + sin(psi)*axe[2],
-         (1-cos(psi))*axe[0]*axe[2] - sin(psi)*axe[1]],
-        [(1-cos(psi))*axe[1]*axe[0] - sin(psi)*axe[2],
-         (1-cos(psi))*axe[1]*axe[1] + cos(psi),
-         (1-cos(psi))*axe[1]*axe[2] + sin(psi)*axe[0]],
-        [(1-cos(psi))*axe[2]*axe[0] + sin(psi)*axe[1],
-         (1-cos(psi))*axe[2]*axe[1] - sin(psi)*axe[0],
-         (1-cos(psi))*axe[2]*axe[2] + cos(psi)]
+        [
+            one_minus_cos_psi * axe[0]**2 + cos_psi,
+            one_minus_cos_psi * axe[0] * axe[1] + sin_psi * axe[2],
+            one_minus_cos_psi * axe[0] * axe[2] - sin_psi * axe[1],
+        ],
+        [
+            one_minus_cos_psi * axe[1] * axe[0] - sin_psi * axe[2],
+            one_minus_cos_psi * axe[1]**2 + cos_psi,
+            one_minus_cos_psi * axe[1] * axe[2] + sin_psi * axe[0],
+        ],
+        [
+            one_minus_cos_psi * axe[2] * axe[0] + sin_psi * axe[1],
+            one_minus_cos_psi * axe[2] * axe[1] - sin_psi * axe[0],
+            one_minus_cos_psi * axe[2]**2 + cos_psi,
+        ],
     ])
+
+    # R = np.array([
+    #     [(1-cos(psi))*axe[0]*axe[0] + cos(psi), 
+    #      (1-cos(psi))*axe[0]*axe[1] + sin(psi)*axe[2],
+    #      (1-cos(psi))*axe[0]*axe[2] - sin(psi)*axe[1]],
+    #     [(1-cos(psi))*axe[1]*axe[0] - sin(psi)*axe[2],
+    #      (1-cos(psi))*axe[1]*axe[1] + cos(psi),
+    #      (1-cos(psi))*axe[1]*axe[2] + sin(psi)*axe[0]],
+    #     [(1-cos(psi))*axe[2]*axe[0] + sin(psi)*axe[1],
+    #      (1-cos(psi))*axe[2]*axe[1] - sin(psi)*axe[0],
+    #      (1-cos(psi))*axe[2]*axe[2] + cos(psi)]
+    # ])
     return R@xyz
 
 
 @njit 
 def spot_area(xlylzl, nrho, grid):
+    '''Determine a smaller yz-area of the stellar disk, where the active region is.
+    The different cases are :
+        - the active region is completely visible (all x of the circumference >=0)
+        - the active region is completely invisible (all x of the circumference <0)
+        - the active region is on the disk edge and partially visible only
+    '''
     visible = 0
     grid_step = 2./grid # The stellar disc goes from -1 to 1, therefore 2
     miny=1; minz=1; maxy=-1; maxz=-1 # init to 'opposite'-extreme values
@@ -230,55 +311,118 @@ def spot_area(xlylzl, nrho, grid):
 
     return visible, int(iminy), int(iminz), int(imaxy), int(imaxz)
 
+
+# @njit
+# def rndup(n, nb_decimal):
+#     """round up float numbers, for nb_decimal of 0 e.g.,
+#     1.5 --> 2.; 1.4 --> 1.
+
+#     Args:
+#         n (float):
+#         nb_decimal (ing):
+
+#     Returns:
+#         float: rounded number
+#     """
+
+#     t = n*10**(nb_decimal) - np.floor(n*10**(nb_decimal))
+#     if t>=0.5:
+#         n*=10**(nb_decimal)
+#         n = np.ceil(n)
+#         return n/10**(nb_decimal)
+#     else:
+#         n*=10**(nb_decimal)
+#         n = np.floor(n)
+#         return n/10**(nb_decimal) 
+    
 @njit
-def rndup(n, nb_decimal):
-    """round up float numbers, for nb_decimal of 0 e.g.,
+def rndup(n: float, nb_decimal: int) -> float:
+    """Rounds up a float to a specified number of decimal places.
     1.5 --> 2.; 1.4 --> 1.
 
     Args:
-        n (float):
-        nb_decimal (ing):
+        n (float): The number to round.
+        nb_decimal (int): The number of decimal places to round to.
 
     Returns:
-        float: rounded number
+        float: The rounded number.
     """
+    factor = 10**nb_decimal
+    scaled_n = n * factor
+    t = scaled_n - np.floor(scaled_n)
 
-    t = n*10**(nb_decimal) - np.floor(n*10**(nb_decimal))
-    if t>=0.5:
-        n*=10**(nb_decimal)
-        n = np.ceil(n)
-        return n/10**(nb_decimal)
+    if t >= 0.5:
+        return np.ceil(scaled_n) / factor
     else:
-        n*=10**(nb_decimal)
-        n = np.floor(n)
-        return n/10**(nb_decimal) 
+        return np.floor(scaled_n) / factor
+
+# @njit
+# def shifting_CCF(_lambda, CCF, v_shift, n1):
+
+#     CCF_derivative = np.zeros(n1, dtype=np.float64)
+#     CCF_blueshifted = np.zeros(n1, dtype=np.float64)
+
+#     # Calculates the CCF derivative
+#     if (_lambda[1]-_lambda[0]) == 0:
+#         CCF_derivative[0] = 0
+#     else:
+#         CCF_derivative[0] = (CCF[1] - CCF[0])/(_lambda[1]-_lambda[0])
+
+#     for i in range(1, n1-1):
+#         if (_lambda[i+1]-_lambda[i]) == 0:
+#             CCF_derivative[i] = CCF_derivative[i-1]
+#         else:
+#             CCF_derivative[i] = (CCF[i+1] - CCF[i])/(_lambda[i+1]-_lambda[i])   
+
+#     CCF_derivative[-1] = 0.
+    
+#     for i in range(n1):
+#         if (v_shift >= 0) | (i == 0) :
+#             # dy/dx = derivative => dy = derivative*dx
+#             CCF_blueshifted[i] = CCF[i] - v_shift * CCF_derivative[i] 
+#         elif v_shift < 0:
+#             CCF_blueshifted[i] = CCF[i] - v_shift * CCF_derivative[i-1]
+
+#     return CCF_blueshifted
 
 @njit
-def shifting_CCF(_lambda, CCF, v_shift, n1):
+def shifting_CCF(_lambda: np.ndarray, CCF: np.ndarray, v_shift: float, n1: int) -> np.ndarray:
+    """
+    Shift the CCF with a given velocity v_shift using linear interpolation.
 
+    Args:
+        _lambda (np.ndarray): Wavelength values.
+        CCF (np.ndarray): Cross-Correlation Function values.
+        v_shift (float): Velocity shift.
+        n1 (int): Number of data points.
+
+    Returns:
+        np.ndarray: The blueshifted CCF values.
+    """
+    # Initialize arrays
     CCF_derivative = np.zeros(n1, dtype=np.float64)
     CCF_blueshifted = np.zeros(n1, dtype=np.float64)
 
-    # Calculates the CCF derivative
-    if (_lambda[1]-_lambda[0]) == 0:
+    # Compute the CCF derivative
+    if _lambda[1] - _lambda[0] == 0:
         CCF_derivative[0] = 0
     else:
-        CCF_derivative[0] = (CCF[1] - CCF[0])/(_lambda[1]-_lambda[0])
+        CCF_derivative[0] = (CCF[1] - CCF[0]) / (_lambda[1] - _lambda[0])
 
-    for i in range(1, n1-1):
-        if (_lambda[i+1]-_lambda[i]) == 0:
-            CCF_derivative[i] = CCF_derivative[i-1]
+    for i in range(1, n1 - 1):
+        if _lambda[i + 1] - _lambda[i] == 0:
+            CCF_derivative[i] = CCF_derivative[i - 1]
         else:
-            CCF_derivative[i] = (CCF[i+1] - CCF[i])/(_lambda[i+1]-_lambda[i])   
+            CCF_derivative[i] = (CCF[i + 1] - CCF[i]) / (_lambda[i + 1] - _lambda[i])
 
-    CCF_derivative[n1] = 0.
-    
+    CCF_derivative[-1] = 0.0  # Last element
+
+    # Compute the shifted CCF using linear interpolation
     for i in range(n1):
-        if (v_shift >= 0) | (i == 0) :
-            # dy/dx = derivative => dy = derivative*dx
-            CCF_blueshifted[i] = CCF[i] - v_shift * CCF_derivative[i] 
-        elif v_shift < 0:
-            CCF_blueshifted[i] = CCF[i] - v_shift * CCF_derivative[i-1]
+        if v_shift >= 0 or i == 0:
+            CCF_blueshifted[i] = CCF[i] - v_shift * CCF_derivative[i]
+        else:  # v_shift < 0 and i > 0
+            CCF_blueshifted[i] = CCF[i] - v_shift * CCF_derivative[i - 1]
 
     return CCF_blueshifted
 
@@ -296,7 +440,7 @@ def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
 
     delta_grid = 2./grid # step of the grid. grid goes from -1 to 1, therefore 2 in total
 
-    i = np.deg2rad(incl)
+    i = incl*np.pi/180. # inclination in radian
 
     quite_surface = np.zeros((grid, grid), dtype=np.float64) # for 2d disk plotting
 
@@ -386,7 +530,7 @@ def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
                 # -------------------------- SPEC ------------------------------
                 n_v_shifted = delta/delta_v_spec        # by how much steps the CCF is shifted due to rotation
                 n_v_shifted_quotient = rndup(n_v_shifted, 0)
-                n_v_shifted_remainder = (delta - n_v_shifted_quotient*delta_v_spec)
+                n_v_shifted_remainder = delta - n_v_shifted_quotient*delta_v_spec
                 v_shift = n_v_shifted_remainder
                 
                 intensity_spec_shift = shifting_CCF(
@@ -395,7 +539,9 @@ def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
                 
                 diff_SPEC_non_v_and_v = (n_v_spec - n_spec) / 2.
 
-                for j in range(int(diff_SPEC_non_v_and_v+n_v_shifted_quotient)):
+                for j in range(
+                    int(diff_SPEC_non_v_and_v + n_v_shifted_quotient)
+                    ):
                     f_star_spec[j] += intensity_spec_shift[0]*limb
                     f_star_once[j] += intensity_spec_shift[0]*limb
                 
@@ -437,7 +583,7 @@ def spot_scan(
     v, i, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte, grid, 
     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
     s, longitude, phase, latitude, iminy, iminz, imaxy, imaxz, 
-    magn_feature_type, T_star, T_diff_spot, intensity
+    magn_feature_type, T_star, T_diff_spot, int_ratio
     ):
     """Scan of the yz-area where the spot is.
     For each grid-point (y,z) we need to check whether it belongs to the spot
@@ -600,20 +746,20 @@ def spot_scan(
                     #     f_star_once[j]   += intensity_spec_shift[n_spec-1]*limb * (1-intensity)
 
                     for j in range(int(diff_SPEC_non_v_and_v+n_v_shifted_quotient)):
-                        f_spot_spec_tot[j] += intensity_spec_spot_shift[0]*limb*(intensity)  # combined effect
-                        flux_spot_once[j] += intensity_spec_spot_shift[0]*limb*(intensity)  # combined effect
+                        f_spot_spec_tot[j] += intensity_spec_spot_shift[0]*limb * int_ratio  # combined effect
+                        flux_spot_once[j] += intensity_spec_spot_shift[0]*limb * int_ratio  # combined effect
                         
-                        f_photo_duplicated[j] += intensity_spec_shift[0]*limb*(1)  # combined effect
-                        flux_quite_once[j] += intensity_spec_shift[0]*limb*(1)  # combined effect
+                        f_photo_duplicated[j] += intensity_spec_shift[0]*limb* (1)  # combined effect
+                        flux_quite_once[j] += intensity_spec_shift[0]*limb* (1)  # combined effect
                
                     for j in range(
                         int(diff_SPEC_non_v_and_v+n_v_shifted_quotient),
                         int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient))
                         ):                   
                         f_spot_spec_tot[j] += \
-                            intensity * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
+                            int_ratio * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
                         flux_spot_once[j] += \
-                             intensity * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
+                             int_ratio * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
                         
                         f_photo_duplicated[j] += \
                             (1) * intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb  # combined effect
@@ -624,8 +770,8 @@ def spot_scan(
                         int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient)),
                         n_v_spec
                         ):      
-                        f_spot_spec_tot[j]   += intensity_spec_spot_shift[n_spec-1]*limb * (intensity)
-                        flux_spot_once[j]   += intensity_spec_spot_shift[n_spec-1]*limb * (intensity)
+                        f_spot_spec_tot[j]   += intensity_spec_spot_shift[n_spec-1]*limb * int_ratio
+                        flux_spot_once[j]   += intensity_spec_spot_shift[n_spec-1]*limb * int_ratio
 
                         f_photo_duplicated[j]   += intensity_spec_shift[n_spec-1]*limb * (1)
                         flux_quite_once[j]   += intensity_spec_shift[n_spec-1]*limb * (1)
@@ -639,7 +785,7 @@ def spot_scan_npsi_pal(
     xyz, inclination, nrho, psi, grid, v, limba1, limba2, 
     modif_bis_quad, modif_bis_lin, modif_bis_cte, 
     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
-    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, intensity, ipsi
+    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, int_ratio, ipsi
     ):
 
     xyz2 = spot_phase(xyz, inclination, nrho, psi[ipsi])
@@ -654,7 +800,7 @@ def spot_scan_npsi_pal(
                 v_interval_spec, n_v_spec, n_spec,  
                 s, longitude, psi[ipsi], latitude, 
                 iminy, iminz, imaxy, imaxz,
-                magn_feature_type, T_star, T_diff_spot, intensity
+                magn_feature_type, T_star, T_diff_spot, int_ratio
             )
     else:
         # f_ccf_spot_tot = np.zeros(n_v_ccf, dtype=np.float64)

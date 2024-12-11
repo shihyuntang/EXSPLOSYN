@@ -4,12 +4,20 @@ import numpy as np
 from numpy import cos, sin
 from numba import njit
 from scipy import signal
+from scipy.signal import find_peaks
 from astropy.table import Table
+import astropy.units as u
 import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.ticker import (MultipleLocator, FormatStrFormatter,
+                               AutoMinorLocator)
+from specutils import Spectrum1D
+from specutils.analysis import equivalent_width
 
 import starspot as stsp
 import visualization as vis
 import synspecprep as ssp
+
 
 class Star:
     def __init__(
@@ -48,7 +56,7 @@ class Star:
         self.FeH            = FeH
         self.bands2use      = bands2use
     
-    def find_spec(self, spec_type, rassine_path):
+    def find_spec_flatten(self, spec_type, rassine_path):
         self.spec_type = spec_type
         self.intensity_ratio = {}
 
@@ -73,7 +81,7 @@ class Star:
         else:
             sys.exit('\n!!!! Sub solar FeH is not supported yet!!!')
 
-        spec_base_name = 'PHX_ACES_spec_{}_{}_{}_wv5000_30000.p'
+        spec_base_name = 'PHX_ACES_spec_{}_{}_{}_wv3000_30000.p'
         spec_base_path = f'{self.out_path}{spec_base_name}'
 
         # always dw PHX spectra as we need it for calculate flux intensity ratio
@@ -92,15 +100,18 @@ class Star:
             for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
         
                 if spec_type.lower() == 'phx':
-                
+                    
+                    ## --- flatten syn spectra ---
+                    # 1. flatten PHX spectra at a larger wv range (5000 - 30000 AA)
                     flatt_spec_dir = ssp.flatten_spec(
                         rassine_path, self.out_path, tt, self.logg, 
-                        self.FeH, wvmin, wvmax
+                        self.FeH
                         )
                     
                     sim_spec_name = f'SimUse_PHX_ACES_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}.p'
                     sim_spec_path = f'{self.out_path}{sim_spec_name}'
                     
+                    # 2. cut the flattened spectra to the region of interest and transfer wavelength to velocity
                     ssp.final_spec(flatt_spec_dir, sim_spec_path, wvmin, wvmax)
                     flatten_spec = pd.read_pickle(sim_spec_path)
 
@@ -134,6 +145,81 @@ class Star:
             self.intensity_ratio[band] = sum_up_flux_box[1]/sum_up_flux_box[0]
             print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
         
+    def find_spec(self, spec_type, rassine_path=None):
+        self.spec_type = spec_type
+        self.intensity_ratio = {}
+
+        self.out_path = f'{os.getcwd()}/syn_spec/'            
+        temp_list = [self.Temp, self.Tspot, self.Tfaculae]
+
+        print('\nChecking spectra templates for')
+        print(f'   {temp_list} K\n')
+        
+        if self.FeH >= 0:
+            alpha = 0
+        else:
+            sys.exit('\n!!!! Sub solar FeH is not supported yet!!!')
+
+        spec_base_name = 'PHX_ACES_spec_{}_{}_{}_wv3000_30000.p'
+        spec_base_path = f'{self.out_path}{spec_base_name}'
+
+        # always dw PHX spectra as we need it for calculate flux intensity ratio
+        self.dw_phx(spec_base_path, temp_list, alpha)
+
+        wv_regions = list(self.bands2use.keys())
+        for idx, band in enumerate(wv_regions):
+
+            line_cen = self.bands2use[band][0]
+            delta_wv = self.bands2use[band][1]
+            wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
+            wvmin = int(wvmin); wvmax = int(wvmax)
+
+            sum_up_flux_box = []
+            
+            for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
+        
+                if spec_type.lower() == 'phx':
+                    
+                    ## --- run w/ flatten the syn spectra ---
+                    
+                    sim_spec_name = f'SimUse_PHX_ACES_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_NOTflatten.p'
+                    sim_spec_path = f'{self.out_path}{sim_spec_name}'
+                    
+                    unflatten_spec_dir = spec_base_path.format(tt, self.logg, self.FeH)
+                    
+                    ssp.final_spec(unflatten_spec_dir, sim_spec_path, wvmin, wvmax, flatten=False)
+                    flatten_spec = pd.read_pickle(sim_spec_path)
+
+                else:
+                    print('\n[ERROR] Can only handel PHX syn spec!\n')
+                
+                # # sum total flux for intensity ratio calculation
+                # sum_up_flux = self.flux_sum(spec_base_path, tt, wvmin, wvmax)
+                # sum_up_flux_box.append(sum_up_flux)
+
+                spec = {
+                    f'{band}_v': flatten_spec['v'].to_numpy(), 
+                    f'{band}_f': flatten_spec['f'].to_numpy()
+                    }
+            
+                if idx==0:
+                    if nn=='star':
+                        self.star_spec = spec
+                    elif nn=='spot':
+                        self.spot_spec = spec
+                    elif nn=='plage':
+                        self.plage_spec = spec
+                else:
+                    if nn=='star':
+                        self.star_spec.update(spec)
+                    elif nn=='spot':
+                        self.spot_spec.update(spec)
+                    elif nn=='plage':
+                        self.plage_spec.update(spec)
+            
+            self.intensity_ratio[band] = 1
+            # print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
+
 
     def dw_phx(self, _spec_base_path, temp_list, alpha):
         '''Always dw PHX spectra as we need it for calculate flux intensity ratio'''
@@ -409,6 +495,101 @@ def compute_bis(RV, CCF):
     depth=-k
     return depth, bis, span, v0, fwhm
 
+def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir):
+    plot = True
+    vel = Star.star_spec[f'{band}_v']
+
+    nomral_spec_box = []
+    for i in range(len(visible_phi)):
+        flux = flux_phi[i]
+
+        # detect peaks
+        peaks, _ = find_peaks(flux, distance=1000, height=0.97)
+        # fit a polynomial to the continuum
+        z = np.polyfit(vel[peaks], flux[peaks], 1)
+        p = np.poly1d(z)   
+        fluxp_flat = flux/p(vel)
+        fluxp_flat = fluxp_flat/np.nanpercentile(fluxp_flat, 99)
+
+        ############################
+        if plot:
+            fig, ax = plt.subplots(
+                    1, 1, figsize=(7,3), facecolor='white', dpi=250)
+            
+            ax.plot(vel, flux, '-k', lw=1, label='org')
+            ax.plot(vel, fluxp_flat, '--', c='tab:red', lw=0.8, label='flat_tel_corr')
+            ax.plot(vel[peaks], flux[peaks], 'bo', ms=4, zorder=5, label='peaks')
+            ax.plot(vel, p(vel), '-', c='tab:orange', lw=1.)
+
+            ax.axhline(1, ls='--', lw=0.5, color='tab:red')
+
+            ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+            ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+
+            # ax.axvline(15625.92261698/1e4, ls='--', lw=0.5, color='k')
+            # ax.set_ylim(0.55, 1.1)
+            ax.legend(loc='lower right', fontsize='x-small', ncol=4)
+            ax.set_xlabel('Velocity [km/s]')
+            ax.set_ylabel('Flux')
+            ax.set_ylim(0.4, 1.05)
+            fig.savefig(
+                f'./outputs/{RVandEWR_dir}/normal_spec/flatten_{band}_{visible_phi[i]:1.2f}.png', bbox_inches='tight'
+                )
+            plt.close(fig)
+        ############################
+        
+        nomral_spec_box.append(fluxp_flat)
+    return np.array(nomral_spec_box)
+
+def get_equivelent_width(Star, flux_phi, visible_phi, band):
+
+    d_fe1 = []
+    d_fe2 = []
+    d_oh0 = []
+
+    ew_cal_regions = [
+        [1.56230, 1.56290], 
+        [1.56290, 1.56335], 
+        [1.56335, 1.56395]
+    ]
+
+    band_center_wv = Star.bands2use[band][0] # [15631.35, 30, ['rv', 'photo']]
+    
+    vel = Star.star_spec[f'{band}_v']
+    # trance vel back to wavelength
+    # vel = c * del_wv / wv
+    # del_wv = vel * wv / c
+
+    # c in km/s
+    c_kms = 299792.458
+
+    # vel back to wv
+    del_wv = vel * band_center_wv / c_kms
+    wave = (band_center_wv + del_wv) / 1e4
+    # print(f'\nwave: {wave}')
+    
+    for i in range(len(visible_phi)):
+        flux = flux_phi[i]
+        # --- EW ---
+        for r_udx, rr in enumerate(ew_cal_regions):
+
+            use_r = (wave>=rr[0]) & (wave<=rr[1])
+            spec = Spectrum1D(
+                spectral_axis=wave[use_r]*u.um, 
+                flux=flux[use_r]*u.Unit('erg cm-2 s-1 AA-1') 
+                )
+            ew = equivalent_width(spec)
+            # print(ew)
+
+            if r_udx == 0:
+                d_fe1.append(ew.value)
+            elif r_udx == 1:
+                d_oh0.append(ew.value)
+            elif r_udx == 2:
+                d_fe2.append(ew.value)
+       
+
+    return d_fe1, d_fe2, d_oh0, None, None, None
 
 def get_line_depth(Star, CCFstar_tot, visible_phi, band):
 
@@ -448,7 +629,7 @@ def calculate_activity_signal_spec(
     nrho, grid, star, psi, 
     Spec_photo, Spec_spot, Spec_plage,
     active_regions_number, active_region_box,
-    inst_reso, cpu_use, int_ratio
+    inst_reso, cpu_use, int_ratio, RVandEWR_dir, band, savespec
     ):
     """
 
@@ -536,6 +717,25 @@ def calculate_activity_signal_spec(
         # SPECstar_tot   = SPECstar_tot - np.array(SPECactive_region_tot)  
         # quite_surface_2d = quite_surface_2d - np.array(active_surface_box)
 
+        if savespec:
+            istart = (Spec_photo.n_v-len(Spec_photo.rv))//2         
+            iend   = istart+len(Spec_photo.rv)
+            spec_qs = SPECstar_tot[istart:iend]
+
+            spec_qs_duplicated = np.array(SPECphoto_region_duplicated)
+            spec_qs_duplicated = spec_qs_duplicated[:,istart:iend]
+
+            spec_ss = np.array(SPECactive_region_tot)
+            spec_ss = spec_ss[:,istart:iend]
+
+            # save to .npy
+            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_qs_{rr+1}.npy', spec_qs)
+            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_ss_{rr+1}.npy', spec_ss)
+            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_qsdup_{rr+1}.npy', spec_qs_duplicated)
+            
+            vel = np.array(Spec_photo.rv)
+            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_vel_{rr+1}.npy', vel)
+        
         SPECstar_tot   = SPECstar_tot - np.array(SPECphoto_region_duplicated) + np.array(SPECactive_region_tot)  
         quite_surface_2d = quite_surface_2d - np.array(quite_surface_duplicated_box) + np.array(active_surface_box)
 
@@ -568,7 +768,7 @@ def calculate_activity_signal_spec(
     # CCFstar_quiet = CCFstar_quiet/np.percentile(CCFstar_quiet, 95)
 
     
-    SPECstar_tot = np.array([f/np.percentile(f,95) for f in SPECstar_tot], dtype=np.float64)
+    SPECstar_tot = np.array([f/np.percentile(f,99) for f in SPECstar_tot], dtype=np.float64)
     # SPECstar_quiet = SPECstar_quiet/np.percentile(SPECstar_quiet, 95)
 
     # Convolution with a Gaussian instrumental profile of a given resolution, 
@@ -655,13 +855,15 @@ def _inst_broaden(inst_reso, rv, star_tot):
 @njit
 # @njit(parallel=True)
 def _cc(CCFstar_tot, vel, tw, tf, visible_phi):
-    # the res for the vel is 25m/s, thus moving 
-    # -10km to 10km is moving 400 pixles
+    # the res for the vel is 10m/s, thus moving 
+    # -10km to 10km is moving 1000 pixles
     # on both sides.
     # drvs_pixels = np.arange(-400, 401)
     # drvs = drvs_pixels * 0.025
 
     drvs = np.arange(-7, 7, 0.03)
+    # spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
+    # drvs = np.arange(-1, 1, 0.02)
     spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
 
     tf =  1-tf
@@ -693,16 +895,16 @@ def _cc(CCFstar_tot, vel, tw, tf, visible_phi):
 def cal_ccf_rv(star_tot, Star, visible_phi, band):
 
     vel = Star.star_spec[f'{band}_v']
+    vel = np.array([stsp.rndup(i, 4) for i in vel])
 
     spec_temp = star_tot[np.argmin(np.abs(visible_phi))]
 
-    print('\nUsing Phase {:1.3f} as CCF template...'.format(
-        visible_phi[np.argmin(np.abs(visible_phi))]
-    ))
-
+    # print('\nUsing Phase {:1.3f} as CCF template...'.format(
+    #     visible_phi[np.argmin(np.abs(visible_phi))]
+    # ))
 
     exrtra_len = 1000
-    del_vel = stsp.rndup(vel[1] - vel[0], 3)
+    del_vel = stsp.rndup(vel[1] - vel[0], 4)
     vel_temp = np.arange(
         vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, 
         del_vel
@@ -713,13 +915,14 @@ def cal_ccf_rv(star_tot, Star, visible_phi, band):
     # vel_temp = np.append(
     #     vel_temp, np.arange(vel[-1], vel[-1]+exrtra_len*del_vel, del_vel)
     #     )
-    vel_temp = np.array([stsp.rndup(i, 3) for i in vel_temp])
-
+    vel_temp = np.array([stsp.rndup(i, 4) for i in vel_temp])
     spec_temp = np.append(np.zeros(exrtra_len)+spec_temp[0], spec_temp)
     spec_temp = np.append(spec_temp, np.zeros(exrtra_len)+spec_temp[-1])
 
+    # print(f'vel: {vel}, tw: {vel_temp}, tf: {spec_temp}')
+    # print(f'vel: {vel.shape}, tw: {vel_temp.shape}, tf: {spec_temp.shape}')
     ccf_rv_shift = _cc(star_tot, vel, vel_temp, spec_temp, np.array(visible_phi))
-
+    ccf_rv_shift = ccf_rv_shift - np.median(ccf_rv_shift)
     return ccf_rv_shift
 
 

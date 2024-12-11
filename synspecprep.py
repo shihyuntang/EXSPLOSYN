@@ -86,7 +86,7 @@ WAVE_FILE = 'WAVE_PHOENIX-ACES-AGSS-COND-2011.fits'
 
 def get_phx_spec(temp, grav, FeH, alpha, out_path):
 
-    wvmin, wvmax = (5000, 30000)
+    wvmin, wvmax = (3000, 30000)
 
     index_logg = np.argmin(np.abs(LOGG_ARRAY - grav))
     index_FeH = np.argmin(np.abs(FeH_ARRAY - FeH))
@@ -165,15 +165,15 @@ def get_phx_spec(temp, grav, FeH, alpha, out_path):
     # plt.show()
 
 
-def flatten_spec(rassine_path, out_path, temp, grav, FeH, wvmin, wvmax):
-    outname = f'{out_path}RASSINE_PHX_ACES_spec_{int(temp)}_{grav}_{FeH}_wv5000_30000.p'
+def flatten_spec(rassine_path, out_path, temp, grav, FeH):
+    outname = f'{out_path}RASSINE_PHX_ACES_spec_{int(temp)}_{grav}_{FeH}_wv3000_30000.p'
 
     if os.path.exists(outname):
         # print('Already have the spec:', outname)
         return outname
 
     # cmds = 'python3 '+rassine_path+'Rassine.py '+out_path+'New_Phoenix_'+str(int(temp))+'.p '+out_path+' '+rassine_path
-    cmds = f'python3 {rassine_path}Rassine.py {out_path}PHX_ACES_spec_{int(temp)}_{grav}_{FeH}_wv5000_30000.p {out_path} {rassine_path}'
+    cmds = f'python3 {rassine_path}Rassine.py {out_path}PHX_ACES_spec_{int(temp)}_{grav}_{FeH}_wv3000_30000.p {out_path} {rassine_path}'
     print('\nUse Rassine to flatten the spectrum...\n')
     print(f'Running > {cmds}\n')
     os.system(cmds)
@@ -192,33 +192,45 @@ def flatten_spec(rassine_path, out_path, temp, grav, FeH, wvmin, wvmax):
     return outname
 
 
-def final_spec(flatt_spec_dir, sim_spec_path, wvmin, wvmax):
+def final_spec(spec_dir, sim_spec_path, wvmin, wvmax, flatten=True):
     # -----------------------
     # prep for SOAP3 use syn spec
-    rassine_result = pd.read_pickle(flatt_spec_dir)
+    final_spec = pd.read_pickle(spec_dir)
 
-    wave = np.array(rassine_result['wave'])
-    flux = np.array(rassine_result['flux']/rassine_result['continuum_cubic'])
+    wave = np.array(final_spec['wave'])
+    if flatten:
+        flux = np.array(final_spec['flux']/final_spec['continuum_cubic'])
+    else:
+        flux = np.array(final_spec['flux'])
     
     # cut to right wave to use for simulation
     waveIndex = (wave >= (wvmin)) & (wave <= (wvmax))
     f = flux[waveIndex]
     w = wave[waveIndex]    
 
-    spec = Spectrum1D(
-                flux = f*u.Unit('erg cm-2 s-1 AA-1'), 
-                spectral_axis = w*u.AA, 
-                rest_value = (wvmin+wvmax)/2*u.AA, 
-                velocity_convention='relativistic' # “doppler_relativistic”, “doppler_optical”, “doppler_radio”
-                )
+    # print('\n', spec_dir)
+    # print('wavelength range:', wvmin, wvmax)
+    # print(w)
 
-    w, v, f = spec.spectral_axis.value, spec.velocity.value, spec.flux.value
-    tck = interpolate.splrep(v, f, s=0)
-    
-    resolution = 25/1000 # km
+    # spec = Spectrum1D(
+    #             flux = f*u.Unit('erg cm-2 s-1 AA-1'), 
+    #             spectral_axis = w*u.AA, 
+    #             rest_value = (wvmin+wvmax)/2*u.AA, 
+    #             velocity_convention='relativistic' # “doppler_relativistic”, “doppler_optical”, “doppler_radio”
+    #             )
+    # w, v, f = spec.spectral_axis.value, spec.velocity.value, spec.flux.value
+    c_kms = 299792.458
+    w_center = (wvmin + wvmax) / 2
+    v = c_kms * (w - w_center) / w_center
+
+    tck = interpolate.splrep(v, f, s=0)    
+    resolution = 25/1000 # m --> km
     v_new = np.arange(
         np.round(np.min(v)), -np.round(np.min(v))+resolution, resolution)
     f_new = interpolate.splev(v_new, tck, der=0)
+
+    v_new = v_new[200:-200]
+    f_new = f_new[200:-200]
 
     simulation_spec = pd.DataFrame({'v':v_new,'f':f_new})
 
@@ -236,8 +248,9 @@ def final_spec(flatt_spec_dir, sim_spec_path, wvmin, wvmax):
     ax1.set_ylabel('Flux', fontsize='small')
     ax2.set_ylabel('Flux', fontsize='small')
 
-    ax1.set_ylim(0, 1.1)
-    ax2.set_ylim(0, 1.1)
+    if flatten:
+        ax1.set_ylim(0, 1.1)
+        ax2.set_ylim(0, 1.1)
     fig.savefig(sim_spec_path.replace('.p', '_output.png'))    
     # plt.show()
 
@@ -246,9 +259,10 @@ def final_spec(flatt_spec_dir, sim_spec_path, wvmin, wvmax):
 
 if __name__ == '__main__':
     # grav, wvmin, wvmax, FeH, alpha = 4.5, 15600, 15660, 0.1, 0.0
-    grav, wvmin, wvmax, FeH, alpha = 4.5, 5000, 30000, 0.0, 0.0
-    temps = [2500, 3000, 3500, 4000, 5000, 6500]
-    # temps = [3000]
+    grav, wvmin, wvmax, FeH, alpha = 4.0, 3000, 30000, 0.0, 0.0
+    # temps = [2500, 3000, 3500, 4000, 5000, 6500]
+    # temps = [2600, 2800, 3500]
+    temps = np.arange(2400, 3001, 200)
     
     out_path = f'{os.getcwd()}/syn_spec/'
     rassine_path = './external/Rassine_public/'
@@ -258,8 +272,7 @@ if __name__ == '__main__':
         
         print(f'   {temp} K\n')
         get_phx_spec(temp, grav, FeH, alpha, out_path)
-        flatten_spec(rassine_path, out_path, temp, grav, FeH, wvmin, wvmax)
-
+        # flatten_spec(rassine_path, out_path, temp, grav, FeH, wvmin, wvmax)
         # print('\n Phoenix spectra are ready for use.')
 
 
