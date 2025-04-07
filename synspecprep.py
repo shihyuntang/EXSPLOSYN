@@ -18,6 +18,8 @@ from astropy.io import fits
 import astropy.units as u
 from scipy import interpolate
 from specutils import Spectrum1D
+
+from rds3v import rds3v
 # from specutils.manipulation import FluxConservingResampler
 # from specutils.analysis import gaussian_sigma_width, gaussian_fwhm, fwhm, fwzi
 # from specutils import Spectrum1D, SpectralRegion
@@ -192,17 +194,28 @@ def flatten_spec(rassine_path, out_path, temp, grav, FeH):
     return outname
 
 
-def final_spec(spec_dir, sim_spec_path, wvmin, wvmax, flatten=True):
-    # -----------------------
+def final_spec(spec_type, spec_dir, sim_spec_path, wvmin, wvmax, flatten=True, pars=None):
     # prep for SOAP3 use syn spec
-    final_spec = pd.read_pickle(spec_dir)
 
-    wave = np.array(final_spec['wave'])
-    if flatten:
-        flux = np.array(final_spec['flux']/final_spec['continuum_cubic'])
-    else:
-        flux = np.array(final_spec['flux'])
+    if spec_type.lower() == 'phx':
+        final_spec = pd.read_pickle(spec_dir)
+        wave = np.array(final_spec['wave'])
+        if flatten:
+            flux = np.array(final_spec['flux']/final_spec['continuum_cubic'])
+        else:
+            flux = np.array(final_spec['flux'])
+
+    elif spec_type.lower() == 'synmast':
+        wave, flux = rds3v(spec_dir, vsini=0, vrt=2.0, if_flat=flatten)
+        wave = air2vac(wave)
     
+    elif spec_type.lower() == 'ccf_temp':
+        _, _, _, ccf_vsini, ccf_resolution = pars
+        wave, flux = rds3v(
+            spec_dir, vsini=ccf_vsini, vrt=2.0, instrum=ccf_resolution, 
+            if_flat=flatten)
+        wave = air2vac(wave)
+
     # cut to right wave to use for simulation
     waveIndex = (wave >= (wvmin)) & (wave <= (wvmax))
     f = flux[waveIndex]

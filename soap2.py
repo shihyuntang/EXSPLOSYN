@@ -1,9 +1,10 @@
 import sys, os
+from functools import partial
 
 import numpy as np
 from numpy import cos, sin
 from numba import njit
-from scipy import signal
+from scipy import signal,interpolate
 from scipy.signal import find_peaks
 from astropy.table import Table
 import astropy.units as u
@@ -17,6 +18,9 @@ from specutils.analysis import equivalent_width
 import starspot as stsp
 import visualization as vis
 import synspecprep as ssp
+from basic_spec import rotint
+from macbro_dynamic import macbro_dyn
+from pqdm.processes import pqdm
 
 
 class Star:
@@ -56,7 +60,7 @@ class Star:
         self.FeH            = FeH
         self.bands2use      = bands2use
     
-    def find_spec_flatten(self, spec_type, rassine_path):
+    def find_spec_flatten(self, spec_type, active_region_sizes, syn_spec_path=None):
         self.spec_type = spec_type
         self.intensity_ratio = {}
 
@@ -70,10 +74,20 @@ class Star:
         # print('teffs', teffs)
         # sys.exit('')
 
-        self.out_path = f'{os.getcwd()}/syn_spec/'            
-        temp_list = [self.Temp, self.Tspot, self.Tfaculae]
+        self.out_path = f'{os.getcwd()}/syn_spec/'  
 
-        print('\nChecking spectra templates for')
+        # -- Estimated the Teff --
+        spot_portion = 0 # visible "DISK" portion
+        for ss in active_region_sizes:
+            spot_portion = spot_portion + ss**2
+        est_teff = self.Temp**4*(1-spot_portion) \
+            + self.Tspot**4*spot_portion
+        est_teff = int(est_teff**0.25)
+        print(f'\nEstimated Teff for the CCF synthetic template: {est_teff:1.0f} K') 
+
+        temp_list = [self.Temp, self.Tspot, self.Tfaculae, est_teff]
+
+        print('\nChecking flatten spectra templates for')
         print(f'   {temp_list} K\n')
         
         if self.FeH >= 0:
@@ -97,26 +111,45 @@ class Star:
 
             sum_up_flux_box = []
             
-            for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
-        
+            for tt, nn in zip(temp_list, ['star', 'spot', 'plage', 'ccf_temp']):
+                # ---------------------- Read PHX SYN Spectra ----------------------
                 if spec_type.lower() == 'phx':
                     
                     ## --- flatten syn spectra ---
                     # 1. flatten PHX spectra at a larger wv range (5000 - 30000 AA)
-                    flatt_spec_dir = ssp.flatten_spec(
-                        rassine_path, self.out_path, tt, self.logg, 
+                    flat_spec_dir = ssp.flatten_spec(
+                        syn_spec_path, self.out_path, tt, self.logg, 
                         self.FeH
                         )
                     
-                    sim_spec_name = f'SimUse_PHX_ACES_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}.p'
+                    sim_spec_name = f'SimUse_PHX_ACES_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_flatten.p'
                     sim_spec_path = f'{self.out_path}{sim_spec_name}'
                     
                     # 2. cut the flattened spectra to the region of interest and transfer wavelength to velocity
-                    ssp.final_spec(flatt_spec_dir, sim_spec_path, wvmin, wvmax)
+                    ssp.final_spec(spec_type, flat_spec_dir, sim_spec_path, wvmin, wvmax, flatten=True)
                     flatten_spec = pd.read_pickle(sim_spec_path)
+                
+                # ---------------------- Read SYNmast Spectra ----------------------
+                elif spec_type.lower() == 'synmast':
+                    prf_dir = syn_spec_path
+                    
+                    # mc_2700350+000_b2_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
+                    spec_base_name = f'mc_{tt}{self.logg*100:1.0f}+{self.FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+                    unflatten_spec_dir = f'{prf_dir}/{spec_base_name}'
+
+                    # Check if the prf file already exists
+                    if not os.path.exists(unflatten_spec_dir):
+                        print(f'   Don\'t have {unflatten_spec_dir}.')
+                        sys.exit('   Please get the spectra from synmast and put it in the syn_spec folder!')
+
+                    sim_spec_name = f'SimUse_Synmast_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_flatten.p'
+                    sim_spec_path = f'{self.out_path}{sim_spec_name}'
+                    
+                    ssp.final_spec(spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, flatten=True)
+                    flatten_spec = pd.read_pickle(sim_spec_path) 
 
                 else:
-                    print('\n[ERROR] Can only handel PHX syn spec!\n')
+                    print('\n[ERROR] Can only handel PHX and Synmast spec!\n')
                 
                 # sum total flux for intensity ratio calculation
                 sum_up_flux = self.flux_sum(spec_base_path, tt, wvmin, wvmax)
@@ -129,23 +162,27 @@ class Star:
             
                 if idx==0:
                     if nn=='star':
-                        self.star_spec = spec
+                        self.star_spec_flatten = spec
                     elif nn=='spot':
-                        self.spot_spec = spec
+                        self.spot_spec_flatten = spec
                     elif nn=='plage':
-                        self.plage_spec = spec
+                        self.plage_spec_flatten = spec
+                    elif nn=='ccf_temp':
+                        self.ccf_spec_flatten = spec
                 else:
                     if nn=='star':
-                        self.star_spec.update(spec)
+                        self.star_spec_flatten.update(spec)
                     elif nn=='spot':
-                        self.spot_spec.update(spec)
+                        self.spot_spec_flatten.update(spec)
                     elif nn=='plage':
-                        self.plage_spec.update(spec)
+                        self.plage_spec_flatten.update(spec)
+                    elif nn=='ccf_temp':
+                        self.ccf_spec_flatten.update(spec)
             
             self.intensity_ratio[band] = sum_up_flux_box[1]/sum_up_flux_box[0]
-            print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
+            # print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
         
-    def find_spec(self, spec_type, rassine_path=None):
+    def find_spec(self, spec_type, syn_spec_path=None):
         self.spec_type = spec_type
         self.intensity_ratio = {}
 
@@ -160,12 +197,6 @@ class Star:
         else:
             sys.exit('\n!!!! Sub solar FeH is not supported yet!!!')
 
-        spec_base_name = 'PHX_ACES_spec_{}_{}_{}_wv3000_30000.p'
-        spec_base_path = f'{self.out_path}{spec_base_name}'
-
-        # always dw PHX spectra as we need it for calculate flux intensity ratio
-        self.dw_phx(spec_base_path, temp_list, alpha)
-
         wv_regions = list(self.bands2use.keys())
         for idx, band in enumerate(wv_regions):
 
@@ -174,32 +205,54 @@ class Star:
             wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
             wvmin = int(wvmin); wvmax = int(wvmax)
 
-            sum_up_flux_box = []
-            
+            # sum_up_flux_box = []
             for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
-        
+                # ---------------------- Read PHX SYN Spectra ----------------------
                 if spec_type.lower() == 'phx':
+
+                    spec_base_name = 'PHX_ACES_spec_{}_{}_{}_wv3000_30000.p'
+                    spec_base_path = f'{self.out_path}{spec_base_name}'
                     
-                    ## --- run w/ flatten the syn spectra ---
+                    # Download PHX Spectra
+                    self.dw_phx(spec_base_path, temp_list, alpha)
                     
                     sim_spec_name = f'SimUse_PHX_ACES_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_NOTflatten.p'
                     sim_spec_path = f'{self.out_path}{sim_spec_name}'
                     
                     unflatten_spec_dir = spec_base_path.format(tt, self.logg, self.FeH)
                     
-                    ssp.final_spec(unflatten_spec_dir, sim_spec_path, wvmin, wvmax, flatten=False)
-                    flatten_spec = pd.read_pickle(sim_spec_path)
+                    ssp.final_spec(spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, flatten=False)
+                    final_spec = pd.read_pickle(sim_spec_path)
+
+                # ---------------------- Read SYNmast Spectra ----------------------
+                elif spec_type.lower() == 'synmast':
+                    prf_dir = syn_spec_path
+                    
+                    # mc_2700350+000_b2_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
+                    spec_base_name = f'mc_{tt}{self.logg*100:1.0f}+{self.FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+                    unflatten_spec_dir = f'{prf_dir}/{spec_base_name}'
+
+                    # Check if the prf file already exists
+                    if not os.path.exists(unflatten_spec_dir):
+                        print(f'   Don\'t have {unflatten_spec_dir}.')
+                        sys.exit('   Please get the spectra from synmast and put it in the syn_spec folder!')
+
+                    sim_spec_name = f'SimUse_Synmast_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_NOTflatten.p'
+                    sim_spec_path = f'{self.out_path}{sim_spec_name}'
+                    
+                    ssp.final_spec(spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, flatten=False)
+                    final_spec = pd.read_pickle(sim_spec_path) 
 
                 else:
-                    print('\n[ERROR] Can only handel PHX syn spec!\n')
+                    print('\n[ERROR] Can only handel PHX and Synmast spec!\n')
                 
                 # # sum total flux for intensity ratio calculation
                 # sum_up_flux = self.flux_sum(spec_base_path, tt, wvmin, wvmax)
                 # sum_up_flux_box.append(sum_up_flux)
 
                 spec = {
-                    f'{band}_v': flatten_spec['v'].to_numpy(), 
-                    f'{band}_f': flatten_spec['f'].to_numpy()
+                    f'{band}_v': final_spec['v'].to_numpy(), 
+                    f'{band}_f': final_spec['f'].to_numpy()
                     }
             
                 if idx==0:
@@ -224,7 +277,7 @@ class Star:
     def dw_phx(self, _spec_base_path, temp_list, alpha):
         '''Always dw PHX spectra as we need it for calculate flux intensity ratio'''
 
-        for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
+        for tt, nn in zip(temp_list, ['star', 'spot', 'plage', 'ccf_temp']):
             if (tt > 7000) | (tt < 2300) | (tt is None):
                 print(f'\n   [ERROR] Rassine normalization cfg not tuned for {tt}K\n')
         
@@ -238,10 +291,11 @@ class Star:
             spec_base_path = _spec_base_path.format(tt, self.logg, self.FeH)
             
             if os.path.exists(spec_base_path):
-                print('   Already have PHX spec:', spec_base_path)
+                # print('   Already have PHX spec:', spec_base_path)
+                pass
                 # phx_spec = pd.read_pickle(spec_base_path)
-                
             else:    
+                print('   Missing PHX spec: {spec_base_path}, downloading...')
                 ssp.get_phx_spec(
                     tt, self.logg, self.FeH, alpha, self.out_path)
 
@@ -495,6 +549,173 @@ def compute_bis(RV, CCF):
     depth=-k
     return depth, bis, span, v0, fwhm
 
+
+def detect_peaks(
+        x, mph=None, mpd=1, threshold=0, edge='rising',
+        kpsh=False, valley=False, show=False, ax=None):
+
+
+    x = np.atleast_1d(x).astype('float64')
+    if x.size < 3:
+        return np.array([], dtype=int)
+    if valley:
+        x = -x
+    # find indices of all peaks
+    dx = x[1:] - x[:-1]
+    # handle NaN's
+    indnan = np.where(np.isnan(x))[0]
+    if indnan.size:
+        x[indnan] = np.inf
+        dx[np.where(np.isnan(dx))[0]] = np.inf
+    ine, ire, ife = np.array([[], [], []], dtype=int)
+    if not edge:
+        ine = np.where((np.hstack((dx, 0)) < 0) & (np.hstack((0, dx)) > 0))[0]
+    else:
+        if edge.lower() in ['rising', 'both']:
+            ire = np.where((np.hstack((dx, 0)) <= 0) & (np.hstack((0, dx)) > 0))[0]
+        if edge.lower() in ['falling', 'both']:
+            ife = np.where((np.hstack((dx, 0)) < 0) & (np.hstack((0, dx)) >= 0))[0]
+    ind = np.unique(np.hstack((ine, ire, ife)))
+    # handle NaN's
+    if ind.size and indnan.size:
+        # NaN's and values close to NaN's cannot be peaks
+        ind = ind[np.in1d(ind, np.unique(np.hstack((indnan, indnan-1, indnan+1))), invert=True)]
+    # first and last values of x cannot be peaks
+    if ind.size and ind[0] == 0:
+        ind = ind[1:]
+    if ind.size and ind[-1] == x.size-1:
+        ind = ind[:-1]
+    # remove peaks < minimum peak height
+    if ind.size and mph is not None:
+        ind = ind[x[ind] >= mph]
+    # remove peaks - neighbors < threshold
+    if ind.size and threshold > 0:
+        dx = np.min(np.vstack([x[ind]-x[ind-1], x[ind]-x[ind+1]]), axis=0)
+        ind = np.delete(ind, np.where(dx < threshold)[0])
+    # detect small peaks closer than minimum peak distance
+    if ind.size and mpd > 1:
+        ind = ind[np.argsort(x[ind])][::-1]  # sort ind by peak height
+        idel = np.zeros(ind.size, dtype=bool)
+        for i in range(ind.size):
+            if not idel[i]:
+                # keep peaks with the same height if kpsh is True
+                idel = idel | (ind >= ind[i] - mpd) & (ind <= ind[i] + mpd) \
+                    & (x[ind[i]] > x[ind] if kpsh else True)
+                idel[i] = 0  # Keep current peak
+        # remove the small peaks and sort back the indices by their occurrence
+        ind = np.sort(ind[~idel])
+
+    if show:
+        if indnan.size:
+            x[indnan] = np.nan
+        if valley:
+            x = -x
+        # _plot(x, mph, mpd, threshold, edge, valley, ax, ind)
+    return ind
+
+def a0cont(a0vcut, plot=False, poly_order=1, spline_k=1, mpd=100):
+    '''
+    Performs first-pass fit to blaze shape of telluric standard spectrum.
+
+    Inputs:
+    a0wavecut : Wavelength scale of telluric standard spectrum
+    a0vcut    : Corresponding flux of telluric standard spectrum
+    night     : Date of observation in YYYYMMDD
+    order     : Echelle order, as characterized by file index (as opposed to m 
+                number; for conversion between the two, see Stahl et al. 2021)
+    band      : H or K band
+
+    Outputs:
+    continuum : Best fit blaze model
+    '''
+    x = np.arange(len(a0vcut))
+
+    # mpd: detect peaks that are at least separated by minimum peak distance
+    peaks = detect_peaks(a0vcut, mpd=mpd)
+    xtimes = 1
+
+    for _ in range(xtimes):
+        mask = np.ones(len(peaks), dtype=bool)
+
+        f = np.polyfit(x[peaks], a0vcut[peaks], poly_order)
+        q = np.poly1d(f)
+        residual = a0vcut[peaks] - q(x[peaks])
+        MAD = np.median(np.abs(residual - np.median(residual)))
+
+        mask[(a0vcut[peaks]/np.nanmedian(a0vcut) < .1)] = False
+        mask[(a0vcut[peaks] < q(x[peaks])-2*MAD)] = False
+        mask[(a0vcut[peaks] > q(x[peaks])+6*MAD)] = False
+        peaks = peaks[mask]
+
+    c = 0
+    for smoothing in np.arange(1e6, 1e8, 1e6):
+        f = interpolate.UnivariateSpline(
+            x[peaks], a0vcut[peaks], k=spline_k, s=smoothing)
+        continuum = f(x)
+        peaks2 = detect_peaks(continuum)
+        if len(peaks2) == 1:
+            c += 1
+        if c == 2:
+            break
+
+    if smoothing == 99000000.0:
+        for smoothing in np.arange(1e8, 1e10, 1e8):
+            f = interpolate.UnivariateSpline(
+                x[peaks], a0vcut[peaks], k=spline_k, s=smoothing)
+            continuum = f(x)
+            peaks2 = detect_peaks(continuum)
+            if len(peaks2) == 1:
+                c += 1
+            if c == 2:
+                break
+
+    # if plot:
+    #     plt.figure(figsize=(6,2.5), dpi=250)
+    #     plt.plot(x,a0vcut,color='black',alpha=.5)
+    #     plt.scatter(x[peaks],a0vcut[peaks],s=25,color='blue')
+    #     plt.plot(x,f(x),color='orange',alpha=.5)
+
+    return continuum, peaks
+
+def flatten_ccf_model_spec(vel, flux, RVandEWR_dir):
+    plot = True
+
+    _mpd = int(len(vel)*0.04)
+    cont, peaks = a0cont(
+        flux, plot=False, poly_order=2, spline_k=2, mpd=_mpd)
+    fluxp_flat = flux / cont
+    fluxp_flat = fluxp_flat/np.nanpercentile(fluxp_flat, 99)
+
+    ############################
+    if plot:
+        fig, ax = plt.subplots(
+                1, 1, figsize=(7,3), facecolor='white', dpi=250)
+        
+        ax.plot(vel, flux, '-k', lw=1, label='Org. model spec', alpha=0.6)
+        ax.plot(
+            vel, fluxp_flat, '-', c='tab:red', lw=0.8, 
+            label='Faltten model spec')
+        ax.plot(
+            vel[peaks], flux[peaks], 'o', c='tab:blue', ms=4, zorder=5, 
+            label='peaks')
+        ax.plot(vel, cont, '-', c='tab:orange', lw=1.)
+        ax.axhline(1, ls='-', lw=0.5, color='k', alpha=0.3)
+
+        ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+        ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+
+        ax.legend(loc='lower right', fontsize='x-small', ncol=4)
+        ax.set_xlabel('Velocity [km/s]')
+        ax.set_ylabel('Flux')
+        ax.set_ylim(0.4, 1.05)
+        fig.savefig(
+            f'./outputs/{RVandEWR_dir}/normal_spec/flatten_CCF_template.png', bbox_inches='tight'
+            )
+        plt.close(fig)
+        ############################
+        
+    return np.array(fluxp_flat)
+
 def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir):
     plot = True
     vel = Star.star_spec[f'{band}_v']
@@ -503,12 +724,10 @@ def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir):
     for i in range(len(visible_phi)):
         flux = flux_phi[i]
 
-        # detect peaks
-        peaks, _ = find_peaks(flux, distance=1000, height=0.97)
-        # fit a polynomial to the continuum
-        z = np.polyfit(vel[peaks], flux[peaks], 1)
-        p = np.poly1d(z)   
-        fluxp_flat = flux/p(vel)
+        _mpd = int(len(vel)*0.04)
+        cont, peaks = a0cont(
+            flux, plot=False, poly_order=2, spline_k=2, mpd=_mpd)
+        fluxp_flat = flux / cont
         fluxp_flat = fluxp_flat/np.nanpercentile(fluxp_flat, 99)
 
         ############################
@@ -516,18 +735,19 @@ def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir):
             fig, ax = plt.subplots(
                     1, 1, figsize=(7,3), facecolor='white', dpi=250)
             
-            ax.plot(vel, flux, '-k', lw=1, label='org')
-            ax.plot(vel, fluxp_flat, '--', c='tab:red', lw=0.8, label='flat_tel_corr')
-            ax.plot(vel[peaks], flux[peaks], 'bo', ms=4, zorder=5, label='peaks')
-            ax.plot(vel, p(vel), '-', c='tab:orange', lw=1.)
-
-            ax.axhline(1, ls='--', lw=0.5, color='tab:red')
+            ax.plot(vel, flux, '-k', lw=1, label='Org. model spec', alpha=0.6)
+            ax.plot(
+                vel, fluxp_flat, '-', c='tab:red', lw=0.8, 
+                label='Faltten model spec')
+            ax.plot(
+                vel[peaks], flux[peaks], 'o', c='tab:blue', ms=4, zorder=5, 
+                label='peaks')
+            ax.plot(vel, cont, '-', c='tab:orange', lw=1.)
+            ax.axhline(1, ls='-', lw=0.5, color='k', alpha=0.3)
 
             ax.xaxis.set_minor_locator(AutoMinorLocator(5))
             ax.yaxis.set_minor_locator(AutoMinorLocator(2))
 
-            # ax.axvline(15625.92261698/1e4, ls='--', lw=0.5, color='k')
-            # ax.set_ylim(0.55, 1.1)
             ax.legend(loc='lower right', fontsize='x-small', ncol=4)
             ax.set_xlabel('Velocity [km/s]')
             ax.set_ylabel('Flux')
@@ -541,32 +761,23 @@ def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir):
         nomral_spec_box.append(fluxp_flat)
     return np.array(nomral_spec_box)
 
-def get_equivelent_width(Star, flux_phi, visible_phi, band):
+def get_equivalent_width(Star, flux_phi, visible_phi, band):
 
-    d_fe1 = []
-    d_fe2 = []
-    d_oh0 = []
+    ew_fe1 = []; ew_fe2 = []; ew_oh0 = []
 
     ew_cal_regions = [
         [1.56230, 1.56290], 
         [1.56290, 1.56335], 
-        [1.56335, 1.56395]
-    ]
+        [1.56335, 1.56395]]
 
     band_center_wv = Star.bands2use[band][0] # [15631.35, 30, ['rv', 'photo']]
-    
     vel = Star.star_spec[f'{band}_v']
-    # trance vel back to wavelength
-    # vel = c * del_wv / wv
-    # del_wv = vel * wv / c
 
-    # c in km/s
     c_kms = 299792.458
 
-    # vel back to wv
+    # -- vel back to wv --
     del_wv = vel * band_center_wv / c_kms
     wave = (band_center_wv + del_wv) / 1e4
-    # print(f'\nwave: {wave}')
     
     for i in range(len(visible_phi)):
         flux = flux_phi[i]
@@ -582,14 +793,17 @@ def get_equivelent_width(Star, flux_phi, visible_phi, band):
             # print(ew)
 
             if r_udx == 0:
-                d_fe1.append(ew.value)
+                ew_fe1.append(ew.value)
             elif r_udx == 1:
-                d_oh0.append(ew.value)
+                ew_oh0.append(ew.value)
             elif r_udx == 2:
-                d_fe2.append(ew.value)
-       
+                ew_fe2.append(ew.value)
 
-    return d_fe1, d_fe2, d_oh0, None, None, None
+    oh_line = np.array(ew_oh0)
+    fe_line = (np.array(ew_fe1) + np.array(ew_fe2)) / 2
+    line_ratio = oh_line/fe_line
+
+    return line_ratio
 
 def get_line_depth(Star, CCFstar_tot, visible_phi, band):
 
@@ -806,102 +1020,148 @@ def _inst_broaden(inst_reso, rv, star_tot):
 
     return star_tot
 
+
 # @njit
-# def _cc(CCFstar_tot, vel, tw):
+def _cc(drvs, CCFstar_tot, vel, tw, tf, visible_phi, ii):
+     
+    tf = 1 - tf
+    CCFstar_tot = 1 - CCFstar_tot
+    cc = cc = np.empty(len(drvs))
+
+    f = CCFstar_tot[ii]
+    # Calculate the cross correlation
+    for i in range(len(drvs)):
+        rv = drvs[i]
+        interp_tf = np.interp(vel, tw+rv, tf)
+        cc[i] = np.sum(f * interp_tf)
     
-#     drvs = np.arange(-10, 10, 0.01)
+    # max_cc = np.max(cc)
+    # cc = max_cc - cc 
+
+    max_cc = np.max(cc)
+    count_max = 0
+    sum_max = 0.0
+    for i in range(len(drvs)):
+        if cc[i] == max_cc:
+            sum_max += drvs[i]
+            count_max += 1
+
+    np.save(f'./outputs/CCF/ccf_{visible_phi[ii]:1.3f}', cc)
+    vis.plot_cc(drvs, cc, visible_phi[ii])
+    vis.plot_cc_spec(vel, f, tw, tf, visible_phi[ii], drvs[np.argmax(cc)])
+
+    return sum_max / count_max
+
+# @njit
+# def _cc2(drvs, CCFstar_tot, vel, tw, tf, ii):
+
+#     tf = 1-tf
+#     CCFstar_tot = 1 - CCFstar_tot
+#     cc = np.empty(len(drvs))
+    
+#     f = CCFstar_tot[ii]
+#     # Calculate the cross correlation
+#     for i in range(len(drvs)):
+#         rv = drvs[i]
+#         cc[i] = np.sum(f * np.interp(vel, tw+rv, tf))
+#     cc = np.max(cc) - cc   
+    
+#     n_min = np.sum( cc == np.min(cc) )
+#     if n_min == 1:
+#         spot_cc4rv = drvs[np.argmin(cc)]
+#     else:
+#         drvs_temp = drvs[cc == np.min(cc)]
+#         spot_cc4rv = np.mean(drvs_temp)
+
+#     return spot_cc4rv
+
+# # @njit
+# def _cc(CCFstar_tot, vel, tw, tf, visible_phi):
+#     # the res for the vel is 10m/s, thus moving 
+#     # -10km to 10km is moving 1000 pixles
+#     # on both sides.
+#     # drvs_pixels = np.arange(-400, 401)
+#     # drvs = drvs_pixels * 0.025
+
+#     drvs = np.arange(-22, 22, 0.05)
+#     # spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
+#     # drvs = np.arange(-1, 1, 0.02)
 #     spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
 
+#     tf = 1-tf
 #     for ii in range(len(CCFstar_tot)):
-#         f = 1 - CCFstar_tot[ii]
-
-#         tf = np.zeros(len(tw))
-#         tf[tw==0] = np.max(f)
+#         f =  1-CCFstar_tot[ii]
 
 #         # Calculate the cross correlation
 #         cc = np.zeros(len(drvs))
 #         for i, rv in enumerate(drvs):
 #             cc[i] = np.sum(f * np.interp(vel, tw+rv, tf))
-            
-#         spot_cc4rv[ii] = drvs[np.argmax(cc)]
+#             # tw_shifted = tw+rv
+#             # tf_shifted = tf[(tw_shifted >= vel[0]) & (tw_shifted <= vel[-1])]
+#             # cc[i] = np.sum(f * tf_shifted )
+#         cc = np.max(cc) - cc   
+
+#         vis.plot_cc(drvs, cc, visible_phi[ii])
+#         vis.plot_cc_spec(vel, f, tw, tf, visible_phi[ii], drvs[np.argmin(cc)])
+        
+#         n_min = np.sum( cc == np.min(cc) )
+#         if n_min == 1:
+#             spot_cc4rv[ii] = drvs[np.argmin(cc)]
+#         else:
+#             drvs_temp = drvs[cc == np.min(cc)]
+#             spot_cc4rv[ii] = np.mean(drvs_temp)
 
 #     return spot_cc4rv
 
-# def cal_ccf_rv(CCFstar_tot, Ccf):
 
-#     vel = Ccf.rv
-
-#     exrtra_len = len(vel)//2
-#     l_extra = np.zeros(exrtra_len) + CCFstar_tot[0][0]
-#     r_extra = np.zeros(exrtra_len) + CCFstar_tot[0][-1]
-
-#     # CCF_quiet = np.append(l_extra, CCFstar_quiet)
-#     # CCF_quiet = np.append(CCF_quiet, r_extra)
-
-#     del_vel = vel[1] - vel[0]
-#     vel_temp = np.arange(
-#         vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, 
-#         del_vel
-#         )
-
-#     del_vel = stsp.rndup(vel[1] - vel[0], 2)
-#     vel_temp = np.arange(vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, del_vel)
-#     vel_temp = np.array([stsp.rndup(i, 2) for i in vel_temp])
-
-#     ccf_rv_shift = _cc(CCFstar_tot, vel, vel_temp)
-
-#     return ccf_rv_shift
-
-@njit
-# @njit(parallel=True)
-def _cc(CCFstar_tot, vel, tw, tf, visible_phi):
-    # the res for the vel is 10m/s, thus moving 
-    # -10km to 10km is moving 1000 pixles
-    # on both sides.
-    # drvs_pixels = np.arange(-400, 401)
-    # drvs = drvs_pixels * 0.025
-
-    drvs = np.arange(-7, 7, 0.03)
-    # spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
-    # drvs = np.arange(-1, 1, 0.02)
-    spot_cc4rv = np.zeros(len(CCFstar_tot), dtype=np.float64)
-
-    tf =  1-tf
-    for ii in range(len(CCFstar_tot)):
-        f =  1-CCFstar_tot[ii]
-
-        # Calculate the cross correlation
-        cc = np.zeros(len(drvs))
-        for i, rv in enumerate(drvs):
-            cc[i] = np.sum(f * np.interp(vel, tw+rv, tf))
-            # tw_shifted = tw+rv
-            # tf_shifted = tf[(tw_shifted >= vel[0]) & (tw_shifted <= vel[-1])]
-            # cc[i] = np.sum(f * tf_shifted )
-        cc = np.max(cc) - cc   
-
-        # vis.plot_cc(drvs, cc, visible_phi[ii])
-        # vis.plot_cc_spec(vel, f, tw, tf, visible_phi[ii], drvs[np.argmin(cc)])
-        
-        n_min = sum( cc == np.min(cc) )
-        if n_min == 1:
-            spot_cc4rv[ii] = drvs[np.argmin(cc)]
-        else:
-            drvs_temp = drvs[cc == np.min(cc)]
-            spot_cc4rv[ii] = np.mean(drvs_temp)
-
-    return spot_cc4rv
-
-
-def cal_ccf_rv(star_tot, Star, visible_phi, band):
-
+def cal_ccf_rv(
+        star_tot, Star, visible_phi, band, rv_ccf_pars, prf_dir, 
+        cpu_use, RVandEWR_dir):
+    visible_phi = np.array(visible_phi)
     vel = Star.star_spec[f'{band}_v']
     vel = np.array([stsp.rndup(i, 4) for i in vel])
 
-    spec_temp = star_tot[np.argmin(np.abs(visible_phi))]
+    # --- get ccf template ---
+    line_cen = Star.bands2use[band][0]
+    delta_wv = Star.bands2use[band][1]
+    wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
+    wvmin = int(wvmin); wvmax = int(wvmax)
+    
+    ccf_tt, ccf_logg, ccf_FeH, ccf_vsini, ccf_resolution = rv_ccf_pars
 
-    # print('\nUsing Phase {:1.3f} as CCF template...'.format(
-    #     visible_phi[np.argmin(np.abs(visible_phi))]
-    # ))
+    # Use user give par to generate ccf template
+    if ccf_tt != 99999:
+        # mc_2700350+000_b2_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
+        spec_base_name = f'mc_{ccf_tt:1.0f}{ccf_logg*100:1.0f}+{ccf_FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+        spec_dir = f'{prf_dir}/{spec_base_name}'
+    
+        sim_spec_name = f'RVCCFUse_Synmast_spec_{ccf_tt:1.0f}_{ccf_logg:1.2f}_{ccf_FeH:1.2f}_vsini{ccf_vsini:1.02f}_res{ccf_resolution:1.0f}_wv{wvmin}_{wvmax}_flatten.p'
+        sim_spec_path = f'{Star.out_path}{sim_spec_name}'
+
+        ssp.final_spec(
+            'ccf_temp', spec_dir, sim_spec_path, wvmin, wvmax, flatten=True, pars=rv_ccf_pars)
+        _temp = pd.read_pickle(sim_spec_path)
+        spec_temp = _temp['f'].to_numpy()
+    # Use spot covergae to estimate the teff for spec as ccf template
+    else:
+        vel_temp = Star.ccf_spec_flatten[f'{band}_v']
+        spec_temp = Star.ccf_spec_flatten[f'{band}_f']
+
+        spec_temp = flatten_ccf_model_spec(vel_temp, spec_temp, RVandEWR_dir)
+
+        c_kms = 299792.458
+        w_center = (wvmin + wvmax) / 2
+        wave_temp = vel_temp * w_center / c_kms + w_center
+        # do vsini
+        wave_temp, spec_temp = rotint(wave_temp, spec_temp, Star.vsini)
+        # do instrumental broadening
+        hwhm_list = wave_temp / Star.inst_res / 2
+        spec_temp = macbro_dyn(wave_temp, spec_temp, hwhm_list)
+
+        vel_temp = c_kms * (wave_temp - w_center) / w_center
+
+        tck = interpolate.splrep(vel_temp, spec_temp, s=0)    
+        spec_temp = interpolate.splev(vel, tck, der=0)
 
     exrtra_len = 1000
     del_vel = stsp.rndup(vel[1] - vel[0], 4)
@@ -909,20 +1169,63 @@ def cal_ccf_rv(star_tot, Star, visible_phi, band):
         vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, 
         del_vel
         )
-    # vel_temp = np.append(
-    #     np.arange(vel[0]-exrtra_len*del_vel, vel[0], del_vel), vel
-    #     )
-    # vel_temp = np.append(
-    #     vel_temp, np.arange(vel[-1], vel[-1]+exrtra_len*del_vel, del_vel)
-    #     )
     vel_temp = np.array([stsp.rndup(i, 4) for i in vel_temp])
     spec_temp = np.append(np.zeros(exrtra_len)+spec_temp[0], spec_temp)
     spec_temp = np.append(spec_temp, np.zeros(exrtra_len)+spec_temp[-1])
 
+    ##########################################################################################
+    # ccf_rv_shift = _cc(star_tot, vel, vel_temp, spec_temp, visible_phi)
+    # ccf_rv_shift = ccf_rv_shift - np.median(ccf_rv_shift)
     # print(f'vel: {vel}, tw: {vel_temp}, tf: {spec_temp}')
     # print(f'vel: {vel.shape}, tw: {vel_temp.shape}, tf: {spec_temp.shape}')
-    ccf_rv_shift = _cc(star_tot, vel, vel_temp, spec_temp, np.array(visible_phi))
-    ccf_rv_shift = ccf_rv_shift - np.median(ccf_rv_shift)
+
+    ##########################################################################################
+    # If the number of phases is larger then 10, do trial ccf to get RV ranges
+    if len(visible_phi) <= 10:
+        drvs = np.arange(-25, 25, 0.01) # CCF from -25 to +25 km/s in a 50 m/s step
+        
+        func = partial(
+            _cc, drvs, star_tot, vel, vel_temp, spec_temp, visible_phi)
+        ccf_rv_shift = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
+        ccf_rv_shift = np.array(ccf_rv_shift)
+        # ccf_rv_shift = _cc(drvs, star_tot, vel, vel_temp, spec_temp)
+        ccf_rv_shift = ccf_rv_shift - np.median(ccf_rv_shift)
+    else:
+        # trial CCF on phase closested to 0.1
+        _loc0 = np.argmin(np.abs(visible_phi-0.0))
+        _loc1 = np.argmin(np.abs(visible_phi-0.1))
+        _loc9 = np.argmin(np.abs(visible_phi-0.9))
+        trial_locs = [_loc0, _loc1, _loc9]
+        print(trial_locs)
+        trial_drvs = np.arange(-25, 25, 0.01)
+        
+        func = partial(
+            _cc, trial_drvs, star_tot[trial_locs], vel, vel_temp, spec_temp, visible_phi)
+        _rv_shift = pqdm(np.arange(3), func, n_jobs=3)
+        _rv_shift = np.array(_rv_shift)        
+        print('_rv_shift', _rv_shift)
+
+        ccf_bound = np.round(np.abs(_rv_shift), decimals=0)
+        ccf_bound = ccf_bound[np.argmax(ccf_bound)] * 2
+        print(f'ccf_bound: {ccf_bound}')
+
+        if ccf_bound < 5:
+            ccf_step = 0.01
+        elif (ccf_bound>=5) & (ccf_bound < 10):
+            ccf_step = 0.025
+        else:
+            ccf_step = 0.05
+        drvs_full = np.arange(-ccf_bound, ccf_bound, ccf_step)
+        print(f'drvs_full: {drvs_full}')
+        
+        func = partial(
+            _cc, drvs_full, star_tot, vel, vel_temp, spec_temp, visible_phi)
+        ccf_rv_shift = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
+        ccf_rv_shift = np.array(ccf_rv_shift)
+        ccf_rv_shift = ccf_rv_shift - np.median(ccf_rv_shift)
+
+    #     # print(f'Phase {visible_phi[_loc]} ccf_rv_shift: {_rv_shift}')
+
     return ccf_rv_shift
 
 

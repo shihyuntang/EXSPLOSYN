@@ -195,10 +195,9 @@ def map_add_grid(axins, incl, radius, phase):
 
 def spot_view_pel(
     Star, grid, visible_phi, SPECstar_tot, ccf_rv_shift, quite_surface_2d, 
-    outdir, depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, 
-    depth_l_oh0, text1, text2, band, j
-    ):
-    f = plt.figure(figsize=(7, 3.5))
+    outdir, ohfe_ratio, text1, text2, band, j):
+    
+    fig = plt.figure(figsize = (7, 3.5), dpi=300 )
 
     gs1 = gridspec.GridSpec(1, 1)
     gs1.update(left=0.0, right=0.35, bottom=0.3, top=1.)#, wspace=0.0, hspace=0.16)
@@ -223,46 +222,26 @@ def spot_view_pel(
         transform=ax1.transAxes)
     
     ax2.plot(Star.star_spec[f'{band}_v'], SPECstar_tot[j], '-k', lw=1)
-    # ax2.plot(
-    #     [depth_l_fe1[j], depth_l_fe2[j], depth_l_oh0[j]],
-    #     (np.array([depth_d_fe1[j], depth_d_fe2[j], depth_d_oh0[j]])-1)/-1,
-    #     's', ms=.6, mew=.6, color='tab:grey')
 
     ax2.set_ylim(np.min(SPECstar_tot)-0.05, 1.05)
-    # ax2.set_xlim(-250, 250)
     ax2.set_xlim(Star.star_spec[f'{band}_v'][0], Star.star_spec[f'{band}_v'][-1])
     ax2.set_xlabel(r'Velocity [km s$^{-1}$]',  size='small')
     ax2.set_ylabel(f'Normalized Flux',  size='small')
     
     if 'OH' in band:
-        oh_line = np.array(depth_d_oh0)
-        fe_line = (np.array(depth_d_fe1) + np.array(depth_d_fe2)) / 2
-        line_ratio = oh_line/fe_line
 
-        ax3.plot(visible_phi[:j], line_ratio[:j], '-o', c='tab:grey', ms=2, mew=2)
-        ax3.plot(visible_phi[j], line_ratio[j], 'o', c='k', ms=2, mew=2)
+        ax3.plot(visible_phi[:j], ohfe_ratio[:j], '-o', c='tab:grey', ms=2, mew=2)
+        ax3.plot(visible_phi[j], ohfe_ratio[j], 'o', c='k', ms=2, mew=2)
 
-        ax3.set_ylim(np.min(line_ratio)-0.1, np.max(line_ratio)+0.1)
-    ax3.set_xlim(-0.3, 1.3)
+        ax3.set_ylim(np.min(ohfe_ratio)-0.1, np.max(ohfe_ratio)+0.1)
+    ax3.set_xlim(-0.5, 1.5)
     ax3.set_xlabel(r'Phase',  size='small')
-    # ax3.set_ylabel('Line depth ratio (OH/Fe)',  size='small')
     ax3.set_ylabel('Equivalent Width Ratio  (OH/Fe)',  size='small')
 
-# --- ccf rv from normal soap2 procedure ---
+    # --- ccf rv from normal soap2 procedure ---
     ax3right = ax3.twinx()
     ax3right.plot(visible_phi[:j], ccf_rv_shift[:j], '-o', c='skyblue', ms=2, mew=2)
     ax3right.plot(visible_phi[j], ccf_rv_shift[j], 'o', c='tab:blue', ms=2, mew=2)
-
-# --- ccf rv from normal taking the vel var of min in left Fe line ---
-    # Fe_left_zero_vel = -103.599
-    # ax3right.plot(
-    #     visible_phi[:j], np.array(depth_l_fe1[:j])-Fe_left_zero_vel, '-o', 
-    #     c='wheat', ms=2, mew=2
-    #     )
-    # ax3right.plot(
-    #     visible_phi[j], np.array(depth_l_fe1[j])-Fe_left_zero_vel, 'o', 
-    #     c='tab:orange', ms=2, mew=2
-    #     )
     
     rv_std = np.std(ccf_rv_shift)
     ax3right.set_ylim(
@@ -295,26 +274,27 @@ def spot_view_pel(
         0.05, -0.45, text2, family='monospace', size=5, 
         transform=ax1.transAxes, ha='left', va='top')
 
-    # f.savefig(
-    #     f'{outdir}/phase{visible_phi[j]:1.3f}.png', format='png', bbox_inches='tight')
-    f.savefig(
-        f'{outdir.split("/")[1]}/phase{visible_phi[j]:1.3f}_{band}.png', 
+    out_dir_pre = f'./outputs/{outdir.split("/")[2]}'
+    fig.savefig(
+        f'{out_dir_pre}/gif_tmp/phase{visible_phi[j]:1.3f}_{band}.png', 
         format='png', bbox_inches='tight')
-    plt.close()
+    plt.close(fig)
 
 def spot_view(
     Star, grid, visible_phi, SPECstar_tot, ccf_rv_shift, quite_surface_2d, 
-    outdir, cpu_use, depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, 
-    depth_l_fe2, depth_l_oh0, text1, text2, band
+    outdir, cpu_use, ohfe_ratio, text1, text2, band
     ):
 
     # ------------------------------------------
     print('\nPlotting...\n')
 
+    out_dir_pre = f'./outputs/{outdir.split("/")[2]}'
+    out_dir_pre_tmp = f"{out_dir_pre}/gif_tmp"
+    os.makedirs(out_dir_pre_tmp, exist_ok=True)
     func = partial(
         spot_view_pel, Star, grid, visible_phi, 
-        SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, depth_d_fe1, depth_d_fe2, 
-        depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2, band
+        SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, ohfe_ratio, 
+        text1, text2, band
         )
     
     # for ii in np.arange(len(visible_phi)):
@@ -323,27 +303,27 @@ def spot_view(
     #     depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2, band, ii)
     
     pqdm(np.arange(len(visible_phi)), func, n_jobs=cpu_use)
-   
-    status, _ = subprocess.getstatusoutput('magick')
+    
+    status, _ = subprocess.getstatusoutput('convert') #magick
     if status <= 1:
         print('\nNow making .gif\n')
         working_dir = os.getcwd()
-        os.chdir(f'{outdir.split("/")[1]}')
-        os.system('magick -delay 20 +dither $(ls *.png | sort -k 1.6g) temp.gif')
-        os.system('magick temp.gif \( +clone -set delay 300 \) +swap +delete temp.gif')
-        os.system(f'mv temp.gif "{outdir.split("/")[-1]}_{band}.gif"')
-        os.system(f'rm *.png')
+        os.chdir(out_dir_pre_tmp)
+        os.system('convert -delay 20 +dither $(ls *.png | sort -k 1.6g) temp.gif')
+        os.system('convert temp.gif \( +clone -set delay 300 \) +swap +delete temp.gif')
+        os.system(f'mv temp.gif "../{outdir.split("/")[-1]}_{band}.gif"')
+        os.chdir('../')
+        os.system(f'rm -r gif_tmp')
         os.chdir(working_dir)
     else:
-        print('\n"magick" function not found, skip making .gif\n')
-
+        print('\n"magick or convert" function not found, skip making .gif\n')
 
 
 
 def plot_cc(drvs, cc, phase):
-    drvs_temp = drvs[cc == np.min(cc)]
+    drvs_temp = drvs[cc == np.max(cc)]
 
-    f, ax = plt.subplots(1, 1, figsize=(4, 3))
+    fig, ax = plt.subplots(1, 1, figsize=(4, 3))
 
     ax.plot(drvs, cc, 'k-', lw=.7)
 
@@ -357,11 +337,11 @@ def plot_cc(drvs, cc, phase):
         axis='both', which='both', labelsize='small', right=True, 
         top=True, direction='in', width=.7)
     
-    f.savefig(
+    fig.savefig(
         f'./outputs/CCF/phase{phase:1.3f}.png', format='png', 
         bbox_inches='tight'
         )
-    plt.close()
+    plt.close(fig)
 
 
 def plot_cc_spec(vel, f, tw, tf, phase, delrv):
@@ -383,6 +363,6 @@ def plot_cc_spec(vel, f, tw, tf, phase, delrv):
         f'./outputs/CCF/phase{phase:1.3f}_spec.png', format='png', 
         bbox_inches='tight'
         )
-    plt.close()
+    plt.close(fig)
 
     
