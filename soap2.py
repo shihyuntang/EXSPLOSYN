@@ -22,6 +22,8 @@ from basic_spec import rotint
 from macbro_dynamic import macbro_dyn
 from pqdm.processes import pqdm
 
+from rebin_jv import rebin_jv
+
 
 class Star:
     def __init__(
@@ -60,7 +62,9 @@ class Star:
         self.FeH            = FeH
         self.bands2use      = bands2use
     
-    def find_spec_flatten(self, spec_type, active_region_sizes, syn_spec_path=None):
+    def find_spec_flatten(
+            self, spec_type, active_region_sizes, Vel_bin_size, 
+            syn_spec_path=None):
         self.spec_type = spec_type
         self.intensity_ratio = {}
 
@@ -76,16 +80,16 @@ class Star:
 
         self.out_path = f'{os.getcwd()}/syn_spec/'  
 
-        # -- Estimated the Teff --
-        spot_portion = 0 # visible "DISK" portion
-        for ss in active_region_sizes:
-            spot_portion = spot_portion + ss**2
-        est_teff = self.Temp**4*(1-spot_portion) \
-            + self.Tspot**4*spot_portion
-        est_teff = int(est_teff**0.25)
-        print(f'\nEstimated Teff for the CCF synthetic template: {est_teff:1.0f} K') 
+        # # -- Estimated the Teff --
+        # spot_portion = 0 # visible "DISK" portion
+        # for ss in active_region_sizes:
+        #     spot_portion = spot_portion + ss**2
+        # est_teff = self.Temp**4*(1-spot_portion) \
+        #     + self.Tspot**4*spot_portion
+        # est_teff = int(est_teff**0.25)
+        # print(f'\nEstimated Teff for the CCF synthetic template: {est_teff:1.0f} K') 
 
-        temp_list = [self.Temp, self.Tspot, self.Tfaculae, est_teff]
+        temp_list = [self.Temp, self.Tspot, self.Tfaculae]
 
         print('\nChecking flatten spectra templates for')
         print(f'   {temp_list} K\n')
@@ -111,7 +115,7 @@ class Star:
 
             sum_up_flux_box = []
             
-            for tt, nn in zip(temp_list, ['star', 'spot', 'plage', 'ccf_temp']):
+            for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
                 # ---------------------- Read PHX SYN Spectra ----------------------
                 if spec_type.lower() == 'phx':
                     
@@ -126,7 +130,9 @@ class Star:
                     sim_spec_path = f'{self.out_path}{sim_spec_name}'
                     
                     # 2. cut the flattened spectra to the region of interest and transfer wavelength to velocity
-                    ssp.final_spec(spec_type, flat_spec_dir, sim_spec_path, wvmin, wvmax, flatten=True)
+                    ssp.final_spec(
+                        spec_type, flat_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        Vel_bin_size, flatten=True)
                     flatten_spec = pd.read_pickle(sim_spec_path)
                 
                 # ---------------------- Read SYNmast Spectra ----------------------
@@ -145,7 +151,9 @@ class Star:
                     sim_spec_name = f'SimUse_Synmast_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_flatten.p'
                     sim_spec_path = f'{self.out_path}{sim_spec_name}'
                     
-                    ssp.final_spec(spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, flatten=True)
+                    ssp.final_spec(
+                        spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        Vel_bin_size, flatten=True)
                     flatten_spec = pd.read_pickle(sim_spec_path) 
 
                 else:
@@ -182,7 +190,7 @@ class Star:
             self.intensity_ratio[band] = sum_up_flux_box[1]/sum_up_flux_box[0]
             # print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
         
-    def find_spec(self, spec_type, syn_spec_path=None):
+    def find_spec(self, spec_type, Vel_bin_size, syn_spec_path=None):
         self.spec_type = spec_type
         self.intensity_ratio = {}
 
@@ -221,7 +229,9 @@ class Star:
                     
                     unflatten_spec_dir = spec_base_path.format(tt, self.logg, self.FeH)
                     
-                    ssp.final_spec(spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, flatten=False)
+                    ssp.final_spec(
+                        spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        Vel_bin_size, flatten=False)
                     final_spec = pd.read_pickle(sim_spec_path)
 
                 # ---------------------- Read SYNmast Spectra ----------------------
@@ -240,7 +250,9 @@ class Star:
                     sim_spec_name = f'SimUse_Synmast_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_NOTflatten.p'
                     sim_spec_path = f'{self.out_path}{sim_spec_name}'
                     
-                    ssp.final_spec(spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, flatten=False)
+                    ssp.final_spec(
+                        spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        Vel_bin_size, flatten=False)
                     final_spec = pd.read_pickle(sim_spec_path) 
 
                 else:
@@ -277,7 +289,7 @@ class Star:
     def dw_phx(self, _spec_base_path, temp_list, alpha):
         '''Always dw PHX spectra as we need it for calculate flux intensity ratio'''
 
-        for tt, nn in zip(temp_list, ['star', 'spot', 'plage', 'ccf_temp']):
+        for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
             if (tt > 7000) | (tt < 2300) | (tt is None):
                 print(f'\n   [ERROR] Rassine normalization cfg not tuned for {tt}K\n')
         
@@ -677,7 +689,7 @@ def a0cont(a0vcut, plot=False, poly_order=1, spline_k=1, mpd=100):
 
     return continuum, peaks
 
-def flatten_ccf_model_spec(vel, flux, RVandEWR_dir):
+def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir):
     plot = True
 
     _mpd = int(len(vel)*0.04)
@@ -709,7 +721,7 @@ def flatten_ccf_model_spec(vel, flux, RVandEWR_dir):
         ax.set_ylabel('Flux')
         ax.set_ylim(0.4, 1.05)
         fig.savefig(
-            f'./outputs/{RVandEWR_dir}/normal_spec/flatten_CCF_template.png', bbox_inches='tight'
+            f'./outputs/{RVandEWR_dir}/normal_spec/flatten_{band}_CCF_template.png', bbox_inches='tight'
             )
         plt.close(fig)
         ############################
@@ -1021,36 +1033,76 @@ def _inst_broaden(inst_reso, rv, star_tot):
     return star_tot
 
 
-# @njit
-def _cc(drvs, CCFstar_tot, vel, tw, tf, visible_phi, ii):
+# # @njit
+# def _cc(drvs, CCFstar_tot, vel, tw, tf, visible_phi, ii):
      
-    tf = 1 - tf
-    CCFstar_tot = 1 - CCFstar_tot
-    cc = cc = np.empty(len(drvs))
+#     tf = 1 - tf
+#     CCFstar_tot = 1 - CCFstar_tot
+#     cc = cc = np.empty(len(drvs))
 
-    f = CCFstar_tot[ii]
-    # Calculate the cross correlation
-    for i in range(len(drvs)):
-        rv = drvs[i]
-        interp_tf = np.interp(vel, tw+rv, tf)
-        cc[i] = np.sum(f * interp_tf)
+#     f = CCFstar_tot[ii]
+#     # Calculate the cross correlation
+#     for i in range(len(drvs)):
+#         rv = drvs[i]
+#         interp_tf = np.interp(vel, tw+rv, tf)
+#         cc[i] = np.sum(f * interp_tf)
     
-    # max_cc = np.max(cc)
-    # cc = max_cc - cc 
+#     # max_cc = np.max(cc)
+#     # cc = max_cc - cc 
 
-    max_cc = np.max(cc)
-    count_max = 0
-    sum_max = 0.0
-    for i in range(len(drvs)):
-        if cc[i] == max_cc:
-            sum_max += drvs[i]
-            count_max += 1
+#     max_cc = np.max(cc)
+#     count_max = 0
+#     sum_max = 0.0
+#     for i in range(len(drvs)):
+#         if cc[i] == max_cc:
+#             sum_max += drvs[i]
+#             count_max += 1
 
-    np.save(f'./outputs/CCF/ccf_{visible_phi[ii]:1.3f}', cc)
-    vis.plot_cc(drvs, cc, visible_phi[ii])
-    vis.plot_cc_spec(vel, f, tw, tf, visible_phi[ii], drvs[np.argmax(cc)])
+#     np.save(f'./outputs/CCF/ccf_{visible_phi[ii]:1.3f}', cc)
+#     vis.plot_cc(drvs, cc, visible_phi[ii])
+#     vis.plot_cc_spec(vel, f, tw, tf, visible_phi[ii], drvs[np.argmax(cc)])
+#     ccf_rv_shift = sum_max / count_max
+    
+#     if -np.abs(ccf_rv_shift) == drvs[0]:
+#         ccf_rv_shift = np.nan
+#         # vis.plot_cc(drvs, cc, visible_phi[ii])
+#         # vis.plot_cc_spec(vel, f, tw, tf, visible_phi[ii], drvs[np.argmax(cc)])
+#         print(f'\n     >>>> CCF hit edge for {visible_phi[ii]:1.3f}!')
+        
+#     return ccf_rv_shift
 
-    return sum_max / count_max
+# @njit
+# def _cc(drvs, CCFstar_tot, vel, tw, tf, visible_phi, ii):
+     
+#     tf = 1 - tf
+#     CCFstar_tot = 1 - CCFstar_tot
+#     cc = cc = np.empty(len(drvs))
+
+#     f = CCFstar_tot[ii]
+#     # Calculate the cross correlation
+#     for i in range(len(drvs)):
+#         rv = drvs[i]
+#         interp_tf = np.interp(vel, tw+rv, tf)
+#         cc[i] = np.sum(f * interp_tf)
+    
+#     # max_cc = np.max(cc)
+#     # cc = max_cc - cc 
+
+#     # max_cc = np.max(cc)
+#     # count_max = 0
+#     # sum_max = 0.0
+#     # for i in range(len(drvs)):
+#     #     if cc[i] == max_cc:
+#     #         sum_max += drvs[i]
+#     #         count_max += 1
+
+#     # np.save(f'./outputs/CCF/ccf_{visible_phi[ii]:1.3f}', cc)
+#     # vis.plot_cc(drvs, cc, visible_phi[ii])
+#     # vis.plot_cc_spec(vel, f, tw, tf, visible_phi[ii], drvs[np.argmax(cc)])
+#     # ccf_rv_shift = sum_max / count_max
+
+        
+#     return cc
 
 # @njit
 # def _cc2(drvs, CCFstar_tot, vel, tw, tf, ii):
@@ -1113,20 +1165,262 @@ def _cc(drvs, CCFstar_tot, vel, tw, tf, visible_phi, ii):
 
 #     return spot_cc4rv
 
+@njit
+def _ccf(drvs, mode, w, f, tw, tf, c, weights, meanWl):
+    
+    # Calculate the cross correlation
+    cc = np.zeros(len(drvs), dtype=float)
+    df = f - np.nansum(f)/len(f)
+
+    i = 0
+    for rv in drvs:
+        if mode == "lin":
+            # Shift the template linearly
+            # fi = sci.interp1d(tw + meanWl * (rv / c), tf)
+            # f_shifted = fi(w) * weights
+            f_shifted = np.interp(w, tw + meanWl * (rv / c), tf) * weights
+            dfs = f_shifted - np.nansum(f_shifted)/len(f_shifted)
+        elif mode == "doppler":
+            # Apply the Doppler shift
+            # fi = sci.interp1d(tw * (1.0 + rv / c), tf)
+
+            # fi = sci.splrep(tw * (1.0 + rv / c), tf, s=0) 
+            # f_shifted = sci.splev(w, fi, der=0) * weights
+            f_shifted = np.interp(w, tw * (1.0 + rv / c), tf) * weights
+            dfs = f_shifted - np.nansum(f_shifted)/len(f_shifted)
+
+            # cc[i] = np.sum(f * sci.splev(w, fi, der=0) * weights)
+            # f_new = sci.splev(v_new, tck, der=0)
+        i += 1
+        # Shifted template evaluated at location of spectrum
+
+        cc[i] = np.nansum(df * dfs * weights)
+        # cc /= np.sqrt(np.nansum(df**2) * np.nansum(dfs**2))
+    return cc
+
+def ccf_rv(
+    w,
+    f,
+    tw,
+    tf,
+    rvmin,
+    rvmax,
+    drv,
+    mode="doppler",
+    skipedge=0,
+    edgeTapering=None,
+    weights=None,
+    meanwvl=None,
+    ):
+    """
+    Cross-correlate a spectrum with a template.
+    modified from 
+    https://github.com/sczesla/PyAstronomy/blob/master/src/pyasl/asl/crosscorr.py#L138
+
+    The algorithm implemented here works as follows: For
+    each RV shift to be considered, the wavelength axis
+    of the template is shifted, either linearly or using
+    a proper Doppler shift depending on the `mode`. The
+    shifted template is then linearly interpolated at
+    the wavelength points of the observation
+    (spectrum) to calculate the cross-correlation function.
+
+    (see, e.g., `Lookwood et al. 2014, ApJ 783 <https://ui.adsabs.harvard.edu/abs/2014ApJ...783L..29L/abstract>`_).
+    
+    Parameters
+    ----------
+    w : array
+        The wavelength axis of the observation.
+    f : array
+        The flux axis of the observation.
+    tw : array
+        The wavelength axis of the template.
+    tf : array
+        The flux axis of the template.
+    rvmin : float
+        Minimum radial velocity for which to calculate
+        the cross-correlation function [km/s].
+    rvmax : float
+        Maximum radial velocity for which to calculate
+        the cross-correlation function [km/s].
+    drv : float
+        The width of the radial-velocity steps to be applied
+        in the calculation of the cross-correlation
+        function [km/s].
+    mode : string, {lin, doppler}, optional
+        The mode determines how the wavelength axis will be
+        modified to represent a RV shift. If "lin" is specified,
+        a mean wavelength shift will be calculated based on the
+        mean wavelength of the observation. The wavelength axis
+        will then be shifted by that amount. If "doppler" is
+        specified (the default), the wavelength axis will
+        properly be Doppler-shifted.
+    skipedge : int, optional
+        If larger zero, the specified number of bins will be
+        skipped from the begin and end of the observation. This
+        may be useful if the template does not provide sufficient
+        coverage of the observation.
+    edgeTapering : float or tuple of two floats
+        If not None, the method will "taper off" the edges of the
+        observed spectrum by multiplying with a sine function. If a float number
+        is specified, this will define the width (in wavelength units)
+        to be used for tapering on both sides. If different tapering
+        widths shall be used, a tuple with two (positive) numbers
+        must be given, specifying the width to be used on the low- and
+        high wavelength end. If a nonzero 'skipedge' is given, it
+        will be applied first. Edge tapering can help to avoid
+        edge effects (see, e.g., Gullberg and Lindegren 2002, A&A 390).
+    weights : array of floats, optional
+        If given, it specifies weights for individual data points (given by f).
+        A possible choice for weights is 1/sigma_i**2 where sigma_i is the
+        uncertainty of the i-th data point.
+    meanwvl : float, optional
+        If given, this value will be adopted for the mean wavelength
+        :math:`\\bar{w}` to calculate shifts in 'lin' mode instead of
+        the mean of the input array w.
+
+    Returns
+    -------
+    dRV : array
+        The RV axis of the cross-correlation function. The radial
+        velocity refer to a shift of the template, i.e., positive
+        values indicate that the template has been red-shifted and
+        negative numbers indicate a blue-shift of the template.
+        The numbers are given in km/s.
+    CC : array
+        The cross-correlation function.
+    """
+
+    
+
+    if weights is None:
+        weights = np.ones_like(w, dtype=float)
+    else:
+        weights = weights.copy()
+
+    # Copy and cut wavelength and flux arrays
+    w, f = w.copy(), f.copy()
+    if skipedge > 0:
+        w, f = w[skipedge:-skipedge], f[skipedge:-skipedge]
+        weights = weights[skipedge:-skipedge]
+
+    if edgeTapering is not None:
+        # Smooth the edges using a sine
+        if isinstance(edgeTapering, (float, int)):
+            edgeTapering = [float(edgeTapering), float(edgeTapering)]
+
+        # Carry out edge tapering (left edge)
+        indi = np.where(w < w[0] + edgeTapering[0])[0]
+        f[indi] *= np.sin((w[indi] - w[0]) / edgeTapering[0] * np.pi / 2.0)
+        # Carry out edge tapering (right edge)
+        indi = np.where(w > (w[-1] - edgeTapering[1]))[0]
+        f[indi] *= np.sin(
+            (w[indi] - w[indi[0]]) / edgeTapering[1] * np.pi / 2.0 + np.pi / 2.0
+        )
+
+    # Speed of light in km/s
+    c = 299792.458
+
+    # Check whether template is large enough
+    if mode == "lin":
+        if meanwvl is None:
+            meanWl = np.mean(w)
+        else:
+            meanWl = meanwvl
+        dwlmax = meanWl * (rvmax / c)
+        dwlmin = meanWl * (rvmin / c)
+        if (tw[0] + dwlmax) > w[0]:
+            print("The minimum wavelength is not covered by the template for all indicated RV shifts.")
+            return None
+               
+        if (tw[-1] + dwlmin) < w[-1]:
+            print("The maximum wavelength is not covered by the template for all indicated RV shifts.")
+            return None
+    elif mode == "doppler":
+        # Ensure that the template covers the entire observation range for all Doppler shifts
+        maxwl = tw[-1] * (1.0 + rvmin / c)
+        minwl = tw[0] * (1.0 + rvmax / c)
+
+        if minwl > w[0]:
+            print("The minimum wavelength is not covered by the template for all indicated RV shifts.")
+            print(f"  Template too short after applying RV: min shifted λ = {minwl:1.4f}, but observation starts at {w[0]:1.4f}")
+            return None
+
+        if maxwl < w[-1]:
+            print("The maximum wavelength is not covered by the template for all indicated RV shifts.")
+            print(f"  Template not long enough after applying RV: max shifted λ = {maxwl:1.4f}, but observation ends at {w[-1]:1.4f}")
+            return None
+    else:
+        print('Error')
+        return None
+    
+    # Calculate the cross correlation
+    drvs = np.arange(rvmin, rvmax, drv, dtype=float)
+
+    # --- using numba ---
+    if mode == "lin":
+        cc = _ccf(drvs, mode, w, f, tw, tf, c, weights, meanWl)
+    elif mode == "doppler":
+        meanWl = 0
+        cc = _ccf(drvs, mode, w, f, tw, tf, c, weights, meanWl)
+    # ------------------
+        
+    return cc
+
+def mc_ccf(
+        wave_obs, flux_obs_nor_box, wave_tem, flux_tem_nor, 
+        ccf_lw, ccf_up, step_size, skipedge, visible_phi, i):
+    flux_obs_nor = flux_obs_nor_box[i]
+    cc = ccf_rv(
+        wave_obs, flux_obs_nor, wave_tem, flux_tem_nor, 
+        ccf_lw, ccf_up, step_size, mode="doppler", 
+        skipedge=skipedge)
+    # rv[np.argmax(cc)]
+    return cc
+
+def get_ccf_peak(ccf_box, drvs, visible_phi, band):
+    new_rv_box = []
+
+    for i in range(len(ccf_box)):
+        ccf = ccf_box[i]
+        peaks, properties = find_peaks(ccf, prominence=0.0001) 
+
+        if len(peaks) != 0:
+            new_rv = drvs[peaks][0]
+
+            if -np.abs(new_rv) == drvs[0]:
+                new_rv = np.nan
+                print(f'\n     >>>> CCF hit edge at {band} phase {visible_phi[i]:1.3f}!')
+        else:
+            new_rv = np.nan
+            print(f'\n     >>>> CCF hit edge at {band} phase {visible_phi[i]:1.3f}!')
+        
+        vis.plot_cc(drvs, ccf, new_rv, visible_phi[i], band, properties)
+        new_rv_box.append(new_rv)
+
+    return np.array(new_rv_box)
+    
+    
 
 def cal_ccf_rv(
         star_tot, Star, visible_phi, band, rv_ccf_pars, prf_dir, 
-        cpu_use, RVandEWR_dir):
+        cpu_use, RVandEWR_dir, Vel_bin_size):
     visible_phi = np.array(visible_phi)
     vel = Star.star_spec[f'{band}_v']
-    vel = np.array([stsp.rndup(i, 4) for i in vel])
+    # vel = np.array([stsp.rndup(i, 4) for i in vel])
 
     # --- get ccf template ---
     line_cen = Star.bands2use[band][0]
     delta_wv = Star.bands2use[band][1]
     wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
     wvmin = int(wvmin); wvmax = int(wvmax)
-    
+
+    # ---- trans vel to wave
+    c_kms = 299792.458
+    w_center = (wvmin + wvmax) / 2
+    wave = vel * w_center / c_kms + w_center
+    # ----
+
     ccf_tt, ccf_logg, ccf_FeH, ccf_vsini, ccf_resolution = rv_ccf_pars
 
     # Use user give par to generate ccf template
@@ -1139,18 +1433,15 @@ def cal_ccf_rv(
         sim_spec_path = f'{Star.out_path}{sim_spec_name}'
 
         ssp.final_spec(
-            'ccf_temp', spec_dir, sim_spec_path, wvmin, wvmax, flatten=True, pars=rv_ccf_pars)
+            'ccf_temp', spec_dir, sim_spec_path, wvmin, wvmax, 
+            Vel_bin_size, flatten=True, pars=rv_ccf_pars)
         _temp = pd.read_pickle(sim_spec_path)
         spec_temp = _temp['f'].to_numpy()
     # Use spot covergae to estimate the teff for spec as ccf template
     else:
-        vel_temp = Star.ccf_spec_flatten[f'{band}_v']
-        spec_temp = Star.ccf_spec_flatten[f'{band}_f']
+        vel_temp = Star.star_spec_flatten[f'{band}_v']
+        spec_temp = Star.star_spec_flatten[f'{band}_f']
 
-        spec_temp = flatten_ccf_model_spec(vel_temp, spec_temp, RVandEWR_dir)
-
-        c_kms = 299792.458
-        w_center = (wvmin + wvmax) / 2
         wave_temp = vel_temp * w_center / c_kms + w_center
         # do vsini
         wave_temp, spec_temp = rotint(wave_temp, spec_temp, Star.vsini)
@@ -1159,19 +1450,25 @@ def cal_ccf_rv(
         spec_temp = macbro_dyn(wave_temp, spec_temp, hwhm_list)
 
         vel_temp = c_kms * (wave_temp - w_center) / w_center
+        # tck = interpolate.splrep(vel_temp, spec_temp, s=0)    
+        # spec_temp = interpolate.splev(vel, tck, der=0)
+        # spec_temp = rebin_jv(wave_temp, spec_temp, wave, False)
+        spec_temp = flatten_ccf_model_spec(wave_temp, spec_temp, band, RVandEWR_dir)
 
-        tck = interpolate.splrep(vel_temp, spec_temp, s=0)    
-        spec_temp = interpolate.splev(vel, tck, der=0)
+        # save ccf temlplate
+        np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template.npy', spec_temp)
+        np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_wave.npy', wave)
 
-    exrtra_len = 1000
-    del_vel = stsp.rndup(vel[1] - vel[0], 4)
-    vel_temp = np.arange(
-        vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, 
-        del_vel
-        )
-    vel_temp = np.array([stsp.rndup(i, 4) for i in vel_temp])
-    spec_temp = np.append(np.zeros(exrtra_len)+spec_temp[0], spec_temp)
-    spec_temp = np.append(spec_temp, np.zeros(exrtra_len)+spec_temp[-1])
+
+    # exrtra_len = 1000
+    # del_vel = stsp.rndup(vel[1] - vel[0], 4)
+    # vel_temp = np.arange(
+    #     vel[0]-del_vel*exrtra_len, vel[-1]+del_vel*exrtra_len+del_vel, 
+    #     del_vel
+    #     )
+    # vel_temp = np.array([stsp.rndup(i, 4) for i in vel_temp])
+    # spec_temp = np.append(np.zeros(exrtra_len)+spec_temp[0], spec_temp)
+    # spec_temp = np.append(spec_temp, np.zeros(exrtra_len)+spec_temp[-1])
 
     ##########################################################################################
     # ccf_rv_shift = _cc(star_tot, vel, vel_temp, spec_temp, visible_phi)
@@ -1181,50 +1478,77 @@ def cal_ccf_rv(
 
     ##########################################################################################
     # If the number of phases is larger then 10, do trial ccf to get RV ranges
+    ccf_step = Vel_bin_size/10
     if len(visible_phi) <= 10:
-        drvs = np.arange(-25, 25, 0.01) # CCF from -25 to +25 km/s in a 50 m/s step
+        _edge = 40 
+        clip_obs_edges = _edge / np.diff(vel_temp)[0]
+        clip_obs_edges = int(clip_obs_edges*5)
+
+        # func = partial(
+        #     _cc, drvs, star_tot, vel, vel_temp, spec_temp, visible_phi)
+        # ccf_box = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
         
         func = partial(
-            _cc, drvs, star_tot, vel, vel_temp, spec_temp, visible_phi)
-        ccf_rv_shift = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
-        ccf_rv_shift = np.array(ccf_rv_shift)
-        # ccf_rv_shift = _cc(drvs, star_tot, vel, vel_temp, spec_temp)
-        ccf_rv_shift = ccf_rv_shift - np.median(ccf_rv_shift)
+            mc_ccf, wave, star_tot, wave_temp, spec_temp, 
+            -_edge, _edge, ccf_step, clip_obs_edges, visible_phi)
+        outs = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
+
+        drvs = np.arange(-_edge, _edge, ccf_step)
+        ccf_rv_shift = get_ccf_peak(np.array(outs), drvs, visible_phi, band)
+        ccf_rv_shift = ccf_rv_shift - np.nanmin(ccf_rv_shift)
     else:
         # trial CCF on phase closested to 0.1
         _loc0 = np.argmin(np.abs(visible_phi-0.0))
         _loc1 = np.argmin(np.abs(visible_phi-0.1))
-        _loc9 = np.argmin(np.abs(visible_phi-0.9))
-        trial_locs = [_loc0, _loc1, _loc9]
-        print(trial_locs)
-        trial_drvs = np.arange(-25, 25, 0.01)
+        _loc2 = np.argmin(np.abs(visible_phi-0.25))
+        _loc5 = np.argmin(np.abs(visible_phi-0.5))
+        trial_locs = np.array([_loc0, _loc1, _loc2, _loc5], dtype=int)
+        # print(trial_locs)
+        _edge = 40
+        clip_obs_edges = _edge / np.diff(vel_temp)[0]
+        clip_obs_edges = int(clip_obs_edges*5)
+        # print(f'clip_obs_edges: {clip_obs_edges}')
         
+        # func = partial(
+        #     _cc, trial_drvs, star_tot[trial_locs], vel, vel_temp, spec_temp, visible_phi)
+        # _rv_shift_box = pqdm(np.arange(len(trial_locs)), func, n_jobs=4)
+
         func = partial(
-            _cc, trial_drvs, star_tot[trial_locs], vel, vel_temp, spec_temp, visible_phi)
-        _rv_shift = pqdm(np.arange(3), func, n_jobs=3)
-        _rv_shift = np.array(_rv_shift)        
-        print('_rv_shift', _rv_shift)
+            mc_ccf, wave, star_tot[trial_locs], wave_temp, spec_temp, 
+            -_edge, _edge, ccf_step, clip_obs_edges, visible_phi)
+        outs = pqdm(np.arange(len(trial_locs)), func, n_jobs=4)
 
-        ccf_bound = np.round(np.abs(_rv_shift), decimals=0)
-        ccf_bound = ccf_bound[np.argmax(ccf_bound)] * 2
-        print(f'ccf_bound: {ccf_bound}')
 
-        if ccf_bound < 5:
-            ccf_step = 0.01
-        elif (ccf_bound>=5) & (ccf_bound < 10):
-            ccf_step = 0.025
-        else:
-            ccf_step = 0.05
+        drvs = np.arange(-_edge, _edge, ccf_step)
+        _rv_shift = get_ccf_peak(
+            np.array(outs), drvs, visible_phi[trial_locs], band) 
+        # print('_rv_shift', _rv_shift)
+
+        ccf_bounds = np.round(_rv_shift, decimals=0)
+        ccf_bound_lw = ccf_bounds[np.nanargmin(ccf_bounds)]
+        ccf_bound_up = ccf_bounds[np.nanargmax(ccf_bounds)]
+        ccf_bound = (ccf_bound_up - ccf_bound_lw) * 5
+
+        # print(f'lower bound: {ccf_bound_lw}, upper bound: {ccf_bound_up}')
+        # print(f'ccf_bound: {ccf_bound}')
+
+        clip_obs_edges = ccf_bound / np.diff(vel_temp)[0]
+        clip_obs_edges = int(clip_obs_edges*5)
+        if clip_obs_edges <= 3: 
+            ccf_step = ccf_step/2
+        # print(f'clip_obs_edges: {clip_obs_edges}')
+        
+        # func = partial(
+        #     _cc, drvs_full, star_tot, vel, vel_temp, spec_temp, visible_phi)
+        # ccf_rv_shift_box = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
+        func = partial(
+            mc_ccf, wave, star_tot, wave_temp, spec_temp, 
+            -ccf_bound, ccf_bound, ccf_step, clip_obs_edges, visible_phi)
+        ccf_rv_shift_box = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
+
         drvs_full = np.arange(-ccf_bound, ccf_bound, ccf_step)
-        print(f'drvs_full: {drvs_full}')
-        
-        func = partial(
-            _cc, drvs_full, star_tot, vel, vel_temp, spec_temp, visible_phi)
-        ccf_rv_shift = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
-        ccf_rv_shift = np.array(ccf_rv_shift)
-        ccf_rv_shift = ccf_rv_shift - np.median(ccf_rv_shift)
-
-    #     # print(f'Phase {visible_phi[_loc]} ccf_rv_shift: {_rv_shift}')
+        ccf_rv_shift = get_ccf_peak(np.array(ccf_rv_shift_box), drvs_full, visible_phi, band)
+        ccf_rv_shift = ccf_rv_shift - np.nanmean(ccf_rv_shift)
 
     return ccf_rv_shift
 

@@ -194,7 +194,9 @@ def flatten_spec(rassine_path, out_path, temp, grav, FeH):
     return outname
 
 
-def final_spec(spec_type, spec_dir, sim_spec_path, wvmin, wvmax, flatten=True, pars=None):
+def final_spec(
+        spec_type, spec_dir, sim_spec_path, wvmin, wvmax, Vel_bin_size,
+        flatten=True, pars=None):
     # prep for SOAP3 use syn spec
 
     if spec_type.lower() == 'phx':
@@ -237,7 +239,7 @@ def final_spec(spec_type, spec_dir, sim_spec_path, wvmin, wvmax, flatten=True, p
     v = c_kms * (w - w_center) / w_center
 
     tck = interpolate.splrep(v, f, s=0)    
-    resolution = 25/1000 # m --> km
+    resolution = Vel_bin_size # km
     v_new = np.arange(
         np.round(np.min(v)), -np.round(np.min(v))+resolution, resolution)
     f_new = interpolate.splev(v_new, tck, der=0)

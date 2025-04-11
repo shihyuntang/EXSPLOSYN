@@ -234,7 +234,8 @@ def spot_view_pel(
         ax3.plot(visible_phi[j], ohfe_ratio[j], 'o', c='k', ms=2, mew=2)
 
         ax3.set_ylim(np.min(ohfe_ratio)-0.1, np.max(ohfe_ratio)+0.1)
-    ax3.set_xlim(-0.5, 1.5)
+    # ax3.set_xlim(-0.5, 1.5)
+    ax3.set_xlim(-1, 1.0)
     ax3.set_xlabel(r'Phase',  size='small')
     ax3.set_ylabel('Equivalent Width Ratio  (OH/Fe)',  size='small')
 
@@ -243,9 +244,9 @@ def spot_view_pel(
     ax3right.plot(visible_phi[:j], ccf_rv_shift[:j], '-o', c='skyblue', ms=2, mew=2)
     ax3right.plot(visible_phi[j], ccf_rv_shift[j], 'o', c='tab:blue', ms=2, mew=2)
     
-    rv_std = np.std(ccf_rv_shift)
+    rv_std = np.nanstd(ccf_rv_shift)
     ax3right.set_ylim(
-        np.min(ccf_rv_shift)-3*rv_std, np.max(ccf_rv_shift)+3*rv_std)
+        np.nanmin(ccf_rv_shift)-3*rv_std, np.nanmax(ccf_rv_shift)+3*rv_std)
     ax3right.set_ylabel(
         r'Spot induced RV [km s$^{-1}$]', size='small', color='tab:blue', 
         rotation=270, labelpad=10
@@ -320,7 +321,7 @@ def spot_view(
 
 
 
-def plot_cc(drvs, cc, phase):
+def plot_cc(drvs, cc, new_rv, phase, band, properties):
     drvs_temp = drvs[cc == np.max(cc)]
 
     fig, ax = plt.subplots(1, 1, figsize=(4, 3))
@@ -330,7 +331,15 @@ def plot_cc(drvs, cc, phase):
     ax.axvline(
         np.mean(drvs_temp), ls='-', lw=1, alpha=0.5, c='tab:blue'
         )
+    ax.axvline(
+        new_rv, ls='--', lw=1, alpha=0.5, c='tab:red'
+        )
     
+    ax.text(0.05, 0.4, f'RV: {new_rv:1.4f} km/s', transform=ax.transAxes, size='x-small')
+    ax.text(0.05, 0.3, f'Prominences: {properties["prominences"]}', transform=ax.transAxes, size='x-small')
+    ax.text(0.05, 0.2, f'left_bases: {properties["left_bases"]}', transform=ax.transAxes, size='x-small')
+    ax.text(0.05, 0.1, f'right_bases: {properties["right_bases"]}', transform=ax.transAxes, size='x-small')
+
     ax.set_xlabel(r'Velocity [km/s]',  size='small')
     ax.set_ylabel('CCF',  size='small')
     ax.tick_params(
@@ -338,7 +347,7 @@ def plot_cc(drvs, cc, phase):
         top=True, direction='in', width=.7)
     
     fig.savefig(
-        f'./outputs/CCF/phase{phase:1.3f}.png', format='png', 
+        f'./outputs/CCF/{band}_phase_{phase:1.3f}.png', format='png', 
         bbox_inches='tight'
         )
     plt.close(fig)
