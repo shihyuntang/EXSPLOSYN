@@ -33,9 +33,9 @@ _bands = {
     # 'opt_': [5000.0, 20, ['rv', 'photo']]
 }
 
-nir_width = 40
-opt_width1 = 20
-opt_width2 = 15
+# nir_width = 40
+# opt_width1 = 20
+# opt_width2 = 15
 
 # _bands = {
 #     # [line_center, half_wv_width, run models] \AA
@@ -84,7 +84,7 @@ opt_width2 = 15
 hostname = socket.gethostname() 
 hostname = hostname.split('.')[0].split('-')[0] # either Swing or taurus
 # RVandEWR_dir = 'RVandEWR_Reiners_3700_2400_width50'
-RVandEWR_dir = f'RVandEWR_LkCa4_width100_50cover_Tdel500_{hostname}'
+# RVandEWR_dir = f'RVandEWR_LkCa4_width100_50cover_Tdel500_{hostname}'
 # RVandEWR_dir = f'RVandEWR_res_test_{hostname}_100-1'
 # RVandEWR_dir = 'RVandEWR_V830Tau_EWR'
 
@@ -107,7 +107,7 @@ if __name__ == '__main__':
     # config.read("config_Reiners+2010_2.cfg")
     # config.read("config_multi_spot_test.cfg")
     # config.read("config_citau.cfg")
-    config.read("config_LkCa4_50pc_Tdel500.cfg")
+    # config.read("config_LkCa4_50pc_Tdel500.cfg")
 
     parser = argparse.ArgumentParser(
         prog        = 'Run LkCa4_mc in batch',
@@ -123,8 +123,28 @@ if __name__ == '__main__':
         '-ed', dest="ed", action="store", help="The end dates id to run.",
         type=int, default=None)
     
+        # ---- Not normal setting ----
+    parser.add_argument(
+        '-delT', dest="delT", action="store", help="Delta T for spot.",
+        type=float, default=None)
+    parser.add_argument(
+        '-Scover', dest="Scover", action="store", help="Spot coverage in % for visible DISK.",
+        type=float, default=None)
+    parser.add_argument(
+        '-out', dest="out", action="store", help="Out dur name.",
+        type=str, default=None)
+    
     args = parser.parse_args()
 
+    # --
+    config.read("config_LkCa4base_SizeDelT_study.cfg")
+    RVandEWR_dir = f'RVandEWR_SizeDelT_width100_{args.out}_{hostname}'
+    # config.read("config_v830tau.cfg")
+    # RVandEWR_dir = f'RVandEWR_V830Tau_{args.out}_{hostname}'
+
+
+    # RVandEWR_dir = f'RVandEWR_LkCa4_width100_50_25cover_Tdel200_{hostname}'
+    
     # ------------------------------------------------------------
     line_centers = np.arange(6000, 24001, 200)[args.st:args.ed] # AA, 91 runs
     # line_centers = np.arange(6000, 24001, 200)[-1:] # AA
@@ -138,7 +158,10 @@ if __name__ == '__main__':
     _bands = {
         f"w_{wave_center // 100}": [wave_center, _width, run_models]
         for wave_center in line_centers
-}
+    }
+    # _bands = {
+    #     'IG_OH': [15631.35, 30, ['rv', 'photo']], # width need ot be at least 40 AA
+    #     }
     # ------------------------------------------------------------
     # -- Read the configuration file --
     path_sub = 1 if hostname == 'Swing' else 2
@@ -184,6 +207,14 @@ if __name__ == '__main__':
         syn_spec_path = SYNmast_PATH
     else:
         raise ValueError('Unknown syn_spec type. Please use "phx" or "synmast".')
+
+    # -- Overwirte pars if been args updated --
+    # for grid testing
+    if args.delT is not None:
+        STAR.Tdiff_spot = int(args.delT)
+        STAR.Tspot = int(STAR.Temp - STAR.Tdiff_spot)
+    if args.out is not None:
+        RVandEWR_dir = f'RVandEWR_SizeDelT_width100_{args.out}_{hostname}'
     
     # -- Setup the synthetic spectra --
     STAR.find_spec(syn_type, Vel_bin_size, syn_spec_path)
@@ -228,6 +259,13 @@ if __name__ == '__main__':
         int(config.get('active_regions',f'act_reg_type{i}')) for i in range(1, active_regions_number+1)
         ]
     
+    # --- Overwrite pars if been args updated ---
+    if args.Scover is not None:
+        # arg input is in % for visible DISK, need to transfer into size for soap
+        ppc_cover = np.array(args.Scover)/100
+        _spot_cover_size = ppc_cover**0.5
+        active_region_sizes = [float(np.round(_spot_cover_size, 6))]
+
     active_region_box = [
         active_region_checks, active_region_longs, active_region_lats, 
         active_region_sizes, active_region_types]
@@ -247,7 +285,7 @@ if __name__ == '__main__':
         
     ######################################################################
     # -- RV CCF use template parameters --
-    Use_estimated_teff = int(config.get('ccf','Use_estimated_teff'))
+    Use_photosphere_teff = int(config.get('ccf','Use_photosphere_teff'))
     rv_ccf_pars = np.array([
         float(config.get('ccf','Teff')),
         float(config.get('ccf','logg')),
@@ -257,7 +295,7 @@ if __name__ == '__main__':
     ])
     rv_ccf_pars[3] = STAR.vsini if rv_ccf_pars[3] == -1 else rv_ccf_pars[3]
     
-    if Use_estimated_teff == 1: 
+    if Use_photosphere_teff == 1: 
         rv_ccf_pars[:] = 99999
         STAR.find_spec_flatten(
             syn_type, active_region_sizes, Vel_bin_size, syn_spec_path)
@@ -276,7 +314,7 @@ if __name__ == '__main__':
     # Otherwise create a evenly sampled phase between 0 and 1 with the step given
     # by the "ph_step" argument in "config.cfg"
     elif phase_step > 0:
-        PSI = np.arange(-0.1, 1.1, phase_step)
+        PSI = np.arange(-0.75, 0.71, phase_step)
         # PSI = np.arange(-0.1, 0.5, phase_step)
     else:
         print("WARNING: put a positive phase step ('ph_step' argument in 'config.cfg') \

@@ -156,6 +156,7 @@ def get_phx_spec(temp, grav, FeH, alpha, out_path):
 
     integrated_flux = np.trapz(flux_temp, wavelength_vac)
     data_name = out_path + f'PHX_ACES_spec_{int(temp)}_{grav}_{FeH}_wv{wvmin}_{wvmax}.p'
+    # print(f'   >> Save {data_name}')
     spec_df = pd.DataFrame({'wave':wavelength_vac,'flux':flux_temp})
     spec_df.to_pickle(data_name)
 

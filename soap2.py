@@ -307,7 +307,7 @@ class Star:
                 pass
                 # phx_spec = pd.read_pickle(spec_base_path)
             else:    
-                print('   Missing PHX spec: {spec_base_path}, downloading...')
+                print(f'   Missing PHX spec: {spec_base_path}, downloading...')
                 ssp.get_phx_spec(
                     tt, self.logg, self.FeH, alpha, self.out_path)
 
@@ -790,9 +790,12 @@ def get_equivalent_width(Star, flux_phi, visible_phi, band):
     # -- vel back to wv --
     del_wv = vel * band_center_wv / c_kms
     wave = (band_center_wv + del_wv) / 1e4
+    nor_region = np.where((wave>1.5610) & (wave<1.5650))[0]
     
     for i in range(len(visible_phi)):
         flux = flux_phi[i]
+        nor_level = np.percentile(flux[nor_region], 95)
+        flux = flux / nor_level
         # --- EW ---
         for r_udx, rr in enumerate(ew_cal_regions):
 
@@ -1383,10 +1386,12 @@ def get_ccf_peak(ccf_box, drvs, visible_phi, band):
 
     for i in range(len(ccf_box)):
         ccf = ccf_box[i]
-        peaks, properties = find_peaks(ccf, prominence=0.0001) 
+        peaks, properties = find_peaks(ccf, prominence=0.1) 
 
         if len(peaks) != 0:
-            new_rv = drvs[peaks][0]
+            prominences = properties["prominences"]
+            _loc = np.argmax(prominences)
+            new_rv = drvs[peaks][_loc]
 
             if -np.abs(new_rv) == drvs[0]:
                 new_rv = np.nan
@@ -1457,7 +1462,7 @@ def cal_ccf_rv(
 
         # save ccf temlplate
         np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template.npy', spec_temp)
-        np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_wave.npy', wave)
+        np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_wave.npy', wave_temp)
 
 
     # exrtra_len = 1000
@@ -1527,15 +1532,19 @@ def cal_ccf_rv(
         ccf_bounds = np.round(_rv_shift, decimals=0)
         ccf_bound_lw = ccf_bounds[np.nanargmin(ccf_bounds)]
         ccf_bound_up = ccf_bounds[np.nanargmax(ccf_bounds)]
-        ccf_bound = (ccf_bound_up - ccf_bound_lw) * 5
+        ccf_bound = ccf_bound_up - ccf_bound_lw
+        if ccf_bound<=5:
+            ccf_bound = 15
+            ccf_step = ccf_step/2
+        else:
+            ccf_bound = ccf_bound * 4
 
         # print(f'lower bound: {ccf_bound_lw}, upper bound: {ccf_bound_up}')
         # print(f'ccf_bound: {ccf_bound}')
 
-        clip_obs_edges = ccf_bound / np.diff(vel_temp)[0]
+        clip_obs_edges = (ccf_bound) / np.diff(vel_temp)[0]
         clip_obs_edges = int(clip_obs_edges*5)
-        if clip_obs_edges <= 3: 
-            ccf_step = ccf_step/2
+            
         # print(f'clip_obs_edges: {clip_obs_edges}')
         
         # func = partial(
