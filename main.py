@@ -137,16 +137,19 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # --
-    config.read("config_LkCa4base_SizeDelT_study.cfg")
-    RVandEWR_dir = f'RVandEWR_SizeDelT_width100_{args.out}_{hostname}'
+    # config.read("config_LkCa4base_SizeDelT_study.cfg")
+    # RVandEWR_dir = f'RVandEWR_SizeDelT_width100_{args.out}_{hostname}'
     # config.read("config_v830tau.cfg")
     # RVandEWR_dir = f'RVandEWR_V830Tau_{args.out}_{hostname}'
+    config.read("config_RV_EWR_PhaseDelay_study.cfg")
+    RVandEWR_dir = f'RVandEWR_PhaseDelay_width100_{args.out}_{hostname}'
 
 
     # RVandEWR_dir = f'RVandEWR_LkCa4_width100_50_25cover_Tdel200_{hostname}'
     
     # ------------------------------------------------------------
-    line_centers = np.arange(6000, 24001, 200)[args.st:args.ed] # AA, 91 runs
+    # line_centers = np.arange(6000, 24001, 200)[args.st:args.ed] # AA, 91 runs
+    line_centers = np.arange(6000, 24001, 500)[args.st:args.ed] # AA, 37 runs
     # line_centers = np.arange(6000, 24001, 200)[-1:] # AA
     # line_centers = np.arange(14000, 24001, 200) # AA
     # line_centers = np.arange(10000, 24001, 200) # AA
@@ -184,8 +187,8 @@ if __name__ == '__main__':
         prot = PROT,
         vrot = (2.*np.pi*RAD)/(PROT*86400.),
         incl = float(config.get('star','I')),
-        limba1 = float(config.get('star','limb1')),
-        limba2 = float(config.get('star','limb2')),
+        # limba1 = float(config.get('star','limb1')),
+        # limba2 = float(config.get('star','limb2')),
         psi = float(config.get('star','psi')),
         rad_sun = RAD_Sun,
         rad = RAD,
@@ -300,6 +303,8 @@ if __name__ == '__main__':
         STAR.find_spec_flatten(
             syn_type, active_region_sizes, Vel_bin_size, syn_spec_path)
     
+    # -- Get Limb darkening parameters --
+    LD_coeff = STAR.get_quadratic_limbdarken(active_region_sizes, line_centers, _width)
     ######################################################################
 
     # -- Phase at which the signal will be generated --
@@ -326,6 +331,9 @@ or give a file name that contain the phases at which you want to compute the mod
         start_time = time()
         band = list(_bands.keys())[i]
 
+        STAR.limba1 = LD_coeff[band][0]
+        STAR.limba2 = LD_coeff[band][1]
+
         print('\n\nNow calculating the activity signal for the band: ', band)
 
         SPEC_photo = SPEC_photo_box[i]
@@ -344,7 +352,8 @@ or give a file name that contain the phases at which you want to compute the mod
         # --- flatten the spectra ---
         # np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_non_flat_spec.npy', SPECstar_tot)
         SPECstar_tot = flatten_model_spec(STAR, SPECstar_tot, visible_phi, band, RVandEWR_dir)
-        np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_flat_final_spec.npy', SPECstar_tot)
+        if SAVESPEC == 1:
+            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_flat_final_spec.npy', SPECstar_tot)
 
         if band == 'IG_OH':        
             # depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0 = soap2.get_line_depth(

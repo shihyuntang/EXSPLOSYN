@@ -22,12 +22,14 @@ from basic_spec import rotint
 from macbro_dynamic import macbro_dyn
 from pqdm.processes import pqdm
 
+from ldtk import LDPSetCreator, BoxcarFilter, TabulatedFilter
+
 from rebin_jv import rebin_jv
 
 
 class Star:
     def __init__(
-        self, prot, vrot, incl, limba1, limba2, psi, rad_sun, rad, 
+        self, prot, vrot, incl, psi, rad_sun, rad, 
         Temp, Tdiff_spot, Tdiff_faculae, logg, FeH, bands2use
         ):
         """_summary_
@@ -48,8 +50,8 @@ class Star:
         self.prot           = prot           
         self.vrot           = vrot           
         self.incl           = incl           
-        self.limba1         = limba1         
-        self.limba2         = limba2         
+        # self.limba1         = limba1         
+        # self.limba2         = limba2         
         self.psi            = psi            
         self.rad_sun        = rad_sun        
         self.rad            = rad            
@@ -62,6 +64,34 @@ class Star:
         self.FeH            = FeH
         self.bands2use      = bands2use
     
+    def get_quadratic_limbdarken(self, active_region_sizes, line_centers, l_width):
+        # -- Estimated the Teff and use it for the LD Teff --
+        spot_portion = 0 # visible "DISK" portion
+        for ss in active_region_sizes:
+            spot_portion = spot_portion + ss**2
+
+        est_teff = self.Temp**4*(1-spot_portion) \
+            + self.Tspot**4*spot_portion
+        est_teff = int(est_teff**0.25)
+        print(f'\nEstimated Teff for calculating Limb darkening: {est_teff:1.0f} K') 
+
+        # -- Limb darkening coefficients --
+        lc_s = line_centers / 10 # AA --> nm
+        _width = l_width / 10 # AA --> nm
+        filters = [BoxcarFilter(f'lc{i//1000}', i-_width, i+_width) for i in lc_s]
+        sc = LDPSetCreator(
+            teff=(est_teff,1), logg=(self.logg,0.01), z=(self.FeH,0.01),
+            filters=filters, dataset='visir-lowres')
+
+        ps = sc.create_profiles(nsamples=1000)
+        qc, _ = ps.coeffs_qd()
+        LD_coeff = {
+            f"w_{line_centers[i] // 100}": qc[i]
+            for i in range(len(line_centers))
+            }
+        return LD_coeff
+
+
     def find_spec_flatten(
             self, spec_type, active_region_sizes, Vel_bin_size, 
             syn_spec_path=None):

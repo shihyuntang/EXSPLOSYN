@@ -790,6 +790,8 @@ def spot_scan_npsi_pal(
 
     xyz2 = spot_phase(xyz, inclination, nrho, psi[ipsi])
     visual, iminy, iminz, imaxy, imaxz = spot_area(xyz2, nrho, grid)
+
+    # print(f'limba1, limba2: {limba1}, {limba2}')
     
     if visual==1:
         f_spec_spot_tot, f_photo_duplicated, active_surface, quite_surface_duplicate =\
