@@ -10,8 +10,7 @@ from astropy.table import Table
 import astropy.units as u
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.ticker import (MultipleLocator, FormatStrFormatter,
-                               AutoMinorLocator)
+from matplotlib.ticker import AutoMinorLocator
 from specutils import Spectrum1D
 from specutils.analysis import equivalent_width
 
@@ -64,76 +63,60 @@ class Star:
         self.FeH            = FeH
         self.bands2use      = bands2use
     
-    def get_quadratic_limbdarken(self, active_region_sizes, line_centers, l_width):
-        # -- Estimated the Teff and use it for the LD Teff --
-        spot_portion = 0 # visible "DISK" portion
-        for ss in active_region_sizes:
-            spot_portion = spot_portion + ss**2
+    def get_quadratic_limbdarken(
+            self, temperature, line_centers, l_widths):
+        
+        if len(line_centers) == 1:
+            line_centers = np.array([line_centers])
+            l_widths = np.array([l_widths])
+        elif len(line_centers) >1:
+            line_centers = np.array(line_centers)
+            l_widths = np.array(l_widths)
 
-        est_teff = self.Temp**4*(1-spot_portion) \
-            + self.Tspot**4*spot_portion
-        est_teff = int(est_teff**0.25)
-        print(f'\nEstimated Teff for calculating Limb darkening: {est_teff:1.0f} K') 
+        # print('line_centers:', line_centers)
 
         # -- Limb darkening coefficients --
         lc_s = line_centers / 10 # AA --> nm
-        _width = l_width / 10 # AA --> nm
-        filters = [BoxcarFilter(f'lc{i//1000}', i-_width, i+_width) for i in lc_s]
+        _width = l_widths / 10 # AA --> nm
+
+        filters = [
+            BoxcarFilter(
+                f'lc{lc_s[i]//1000}', lc_s[i]-_width[i], lc_s[i]+_width[i]
+                ) for i in range(len(lc_s))
+                ]
+        
+        # This decide how many PHX intensity spectra (diff temp, logg, etc) to be dw
+        # I cannot find a way to only dw one spectra in ldtk pkg as it is a 
+        #    Bayesian base code. Thus, here are min std par that make sure ldtk works.
         sc = LDPSetCreator(
-            teff=(est_teff,1), logg=(self.logg,0.01), z=(self.FeH,0.01),
+            teff=(temperature,1), logg=(self.logg,0.01), z=(self.FeH,0.01),
             filters=filters, dataset='visir-lowres')
 
         ps = sc.create_profiles(nsamples=1000)
         qc, _ = ps.coeffs_qd()
         LD_coeff = {
-            f"w_{line_centers[i] // 100}": qc[i]
+            f"w{int(line_centers[i] // 100)}": qc[i]
             for i in range(len(line_centers))
             }
+        
+        if 15631.35 in line_centers:
+            print('Find FeOH line center...')
+            _loc = np.where(line_centers==15631.35)[0][0]
+            LD_coeff['EWR_FeOH'] = qc[_loc]
         return LD_coeff
 
 
-    def find_spec_flatten(
-            self, spec_type, active_region_sizes, Vel_bin_size, 
-            syn_spec_path=None):
+    def find_fluxspec_flatten(
+            self, spec_type, Vel_bin_size, plot, syn_spec_path=None):
+        
         self.spec_type = spec_type
-        self.intensity_ratio = {}
-
-        # spec_dir = f'./syn_spec'
-        # spec_list = os.listdir(spec_dir)
-        # spec_list = [i for i in spec_list if i.endswith('.csv') and i.startswith(spec_type) ]
-        # spec_list = [i for i in spec_list if (spec_type in i) and ('.pdf' not in i) and (i[0] != '.')]
-        # spec_list = [i for i in spec_list if i.split('_')[-2] == str(self.logg)]
-        # print('spec_list', spec_list)
-        # teffs = np.array([ int(t.split('_')[-3]) for t in spec_list ])
-        # print('teffs', teffs)
-        # sys.exit('')
-
-        self.out_path = f'{os.getcwd()}/syn_spec/'  
-
-        # # -- Estimated the Teff --
-        # spot_portion = 0 # visible "DISK" portion
-        # for ss in active_region_sizes:
-        #     spot_portion = spot_portion + ss**2
-        # est_teff = self.Temp**4*(1-spot_portion) \
-        #     + self.Tspot**4*spot_portion
-        # est_teff = int(est_teff**0.25)
-        # print(f'\nEstimated Teff for the CCF synthetic template: {est_teff:1.0f} K') 
-
+        self.out_path = f'{os.getcwd()}/syn_spec'
         temp_list = [self.Temp, self.Tspot, self.Tfaculae]
 
         print('\nChecking flatten spectra templates for')
         print(f'   {temp_list} K\n')
         
-        if self.FeH >= 0:
-            alpha = 0
-        else:
-            sys.exit('\n!!!! Sub solar FeH is not supported yet!!!')
-
-        spec_base_name = 'PHX_ACES_spec_{}_{}_{}_wv3000_30000.p'
-        spec_base_path = f'{self.out_path}{spec_base_name}'
-
-        # always dw PHX spectra as we need it for calculate flux intensity ratio
-        self.dw_phx(spec_base_path, temp_list, alpha)
+        self.dw_phx_flux(temp_list, alpha=0)
 
         wv_regions = list(self.bands2use.keys())
         for idx, band in enumerate(wv_regions):
@@ -142,30 +125,27 @@ class Star:
             delta_wv = self.bands2use[band][1]
             wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
             wvmin = int(wvmin); wvmax = int(wvmax)
-
-            sum_up_flux_box = []
             
             for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
                 # ---------------------- Read PHX SYN Spectra ----------------------
                 if spec_type.lower() == 'phx':
                     
                     ## --- flatten syn spectra ---
-                    # 1. flatten PHX spectra at a larger wv range (5000 - 30000 AA)
+                    # 1. flatten PHX spectra at a larger wv range (3000 - 30000 AA)
                     flat_spec_dir = ssp.flatten_spec(
-                        syn_spec_path, self.out_path, tt, self.logg, 
-                        self.FeH
-                        )
+                        syn_spec_path, self.out_path, self.phx_flux_file[tt])
                     
-                    sim_spec_name = f'SimUse_PHX_ACES_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_flatten.p'
-                    sim_spec_path = f'{self.out_path}{sim_spec_name}'
+                    # sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_flatten.h5'
+                    sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
+                    sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
                     
                     # 2. cut the flattened spectra to the region of interest and transfer wavelength to velocity
-                    ssp.final_spec(
+                    ssp.final_flux_spec(
                         spec_type, flat_spec_dir, sim_spec_path, wvmin, wvmax, 
-                        Vel_bin_size, flatten=True)
-                    flatten_spec = pd.read_pickle(sim_spec_path)
+                        Vel_bin_size, plot, flatten=True)
+                    flatten_spec = pd.read_hdf(sim_spec_path)
                 
-                # ---------------------- Read SYNmast Spectra ----------------------
+                # ---------------------- Read Synmast Spectra ----------------------
                 elif spec_type.lower() == 'synmast':
                     prf_dir = syn_spec_path
                     
@@ -178,20 +158,20 @@ class Star:
                         print(f'   Don\'t have {unflatten_spec_dir}.')
                         sys.exit('   Please get the spectra from synmast and put it in the syn_spec folder!')
 
-                    sim_spec_name = f'SimUse_Synmast_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_flatten.p'
-                    sim_spec_path = f'{self.out_path}{sim_spec_name}'
+                    sim_use_spec = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
+                    sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
                     
-                    ssp.final_spec(
+                    ssp.final_flux_spec(
                         spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
-                        Vel_bin_size, flatten=True)
-                    flatten_spec = pd.read_pickle(sim_spec_path) 
+                        Vel_bin_size, plot, flatten=True)
+                    flatten_spec = pd.read_hdf(sim_spec_path) 
 
                 else:
                     print('\n[ERROR] Can only handel PHX and Synmast spec!\n')
                 
                 # sum total flux for intensity ratio calculation
-                sum_up_flux = self.flux_sum(spec_base_path, tt, wvmin, wvmax)
-                sum_up_flux_box.append(sum_up_flux)
+                # sum_up_flux = self.flux_sum(spec_base_path, tt, wvmin, wvmax)
+                # sum_up_flux_box.append(sum_up_flux)
 
                 spec = {
                     f'{band}_v': flatten_spec['v'].to_numpy(), 
@@ -217,23 +197,16 @@ class Star:
                     elif nn=='ccf_temp':
                         self.ccf_spec_flatten.update(spec)
             
-            self.intensity_ratio[band] = sum_up_flux_box[1]/sum_up_flux_box[0]
+            # self.intensity_ratio[band] = sum_up_flux_box[1]/sum_up_flux_box[0]
             # print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
         
-    def find_spec(self, spec_type, Vel_bin_size, syn_spec_path=None):
-        self.spec_type = spec_type
-        self.intensity_ratio = {}
-
-        self.out_path = f'{os.getcwd()}/syn_spec/'            
+    def find_fluxspec(self, spec_type, Vel_bin_size, plot, syn_spec_path=None):
+        
+        self.spec_type = spec_type          
         temp_list = [self.Temp, self.Tspot, self.Tfaculae]
 
         print('\nChecking spectra templates for')
         print(f'   {temp_list} K\n')
-        
-        if self.FeH >= 0:
-            alpha = 0
-        else:
-            sys.exit('\n!!!! Sub solar FeH is not supported yet!!!')
 
         wv_regions = list(self.bands2use.keys())
         for idx, band in enumerate(wv_regions):
@@ -243,26 +216,17 @@ class Star:
             wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
             wvmin = int(wvmin); wvmax = int(wvmax)
 
-            # sum_up_flux_box = []
             for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
                 # ---------------------- Read PHX SYN Spectra ----------------------
                 if spec_type.lower() == 'phx':
-
-                    spec_base_name = 'PHX_ACES_spec_{}_{}_{}_wv3000_30000.p'
-                    spec_base_path = f'{self.out_path}{spec_base_name}'
                     
-                    # Download PHX Spectra
-                    self.dw_phx(spec_base_path, temp_list, alpha)
-                    
-                    sim_spec_name = f'SimUse_PHX_ACES_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_NOTflatten.p'
-                    sim_spec_path = f'{self.out_path}{sim_spec_name}'
-                    
-                    unflatten_spec_dir = spec_base_path.format(tt, self.logg, self.FeH)
-                    
-                    ssp.final_spec(
-                        spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
-                        Vel_bin_size, flatten=False)
-                    final_spec = pd.read_pickle(sim_spec_path)
+                    sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}.h5'
+                    sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
+                    unflattened_spec_dir = f'{self.out_path}/RASSINE_PHX/{self.phx_flux_file[tt]}'
+                    ssp.final_flux_spec(
+                        spec_type, unflattened_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        Vel_bin_size, plot, flatten=False)
+                    final_spec = pd.read_hdf(sim_spec_path)
 
                 # ---------------------- Read SYNmast Spectra ----------------------
                 elif spec_type.lower() == 'synmast':
@@ -277,13 +241,13 @@ class Star:
                         print(f'   Don\'t have {unflatten_spec_dir}.')
                         sys.exit('   Please get the spectra from synmast and put it in the syn_spec folder!')
 
-                    sim_spec_name = f'SimUse_Synmast_spec_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_NOTflatten.p'
-                    sim_spec_path = f'{self.out_path}{sim_spec_name}'
+                    sim_spec_name = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}.h5'
+                    sim_spec_path = f'{self.out_path}/SimUse/{sim_spec_name}'
                     
-                    ssp.final_spec(
+                    ssp.final_flux_spec(
                         spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
-                        Vel_bin_size, flatten=False)
-                    final_spec = pd.read_pickle(sim_spec_path) 
+                        Vel_bin_size, plot, flatten=False)
+                    final_spec = pd.read_hdf(sim_spec_path) 
 
                 else:
                     print('\n[ERROR] Can only handel PHX and Synmast spec!\n')
@@ -312,50 +276,142 @@ class Star:
                     elif nn=='plage':
                         self.plage_spec.update(spec)
             
-            self.intensity_ratio[band] = 1
+            # self.intensity_ratio[band] = 1
+            # print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
+
+    def find_intensityspec(self, spec_type, Vel_bin_size, plot, syn_spec_path=None):
+        
+        self.spec_type = spec_type            
+        temp_list = [self.Temp, self.Tspot, self.Tfaculae]
+
+        print('\nChecking spectra templates for')
+        print(f'   {temp_list} K\n')
+
+        wv_regions = list(self.bands2use.keys())
+        for idx, band in enumerate(wv_regions):
+
+            line_cen = self.bands2use[band][0]
+            delta_wv = self.bands2use[band][1]
+            wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
+            wvmin = int(wvmin); wvmax = int(wvmax)
+
+            for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
+                # ---------------------- Read PHX SYN Spectra ----------------------
+                if spec_type.lower() == 'phx':
+                    raise NotImplementedError(
+                        'Intensity spectra calculation is not implemented yet for PHX.'
+                        'Please use the *synmast* spectra instead.'
+                    )
+
+                    # self.dw_phx_mu_intensity(temp_list, alpha=0)
+                    
+                    # sim_spec_name = f'SimUse_PHX_ACES_SpecInt_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_NOTflatten.p'
+                    # sim_spec_path = f'{self.out_path}{sim_spec_name}'
+                    
+                    # unflatten_spec_dir = spec_base_path.format(tt, self.logg, self.FeH)
+                    
+                    # ssp.final_spec(
+                    #     spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                    #     Vel_bin_size, flatten=False)
+                    # final_spec = pd.read_pickle(sim_spec_path)
+
+                # ---------------------- Read SYNmast Spectra ----------------------
+                elif spec_type.lower() == 'synmast':
+                    prf_dir = syn_spec_path
+                    
+                    # mc_2700350+000_b2_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
+                    spec_base_name = f'mc_{tt}{self.logg*100:1.0f}+{self.FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+                    unflatten_spec_dir = f'{prf_dir}/{spec_base_name}'
+
+                    # Check if the prf file already exists
+                    if not os.path.exists(unflatten_spec_dir):
+                        print(f'   Don\'t have {unflatten_spec_dir}.')
+                        sys.exit('   Please get the spectra from synmast and put it in the syn_spec folder!')
+
+                    sim_spec_name = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}.h5'
+                    sim_spec_path = f'{self.out_path}/SimUse/{sim_spec_name}'
+                    
+                    ssp.final_intensity_spec(
+                        spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        Vel_bin_size, plot, flatten=False)
+                    final_spec = pd.read_hdf(sim_spec_path) 
+
+                else:
+                    print('\n[ERROR] Can only handel PHX and Synmast spec!\n')
+                
+                # # sum total flux for intensity ratio calculation
+                # sum_up_flux = self.flux_sum(spec_base_path, tt, wvmin, wvmax)
+                # sum_up_flux_box.append(sum_up_flux)
+
+                # mu_s = np.array([0.9636, 0.8864, 0.8018, 0.7071, 0.5976, 0.4629, 0.2673])
+                mu_cols = [col for col in final_spec.columns if col.startswith("mu_")]
+                df_mu = final_spec[mu_cols]
+                spec = {
+                    f'{band}_v': final_spec['v'].to_numpy(), 
+                    f'{band}_f': df_mu.to_numpy(),
+                    }
+            
+                if idx==0:
+                    if nn=='star':
+                        self.star_spec = spec
+                    elif nn=='spot':
+                        self.spot_spec = spec
+                    elif nn=='plage':
+                        self.plage_spec = spec
+                else:
+                    if nn=='star':
+                        self.star_spec.update(spec)
+                    elif nn=='spot':
+                        self.spot_spec.update(spec)
+                    elif nn=='plage':
+                        self.plage_spec.update(spec)
+            
+            # self.intensity_ratio[band] = 1
             # print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
 
 
-    def dw_phx(self, _spec_base_path, temp_list, alpha):
-        '''Always dw PHX spectra as we need it for calculate flux intensity ratio'''
-
+    def dw_phx_flux(self, temp_list, alpha=0):
+        self.phx_flux_file = {}
         for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
             if (tt > 7000) | (tt < 2300) | (tt is None):
-                print(f'\n   [ERROR] Rassine normalization cfg not tuned for {tt}K\n')
         
-                if nn=='star':
-                    self.star_spec = None
-                elif nn=='spot':
-                    self.spot_spec = None
-                elif nn=='plage':
-                    self.plage_spec = None
+                raise Exception(
+                    f'   [ERROR] Rassine normalization cfg not tuned for {tt}K\n'
+                    '   Please check the temperature range in the config file!'
+                )
             
-            spec_base_path = _spec_base_path.format(tt, self.logg, self.FeH)
-            
-            if os.path.exists(spec_base_path):
-                # print('   Already have PHX spec:', spec_base_path)
-                pass
-                # phx_spec = pd.read_pickle(spec_base_path)
-            else:    
-                print(f'   Missing PHX spec: {spec_base_path}, downloading...')
-                ssp.get_phx_spec(
-                    tt, self.logg, self.FeH, alpha, self.out_path)
+            else:
+                phx_flux_file = ssp.get_phx_flux_spec(
+                    tt, self.logg, self.FeH, alpha, self.phx_path, self.out_path)
+                self.phx_flux_file[tt] = phx_flux_file
+                
+    def dw_phx_mu_intensity(self, temp_list, alpha=0):
+        for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
+            if (tt > 7000) | (tt < 2300) | (tt is None):
+        
+                raise Exception(
+                    f'   [ERROR] Rassine normalization cfg not tuned for {tt}K\n'
+                    '   Please check the temperature range in the config file!'
+                )
+            else:
+                ssp.get_phx_intensity_spec(
+                    tt, self.logg, self.FeH, alpha, self.phx_path, self.out_path)
 
 
 
-    def flux_sum(self, _spec_dir, tt, wvmin, wvmax): 
-        spec_dir = _spec_dir.format(tt, self.logg, self.FeH)
+    # def flux_sum(self, _spec_dir, tt, wvmin, wvmax): 
+    #     spec_dir = _spec_dir.format(tt, self.logg, self.FeH)
 
-        spec = pd.read_pickle(spec_dir)
-        wave = spec['wave'].to_numpy()
-        flux = spec['flux'].to_numpy()
+    #     spec = pd.read_pickle(spec_dir)
+    #     wave = spec['wave'].to_numpy()
+    #     flux = spec['flux'].to_numpy()
 
-        flux = flux[(wave>=wvmin) & (wave<=wvmax)]
-        wave = wave[(wave>=wvmin) & (wave<=wvmax)]
-        # integrate the flux
+    #     flux = flux[(wave>=wvmin) & (wave<=wvmax)]
+    #     wave = wave[(wave>=wvmin) & (wave<=wvmax)]
+    #     # integrate the flux
 
-        # print(f'\n   ----> {tt}K wv  {wvmin}->{wvmax}: {np.trapz(flux, wave)}')
-        return np.trapz(flux, wave)
+    #     # print(f'\n   ----> {tt}K wv  {wvmin}->{wvmax}: {np.trapz(flux, wave)}')
+    #     return np.trapz(flux, wave)
 
         # if self.Temp in teffs:
         #     self.star_teff_use = self.Temp
@@ -719,8 +775,8 @@ def a0cont(a0vcut, plot=False, poly_order=1, spline_k=1, mpd=100):
 
     return continuum, peaks
 
-def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir):
-    plot = True
+def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir, plot):
+    # plot = True
 
     _mpd = int(len(vel)*0.04)
     cont, peaks = a0cont(
@@ -729,7 +785,7 @@ def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir):
     fluxp_flat = fluxp_flat/np.nanpercentile(fluxp_flat, 99)
 
     ############################
-    if plot:
+    if plot == 1:
         fig, ax = plt.subplots(
                 1, 1, figsize=(7,3), facecolor='white', dpi=250)
         
@@ -758,8 +814,8 @@ def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir):
         
     return np.array(fluxp_flat)
 
-def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir):
-    plot = True
+def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir, plot):
+    # plot = True
     vel = Star.star_spec[f'{band}_v']
 
     nomral_spec_box = []
@@ -773,7 +829,7 @@ def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir):
         fluxp_flat = fluxp_flat/np.nanpercentile(fluxp_flat, 99)
 
         ############################
-        if plot:
+        if plot == 1:
             fig, ax = plt.subplots(
                     1, 1, figsize=(7,3), facecolor='white', dpi=250)
             
@@ -888,7 +944,8 @@ def calculate_activity_signal_spec(
     nrho, grid, star, psi, 
     Spec_photo, Spec_spot, Spec_plage,
     active_regions_number, active_region_box,
-    inst_reso, cpu_use, int_ratio, RVandEWR_dir, band, savespec
+    inst_reso, cpu_use, int_ratio, RVandEWR_dir, band, 
+    savespec, fluxORint
     ):
     """
 
@@ -910,11 +967,21 @@ def calculate_activity_signal_spec(
     """
 
     # initiate the quite surface
-    SPECstar_quiet, quite_surface = stsp.itot(
-        star.vrot, star.incl, star.limba1, star.limba2, 0., 0., 0., grid, 
-        Spec_photo.rv, Spec_photo.intensity, Spec_photo.v_interval, 
-        Spec_photo.n_v, Spec_photo.n
-        )
+    Spec_photo.intensity = np.array(
+        Spec_photo.intensity, dtype=np.float64)
+
+    if fluxORint == 'flux':
+        SPECstar_quiet, quite_surface = stsp.itot_flux(
+            star.vrot, star.incl, star.limba1[0], star.limba2[0], 0., 0., 0., grid, 
+            Spec_photo.rv, Spec_photo.intensity, Spec_photo.v_interval, 
+            Spec_photo.n_v, Spec_photo.n
+            )
+    if fluxORint == 'int':
+        SPECstar_quiet, quite_surface = stsp.itot_int(
+            star.vrot, star.incl, star.limba1[0], star.limba2[0], 0., 0., 0., grid, 
+            Spec_photo.rv, Spec_photo.intensity, Spec_photo.v_interval, 
+            Spec_photo.n_v, Spec_photo.n
+            )
     quite_surface_2d = quite_surface.copy()
     # initialization of the variables
     # FLUXstar      = FLUXstar_quiet
@@ -943,6 +1010,8 @@ def calculate_activity_signal_spec(
             )
         
         active_intensity = Spec_spot.intensity if active_region_types[rr] == 0 else Spec_plage.intensity
+        limba1 = np.array([star.limba1[0], star.limba1[1]]) if active_region_types[rr] == 0 else np.array([star.limba1[0], star.limba1[2]])
+        limba2 = np.array([star.limba2[0], star.limba2[1]]) if active_region_types[rr] == 0 else np.array([star.limba2[0], star.limba2[2]])
 
         # print(active_region_sizes[rr], active_region_longs[rr], active_region_lats[rr])
 
@@ -952,12 +1021,13 @@ def calculate_activity_signal_spec(
         # Thus the result is to be subtracted to the output of the itot() function.
         SPECactive_region_tot, SPECphoto_region_duplicated, visible_phi, active_surface_box, quite_surface_duplicated_box =\
                 stsp.spot_scan_npsi(
-                    xyz, nrho, psi, len(psi), star.vrot, star.incl, star.limba1, 
-                    star.limba2, 0., 0., 0., grid, 
+                    xyz, nrho, psi, len(psi), star.vrot, star.incl, limba1, 
+                    limba2, 0., 0., 0., grid, 
                     Spec_photo.rv, Spec_photo.intensity, active_intensity, 
                     Spec_photo.v_interval, Spec_photo.n_v, Spec_photo.n, 
                     active_region_sizes[rr], active_region_longs[rr], active_region_lats[rr], 
-                    active_region_types[rr], star.Temp, star.Tdiff_spot, cpu_use, int_ratio
+                    active_region_types[rr], star.Temp, star.Tdiff_spot, cpu_use, int_ratio, 
+                    fluxORint
                     )
 
         # Calculate the total flux of the star affected by active regions
@@ -1425,10 +1495,10 @@ def get_ccf_peak(ccf_box, drvs, visible_phi, band):
 
             if -np.abs(new_rv) == drvs[0]:
                 new_rv = np.nan
-                print(f'\n     >>>> CCF hit edge at {band} phase {visible_phi[i]:1.3f}!')
+                print(f'\n     >>>> CCF hit edge {new_rv}km/s at {band} phase {visible_phi[i]:1.3f}!')
         else:
             new_rv = np.nan
-            print(f'\n     >>>> CCF hit edge at {band} phase {visible_phi[i]:1.3f}!')
+            print(f'\n     >>>> CCF cannot find peaks at {band} phase {visible_phi[i]:1.3f}!')
         
         vis.plot_cc(drvs, ccf, new_rv, visible_phi[i], band, properties)
         new_rv_box.append(new_rv)
@@ -1439,7 +1509,7 @@ def get_ccf_peak(ccf_box, drvs, visible_phi, band):
 
 def cal_ccf_rv(
         star_tot, Star, visible_phi, band, rv_ccf_pars, prf_dir, 
-        cpu_use, RVandEWR_dir, Vel_bin_size):
+        cpu_use, RVandEWR_dir, Vel_bin_size, plot):
     visible_phi = np.array(visible_phi)
     vel = Star.star_spec[f'{band}_v']
     # vel = np.array([stsp.rndup(i, 4) for i in vel])
@@ -1467,7 +1537,7 @@ def cal_ccf_rv(
         sim_spec_name = f'RVCCFUse_Synmast_spec_{ccf_tt:1.0f}_{ccf_logg:1.2f}_{ccf_FeH:1.2f}_vsini{ccf_vsini:1.02f}_res{ccf_resolution:1.0f}_wv{wvmin}_{wvmax}_flatten.p'
         sim_spec_path = f'{Star.out_path}{sim_spec_name}'
 
-        ssp.final_spec(
+        ssp.final_flux_spec(
             'ccf_temp', spec_dir, sim_spec_path, wvmin, wvmax, 
             Vel_bin_size, flatten=True, pars=rv_ccf_pars)
         _temp = pd.read_pickle(sim_spec_path)
@@ -1488,7 +1558,8 @@ def cal_ccf_rv(
         # tck = interpolate.splrep(vel_temp, spec_temp, s=0)    
         # spec_temp = interpolate.splev(vel, tck, der=0)
         # spec_temp = rebin_jv(wave_temp, spec_temp, wave, False)
-        spec_temp = flatten_ccf_model_spec(wave_temp, spec_temp, band, RVandEWR_dir)
+        spec_temp = flatten_ccf_model_spec(
+            wave_temp, spec_temp, band, RVandEWR_dir, plot)
 
         # save ccf temlplate
         np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template.npy', spec_temp)
@@ -1513,7 +1584,7 @@ def cal_ccf_rv(
 
     ##########################################################################################
     # If the number of phases is larger then 10, do trial ccf to get RV ranges
-    ccf_step = Vel_bin_size/10
+    ccf_step = Vel_bin_size/100
     if len(visible_phi) <= 10:
         _edge = 40 
         clip_obs_edges = _edge / np.diff(vel_temp)[0]
@@ -1534,12 +1605,14 @@ def cal_ccf_rv(
     else:
         # trial CCF on phase closested to 0.1
         _loc0 = np.argmin(np.abs(visible_phi-0.0))
-        _loc1 = np.argmin(np.abs(visible_phi-0.1))
-        _loc2 = np.argmin(np.abs(visible_phi-0.25))
+        _loc1 = np.argmin(np.abs(visible_phi-0.15))
+        _loc2 = np.argmin(np.abs(visible_phi-0.2))
+        _loc3 = np.argmin(np.abs(visible_phi-0.25))
+        _loc4 = np.argmin(np.abs(visible_phi-0.3))
         _loc5 = np.argmin(np.abs(visible_phi-0.5))
-        trial_locs = np.array([_loc0, _loc1, _loc2, _loc5], dtype=int)
+        trial_locs = np.array([_loc0, _loc1, _loc2, _loc3, _loc4, _loc5], dtype=int)
         # print(trial_locs)
-        _edge = 40
+        _edge = 15
         clip_obs_edges = _edge / np.diff(vel_temp)[0]
         clip_obs_edges = int(clip_obs_edges*5)
         # print(f'clip_obs_edges: {clip_obs_edges}')
@@ -1551,24 +1624,38 @@ def cal_ccf_rv(
         func = partial(
             mc_ccf, wave, star_tot[trial_locs], wave_temp, spec_temp, 
             -_edge, _edge, ccf_step, clip_obs_edges, visible_phi)
-        outs = pqdm(np.arange(len(trial_locs)), func, n_jobs=4)
+        outs = pqdm(np.arange(len(trial_locs)), func, n_jobs=6)
 
 
         drvs = np.arange(-_edge, _edge, ccf_step)
         _rv_shift = get_ccf_peak(
             np.array(outs), drvs, visible_phi[trial_locs], band) 
-        # print('_rv_shift', _rv_shift)
+        print('_rv_shift', _rv_shift)
 
-        ccf_bounds = np.round(_rv_shift, decimals=0)
-        ccf_bound_lw = ccf_bounds[np.nanargmin(ccf_bounds)]
-        ccf_bound_up = ccf_bounds[np.nanargmax(ccf_bounds)]
-        ccf_bound = ccf_bound_up - ccf_bound_lw
-        if ccf_bound<=5:
+        ccf_bounds = np.round(_rv_shift, decimals=3)
+        # ccf_bound_lw = ccf_bounds[np.nanargmin(ccf_bounds)]
+        # ccf_bound_up = ccf_bounds[np.nanargmax(ccf_bounds)]
+        # ccf_bound = ccf_bound_up - ccf_bound_lw
+        ccf_bound = np.nanmax(np.abs(ccf_bounds))
+        # print(f'org ccf_bounds: {ccf_bounds}')
+        print(f'org ccf_bound: {ccf_bound}')
+        
+        if ccf_bound <= 0.02:
+            ccf_rv_shift = np.zeros(len(star_tot), dtype=np.float64)
+            ccf_rv_shift[:] = np.nan
+            return ccf_rv_shift
+        
+        elif (ccf_bound > 0.02) and (ccf_bound<=0.5):
+            ccf_bound = 2
+            ccf_step = ccf_step        
+        elif (ccf_bound > 0.5) and (ccf_bound<=5):
             ccf_bound = 15
-            ccf_step = ccf_step/2
+            ccf_step = ccf_step*10
         else:
             ccf_bound = ccf_bound * 4
+            ccf_step = ccf_step*100
 
+        print(f'ccf_bound: {ccf_bound}, ccf_step: {ccf_step}')
         # print(f'lower bound: {ccf_bound_lw}, upper bound: {ccf_bound_up}')
         # print(f'ccf_bound: {ccf_bound}')
 

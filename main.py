@@ -1,11 +1,9 @@
-import os, sys, argparse, socket
-import itertools
-import shutil
+import os, sys, argparse, socket, itertools, shutil
 import warnings
+from pathlib import Path
 warnings.filterwarnings("ignore")
 
 import numpy as np
-# from scipy import signal
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib.ticker import AutoMinorLocator
@@ -14,100 +12,48 @@ from astropy.table import Table
 from time import time
 
 import starspot as stsp
-import soap2 as soap2
-from soap2 import flatten_model_spec
+import soapcore as soapcore
+from soapcore import flatten_model_spec
 import visualization as vis
 
+ConfigFile = 'config_LkCa4base_SizeDelT_study.cfg'
+# ConfigFile = 'config_PhaseDelay_SizeDelT_study.cfg'
+# config.read("config_v830tau.cfg")-8
+# config.read("config_Reiners+2010_2.cfg")
+# config.read("config_multi_spot_test.cfg")
+# config.read("config_citau.cfg")
+# config.read("config_LkCa4_50pc_Tdel500.cfg")
 
-_bands = {
-    # [line_center, half_wv_width, run models] \AA
-    # 'IG_CO': [23157., 25, ['rv', 'photo']],
-    'IG_OH': [15631.35, 25, ['rv', 'photo']],
-    # 'opt_Gaia': [8665, 25, ['rv', 'photo']],
-    # 'MD_9080': [9080, 20, ['rv', 'photo']],
-    # 'MD_8220': [8220, 20, ['rv', 'photo']],
-    # 'MD_7200': [7200, 20, ['rv', 'photo']],
-    # 'MD_6280': [6280, 15, ['rv', 'photo']],
-    # 'MD_5580': [5580, 15, ['rv', 'photo']],
-    # 'opt_Gaia': [8585, 135, ['rv', 'photo']]
-    # 'opt_': [5000.0, 20, ['rv', 'photo']]
-}
+SaveDir = f'RVandEWR_SizeDelT_width100'
+# SaveDir = f'RVandEWR_mu_intensity_interp_TEST'
+# SaveDir = f'RVandEWR_mu_fluxTEST'
+# SAVEsub_dir = 'RVandEWR_Reiners_3700_2400_width50'
+# SAVEsub_dir = f'RVandEWR_LkCa4_width100_50cover_Tdel500_{hostname}'
+# SAVEsub_dir = f'RVandEWR_res_test_{hostname}_100-1'
+# SAVEsub_dir = 'RVandEWR_V830Tau_EWR'
 
-# nir_width = 40
-# opt_width1 = 20
-# opt_width2 = 15
+# SimSpecLineCenters = np.arange(6000, 24001, 5000) # in AA, test
+# SimSpecLineCenters = np.arange(6000, 24001, 200) # AA, 91 runs
+# SimSpecLineCenters = np.arange(6000, 24001, 500) # AA, 37 runs
 
-# _bands = {
-#     # [line_center, half_wv_width, run models] \AA
-#     'nir_K3': [23925, nir_width, ['rv', 'photo']],
-#     'nir_K4': [23631, nir_width, ['rv', 'photo']],
-#     'nir_K5': [23366, nir_width, ['rv', 'photo']],
-#     'nir_K6': [23094, nir_width, ['rv', 'photo']],
-#     'nir_H6': [17250, nir_width, ['rv', 'photo']],
-#     'nir_H14': [16040, nir_width, ['rv', 'photo']],
-#     'nir_H16': [15760, nir_width, ['rv', 'photo']],
-#     'IG_OH': [15631.35, nir_width, ['rv', 'photo']],
-#     'nir_H21': [15111, nir_width, ['rv', 'photo']],
-#     'nir_H22': [15006, nir_width, ['rv', 'photo']],
-#     #
-#     'opt_0': [9950, opt_width1, ['rv', 'photo']],
-#     'opt_5': [8680, opt_width1, ['rv', 'photo']],
-#     'opt_10': [7700, opt_width1, ['rv', 'photo']],
-#     'opt_15': [6920, opt_width2, ['rv', 'photo']],
-#     'opt_20': [6280, opt_width2, ['rv', 'photo']],
-#     'opt_25': [5750, opt_width2, ['rv', 'photo']],
-#     # # 'opt_30': [5320, opt_width2, ['rv', 'photo']],
-#     'opt_35': [4940, opt_width2, ['rv', 'photo']],
-#     # 'opt_40': [4600, opt_width2, ['rv', 'photo']],
-#     # 'opt_45': [4320, opt_width2, ['rv', 'photo']],
-#     # 'opt_50': [4070, opt_width2, ['rv', 'photo']],
-#     # 'opt_Gaia': [8585, 135, ['rv', 'photo']]
-#     # 'opt_': [5000.0, 20, ['rv', 'photo']]
-# }
+# SimSpecLineCenters = np.arange(10000, 24001, 500) # AA, 29 runs
+# SimSpecLineCenters = SimSpecLineCenters[SimSpecLineCenters != 11500]
+
+# only fo CO region
+SimSpecLineCenters = np.arange(23000, 24001, 200) # AA, 5 runs
+# line_centers = np.arange(6000, 24001, 200)[-1:] # AA
+# line_centers = np.arange(14000, 24001, 200) # AA
+# line_centers = np.arange(10000, 24001, 200) # AA
+# line_centers = np.arange(14200, 24001, 200) # AA
+
+SimSpecWinSize = 100 # in AA
+SimSpec_VelBinSize = 100/1000 # in km/s
 
 # ------------------------------------------------
-# # Define the parameters
-# line_centers = np.arange(6000, 24001, 200) # AA, 91 runs
-# # line_centers = np.arange(6000, 24001, 200)[-1:] # AA
-# # line_centers = np.arange(14000, 24001, 200) # AA
-# # line_centers = np.arange(10000, 24001, 200) # AA
-# # line_centers = np.arange(14200, 24001, 200) # AA
-# _width = 100
-# run_models = ['rv', 'photo']
-
-# # Create the dictionary
-# _bands = {
-#     f"w_{wave_center // 100}": [wave_center, _width, run_models]
-#     for wave_center in line_centers
-# }
-
-hostname = socket.gethostname() 
-hostname = hostname.split('.')[0].split('-')[0] # either Swing or taurus
-# RVandEWR_dir = 'RVandEWR_Reiners_3700_2400_width50'
-# RVandEWR_dir = f'RVandEWR_LkCa4_width100_50cover_Tdel500_{hostname}'
-# RVandEWR_dir = f'RVandEWR_res_test_{hostname}_100-1'
-# RVandEWR_dir = 'RVandEWR_V830Tau_EWR'
-
-Vel_bin_size = 100/1000 # km/s
-# ------------------------------------------------
-# _bands = {
-#     # [line_center, half_wv_width, run models] \AA
-#     # 'w_120': [12000, 50, ['rv', 'photo']],
-#     # 'w_128': [12800, 50, ['rv', 'photo']],
-#     # 'w_134': [13400, 50, ['rv', 'photo']],
-#     # 'w_136': [13600, 50, ['rv', 'photo']],
-#     # 'w_138': [13800, 50, ['rv', 'photo']],
-# }
+HOSTNAME = socket.gethostname() 
+HOSTNAME = HOSTNAME.split('.')[0].split('-')[0] # either Swing or taurus
 
 if __name__ == '__main__':
-
-    # -- INITIALIZATION --
-    config = configparser.ConfigParser(inline_comment_prefixes=';')   
-    # config.read("config_v830tau.cfg")
-    # config.read("config_Reiners+2010_2.cfg")
-    # config.read("config_multi_spot_test.cfg")
-    # config.read("config_citau.cfg")
-    # config.read("config_LkCa4_50pc_Tdel500.cfg")
 
     parser = argparse.ArgumentParser(
         prog        = 'Run LkCa4_mc in batch',
@@ -123,6 +69,10 @@ if __name__ == '__main__':
         '-ed', dest="ed", action="store", help="The end dates id to run.",
         type=int, default=None)
     
+    parser.add_argument(
+        '-fluxORint', dest="fluxORint", action="store", help="Run model by integrated flux or intensity.",
+        type=str, default=None)
+    
         # ---- Not normal setting ----
     parser.add_argument(
         '-delT', dest="delT", action="store", help="Delta T for spot.",
@@ -131,64 +81,72 @@ if __name__ == '__main__':
         '-Scover', dest="Scover", action="store", help="Spot coverage in % for visible DISK.",
         type=float, default=None)
     parser.add_argument(
+        '-Lat', dest="Lat", action="store", help="Manually set the spot latitude.",
+        type=float, default=None)
+    parser.add_argument(
+        '-Incl', dest="Incl", action="store", help="Manually set the Stellar incl. angle",
+        type=float, default=None)
+    parser.add_argument(
         '-out', dest="out", action="store", help="Out dur name.",
+        type=str, default=None)
+    parser.add_argument(
+        '-plot', dest="plot", action="store", help="If make gif.",
         type=str, default=None)
     
     args = parser.parse_args()
 
-    # --
-    # config.read("config_LkCa4base_SizeDelT_study.cfg")
-    # RVandEWR_dir = f'RVandEWR_SizeDelT_width100_{args.out}_{hostname}'
-    # config.read("config_v830tau.cfg")
-    # RVandEWR_dir = f'RVandEWR_V830Tau_{args.out}_{hostname}'
-    config.read("config_RV_EWR_PhaseDelay_study.cfg")
-    RVandEWR_dir = f'RVandEWR_PhaseDelay_width100_{args.out}_{hostname}'
-
-
-    # RVandEWR_dir = f'RVandEWR_LkCa4_width100_50_25cover_Tdel200_{hostname}'
+    if args.fluxORint is not None:
+        if args.fluxORint.lower() not in ['flux', 'int']:
+            raise ValueError("Please use 'flux' or 'int' for fluxORint.")
+        else:
+            print(f'Running model by {args.fluxORint}...')
+    else:
+        raise ValueError("Please use -fluxORint to specify 'flux' or 'int'.")
     
+    # -- INITIALIZATION --
+    config = configparser.ConfigParser(inline_comment_prefixes=';')   
+    config.read(ConfigFile)
+    SaveDir = f'{SaveDir}_{args.out}_{HOSTNAME}'
+        
     # ------------------------------------------------------------
-    # line_centers = np.arange(6000, 24001, 200)[args.st:args.ed] # AA, 91 runs
-    line_centers = np.arange(6000, 24001, 500)[args.st:args.ed] # AA, 37 runs
-    # line_centers = np.arange(6000, 24001, 200)[-1:] # AA
-    # line_centers = np.arange(14000, 24001, 200) # AA
-    # line_centers = np.arange(10000, 24001, 200) # AA
-    # line_centers = np.arange(14200, 24001, 200) # AA
-    _width = 100
+    if (args.st is not None) and (args.ed is not None):
+        SimSpecLineCenters = SimSpecLineCenters[args.st:args.ed] # AA, test
     run_models = ['rv', 'photo']
 
     # Create the dictionary
     _bands = {
-        f"w_{wave_center // 100}": [wave_center, _width, run_models]
-        for wave_center in line_centers
+        f"w{wave_center // 100}": [float(wave_center), SimSpecWinSize, run_models]
+        for wave_center in SimSpecLineCenters
     }
-    # _bands = {
-    #     'IG_OH': [15631.35, 30, ['rv', 'photo']], # width need ot be at least 40 AA
-    #     }
+    # _bands = {}
+    _bands['EWR_FeOH'] = [15631.35, 30, run_models]
     # ------------------------------------------------------------
     # -- Read the configuration file --
-    path_sub = 1 if hostname == 'Swing' else 2
+    path_sub = 1 if HOSTNAME == 'Swing' else 2
     RASSINE_PATH = config.get('path',f'rassine_path{path_sub}')
     SYNmast_PATH = config.get('path',f'synmast_prf{path_sub}')
+    PHX_PATH = config.get('path','PHOENIX_path')
+
     PLOT = int(config.get('output','plot' ))
+    if args.plot is not None:
+        PLOT = 1 if 't' in args.plot.lower() else 0
+        
     SAVESPEC = int(config.get('output','save_spec' ))
 
     GRID = int(config.get('main','grid' ))
     NRHO = int(config.get('main','nrho' ))
     INST_RESO = int(config.get('main','instrument_reso' ))
     CPU = int(config.get('main','cpu' ))
-    CPU = 6 if hostname == 'Swing' else 29
+    CPU = 6 if HOSTNAME == 'Swing' else 31
     
     RAD_Sun = int(config.get('star','radius_sun' ))
     RAD = float(config.get('star','radius' )) * RAD_Sun
     PROT = float(config.get('star','prot' ))
 
-    STAR = soap2.Star(
+    STAR = soapcore.Star(
         prot = PROT,
         vrot = (2.*np.pi*RAD)/(PROT*86400.),
         incl = float(config.get('star','I')),
-        # limba1 = float(config.get('star','limb1')),
-        # limba2 = float(config.get('star','limb2')),
         psi = float(config.get('star','psi')),
         rad_sun = RAD_Sun,
         rad = RAD,
@@ -199,39 +157,36 @@ if __name__ == '__main__':
         FeH = float(config.get('star', 'FeH' )),
         bands2use = _bands
         )
-
+    if args.Incl is not None:
+        STAR.incl = float(args.Incl)
+        
     STAR.vsini = STAR.vrot * np.sin(np.deg2rad(STAR.incl))
     STAR.inst_res = INST_RESO
 
     syn_type = config.get('star','syn_spec')
     if syn_type.lower() == 'phx':
         syn_spec_path = RASSINE_PATH
+        STAR.spec_type = 'phx'
     elif syn_type.lower() == 'synmast':
         syn_spec_path = SYNmast_PATH
+        STAR.spec_type = 'synmast'
     else:
         raise ValueError('Unknown syn_spec type. Please use "phx" or "synmast".')
+    
+    # Currently, we almost always use the PHOENIX spectra for RV CCF
+    STAR.phx_path = Path(f'{PHX_PATH}/PHOENIX-ACES-AGSS-COND-2011').expanduser()
+    os.makedirs(STAR.phx_path, exist_ok=True)
+    os.makedirs(STAR.phx_path / 'SpecInt', exist_ok=True)
+    os.makedirs(STAR.phx_path / 'SpecFlux', exist_ok=True)
 
-    # -- Overwirte pars if been args updated --
+    # -- Overwrite pars if been args updated --
     # for grid testing
     if args.delT is not None:
         STAR.Tdiff_spot = int(args.delT)
         STAR.Tspot = int(STAR.Temp - STAR.Tdiff_spot)
     if args.out is not None:
-        RVandEWR_dir = f'RVandEWR_SizeDelT_width100_{args.out}_{hostname}'
+        SaveDir = f'RVandEWR_SizeDelT_width100_{args.out}_{HOSTNAME}'
     
-    # -- Setup the synthetic spectra --
-    STAR.find_spec(syn_type, Vel_bin_size, syn_spec_path)
-
-    SPEC_photo_box = []
-    SPEC_spot_box = []
-    SPEC_plage_box = []
-    for band in _bands.keys():
-        SPEC_photo_box.append(
-            soap2.Spec(type = 'photosphere', star = STAR, band = band) )
-        SPEC_spot_box.append(
-            soap2.Spec(type = 'spot', star = STAR, band = band) )
-        SPEC_plage_box.append(
-            soap2.Spec(type = 'plage', star = STAR, band = band) )
         
     ######################################################################
     # -- Check how many active regions are there --
@@ -268,6 +223,9 @@ if __name__ == '__main__':
         ppc_cover = np.array(args.Scover)/100
         _spot_cover_size = ppc_cover**0.5
         active_region_sizes = [float(np.round(_spot_cover_size, 6))]
+    
+    if args.Lat is not None:
+        active_region_lats = [float(args.Lat)]
 
     active_region_box = [
         active_region_checks, active_region_longs, active_region_lats, 
@@ -276,19 +234,22 @@ if __name__ == '__main__':
     ######################################################################
 
     outdir = "./outputs/{}/{}_P={:.2f}_i={:.2f}_T1={:1.0f}_DelT={:1.0f}_logg={:1.1f}_lon={}_lat={}_size={}" .format(
-        RVandEWR_dir, STAR.spec_type, STAR.prot, STAR.incl, STAR.Temp,
+        SaveDir, STAR.spec_type, STAR.prot, STAR.incl, STAR.Temp,
         STAR.Tdiff_spot, STAR.logg, active_region_longs, active_region_lats, 
         active_region_sizes)
     
-    os.makedirs(f"outputs/{RVandEWR_dir}", exist_ok=True)
-    os.makedirs(f"outputs/{RVandEWR_dir}/normal_spec", exist_ok=True)
-    os.makedirs(f"outputs/{RVandEWR_dir}/spec", exist_ok=True)
-    os.makedirs(f"outputs/{RVandEWR_dir}/ccf_template", exist_ok=True)
+    os.makedirs(f"syn_spec", exist_ok=True)
+    os.makedirs(f"syn_spec/RASSINE_PHX", exist_ok=True)
+    os.makedirs(f"syn_spec/SimUse", exist_ok=True)
+    os.makedirs(f"outputs/{SaveDir}", exist_ok=True)
+    os.makedirs(f"outputs/{SaveDir}/normal_spec", exist_ok=True)
+    os.makedirs(f"outputs/{SaveDir}/spec", exist_ok=True)
+    os.makedirs(f"outputs/{SaveDir}/ccf_template", exist_ok=True)
     os.makedirs(f"outputs/CCF", exist_ok=True)
         
     ######################################################################
     # -- RV CCF use template parameters --
-    Use_photosphere_teff = int(config.get('ccf','Use_photosphere_teff'))
+    UsePhotosphereTeff = int(config.get('ccf','Use_photosphere_teff'))
     rv_ccf_pars = np.array([
         float(config.get('ccf','Teff')),
         float(config.get('ccf','logg')),
@@ -298,13 +259,55 @@ if __name__ == '__main__':
     ])
     rv_ccf_pars[3] = STAR.vsini if rv_ccf_pars[3] == -1 else rv_ccf_pars[3]
     
-    if Use_photosphere_teff == 1: 
+    if UsePhotosphereTeff == 1: 
         rv_ccf_pars[:] = 99999
-        STAR.find_spec_flatten(
-            syn_type, active_region_sizes, Vel_bin_size, syn_spec_path)
+
+        # -- Estimated the Teff and use it for the LD Teff --
+        # spot_portion = 0 # visible "DISK" portion
+        # for ss in active_region_sizes:
+        #     spot_portion = spot_portion + ss**2
+
+        # est_teff = self.Temp**4*(1-spot_portion) \
+        #     + self.Tspot**4*spot_portion
+        # est_teff = int(est_teff**0.25)
+        # print(f'\nEstimated Teff for calculating Limb darkening: {est_teff:1.0f} K') 
+
+    # Get flatten synthetic spectra for RV CCF
+    STAR.find_fluxspec_flatten(
+        syn_type, SimSpec_VelBinSize, PLOT, syn_spec_path)
     
-    # -- Get Limb darkening parameters --
-    LD_coeff = STAR.get_quadratic_limbdarken(active_region_sizes, line_centers, _width)
+
+    if args.fluxORint.lower() == 'flux':
+        # Flux mode: disk integration by scaling flux based on limb darkening
+        # -- Get Limb darkening parameters --
+        line_centers = [v[0] for v in _bands.values()]
+        l_widths = [v[1] for v in _bands.values()]
+        LD_coeff_photo = STAR.get_quadratic_limbdarken(
+            STAR.Temp, line_centers, l_widths)
+        LD_coeff_spot = STAR.get_quadratic_limbdarken(
+            STAR.Tspot, line_centers, l_widths)
+        LD_coeff_faculae = STAR.get_quadratic_limbdarken(
+            STAR.Tfaculae, line_centers, l_widths)
+        
+        # -- Setup the synthetic spectra --
+        STAR.find_fluxspec(syn_type, SimSpec_VelBinSize, PLOT, syn_spec_path)
+
+    elif args.fluxORint.lower() == 'int':
+        STAR.find_intensityspec(syn_type, SimSpec_VelBinSize, PLOT, syn_spec_path)
+    
+    SPEC_photo_box = []
+    SPEC_spot_box = []
+    SPEC_plage_box = []
+    for band in _bands.keys():
+        SPEC_photo_box.append(
+            soapcore.Spec(type = 'photosphere', star = STAR, band = band) )
+        SPEC_spot_box.append(
+            soapcore.Spec(type = 'spot', star = STAR, band = band) )
+        SPEC_plage_box.append(
+            soapcore.Spec(type = 'plage', star = STAR, band = band) )
+        
+
+
     ######################################################################
 
     # -- Phase at which the signal will be generated --
@@ -331,35 +334,62 @@ or give a file name that contain the phases at which you want to compute the mod
         start_time = time()
         band = list(_bands.keys())[i]
 
-        STAR.limba1 = LD_coeff[band][0]
-        STAR.limba2 = LD_coeff[band][1]
+        if args.fluxORint.lower() == 'flux':
+            # STAR.limba1_photo = LD_coeff_photo[band][0]
+            # STAR.limba2_photo = LD_coeff_photo[band][1]
+            # STAR.limba1_spot = LD_coeff_spot[band][0]
+            # STAR.limba2_spot = LD_coeff_spot[band][1]
+            # STAR.limba1_faculae = LD_coeff_faculae[band][0]
+            # STAR.limba2_faculae = LD_coeff_faculae[band][1]
+
+            STAR.limba1 = [
+                LD_coeff_photo[band][0],
+                LD_coeff_spot[band][0],
+                LD_coeff_faculae[band][0]
+            ]
+            STAR.limba2 = [
+                LD_coeff_photo[band][1],
+                LD_coeff_spot[band][1],
+                LD_coeff_faculae[band][1]
+            ]
+        elif args.fluxORint.lower() == 'int':
+            STAR.limba1 = [0.0, 0.0, 0.0]
+            STAR.limba2 = [0.0, 0.0, 0.0]
 
         print('\n\nNow calculating the activity signal for the band: ', band)
 
         SPEC_photo = SPEC_photo_box[i]
         SPEC_spot = SPEC_spot_box[i]
         SPEC_plage = SPEC_plage_box[i]
-        int_ratio = STAR.intensity_ratio[band] 
+        # int_ratio = STAR.intensity_ratio[band] 
+        int_ratio = 1
 
         visible_phi, SPECstar_tot, quite_surface, quite_surface_2d =\
-            soap2.calculate_activity_signal_spec(
+            soapcore.calculate_activity_signal_spec(
             NRHO, GRID, STAR, PSI, 
             SPEC_photo, SPEC_spot, SPEC_plage,
             active_regions_number, active_region_box, INST_RESO, CPU, int_ratio,
-            RVandEWR_dir, band, SAVESPEC
+            SaveDir, band, SAVESPEC, args.fluxORint.lower()
             )
         
+        # check_if_see_spot = [np.sum(spec_tot - quite_surface) == 0 for spec_tot in quite_surface_2d]
+
+        # print(check_if_see_spot)
+        # sys.exit('done!!')
+    
+        # sys.exit('cool')
         # --- flatten the spectra ---
         # np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_non_flat_spec.npy', SPECstar_tot)
-        SPECstar_tot = flatten_model_spec(STAR, SPECstar_tot, visible_phi, band, RVandEWR_dir)
+        SPECstar_tot = flatten_model_spec(
+            STAR, SPECstar_tot, visible_phi, band, SaveDir, PLOT)
         if SAVESPEC == 1:
-            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_flat_final_spec.npy', SPECstar_tot)
+            np.save(f'./outputs/{SaveDir}/spec/{band}_flat_final_spec.npy', SPECstar_tot)
 
-        if band == 'IG_OH':        
+        if band == 'EWR_FeOH':        
             # depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0 = soap2.get_line_depth(
             #     STAR, SPECstar_tot, visible_phi, band
             #     )
-            ohfe_ratio = soap2.get_equivalent_width(STAR, SPECstar_tot, visible_phi, band)
+            ohfe_ratio = soapcore.get_equivalent_width(STAR, SPECstar_tot, visible_phi, band)
 
             # oh_line = np.array(d_oh0)
             # fe_line = (np.array(d_fe1) + np.array(d_fe2)) / 2
@@ -371,9 +401,9 @@ or give a file name that contain the phases at which you want to compute the mod
 
         # -- Calculate CCF RV --
         print('\nCalculating the RV with CCF...\n')
-        ccf_rv_shift = soap2.cal_ccf_rv(
+        ccf_rv_shift = soapcore.cal_ccf_rv(
             SPECstar_tot, STAR, visible_phi, band, rv_ccf_pars, SYNmast_PATH, 
-            CPU, RVandEWR_dir, Vel_bin_size)
+            CPU, SaveDir, SimSpec_VelBinSize, PLOT)
         # print(f'--> {band} RV amp. {np.nanmax(ccf_rv_shift) - np.nanmin(ccf_rv_shift):1.6f} km/s')
 
         # -- Plot the simulated results --
@@ -382,7 +412,8 @@ or give a file name that contain the phases at which you want to compute the mod
                 '{0:12} = {1:<8.2f}, {2:18} = {3:<8.2f}\n'.format('St Prot [d]', STAR.prot,   'St radius [Rsun]', STAR.rad/RAD_Sun) + \
                 '{0:12} = {1:<8.1f}, {2:18} = {3:<8.2f}\n'.format('St incl', STAR.incl,       'St vsini [km/s]', STAR.vsini) + \
                 '{0:12} = {1:<8d}, {2:18} = {3:<8d}\n'.format(    'St Teff [K]', STAR.Temp,   'Spot Diff Teff [K]', STAR.Tdiff_spot) + \
-                '{0:12} = {1:<8.3f}, {2:18} = {3:<8.3f}\n'.format('LimDark lin', STAR.limba1, 'LimDark quad', STAR.limba2) + \
+                '{:12} = {}\n'.format('LimDark lin', [float(np.round(ll, 3)) for ll in STAR.limba1]) + \
+                '{:12} = {}\n'.format('LimDark quad', [float(np.round(ll, 3)) for ll in STAR.limba2]) + \
                 '{0:12} = {1:<8}, {2:5} = {3:<4.2f}, {4:5} = {5:<4.2f}'.format('Syn template', STAR.spec_type, 'logg', STAR.logg, '[Fe/H]', 0.0)
 
         text2 = 'ActR {0}: lon={1:<5.1f}, lat={2:<4.1f}, size = {3:<5.3f} [Rsun] (={4:.2f}%)\n'.format(
@@ -396,10 +427,10 @@ or give a file name that contain the phases at which you want to compute the mod
             data=(visible_phi, ccf_rv_shift, ohfe_ratio), 
             names=('Phase', 'RV', 'EWR'))
         tab_save['Phase'].format = '%.3f'
-        tab_save['RV'].format = '%.5f'
+        tab_save['RV'].format = '%.4f'
         tab_save['EWR'].format = '%.5f'
         tab_save.write(
-            f'./outputs/{RVandEWR_dir}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv', 
+            f'./outputs/{SaveDir}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv', 
             format='csv', overwrite=True)
 
         if PLOT == 1:
@@ -413,56 +444,57 @@ or give a file name that contain the phases at which you want to compute the mod
     
     ######################################################################
     ## --- Diagnostic plot for RV and EWR
-    center_wvs = np.array([_bands[band][0]/1e4 for band in _bands.keys()])
+    if len(SimSpecLineCenters) > 1:
+        center_wvs = np.array([_bands[band][0]/1e4 for band in _bands.keys()])
 
-    norm = mpl.colors.Normalize(vmin=center_wvs.min(), vmax=center_wvs.max())
-    s_m = mpl.cm.ScalarMappable(cmap=mpl.cm.coolwarm, norm=norm)
-    s_m.set_array([])
+        norm = mpl.colors.Normalize(vmin=center_wvs.min(), vmax=center_wvs.max())
+        s_m = mpl.cm.ScalarMappable(cmap=mpl.cm.coolwarm, norm=norm)
+        s_m.set_array([])
 
-    fig, ax = plt.subplots(1, 1, figsize=(4.5, 2.5), dpi=300)    
-    
-    amp_box = []
-    
-    for i, ss in zip(
-        range(len(SPEC_photo_box)), itertools.cycle('ox>^+d*s')):
-        band = list(_bands.keys())[i]
-        cen_wv = center_wvs[i]
-
-        tab = Table.read(
-            f'./outputs/{RVandEWR_dir}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv', 
-            format='csv'
-            )
+        fig, ax = plt.subplots(1, 1, figsize=(4.5, 2.5), dpi=300)    
         
-        ax.plot(
-            tab['Phase'], tab['RV'], '.-', 
-            label=fr'$\sim${cen_wv:>4.2f}um {band}', 
-            c=s_m.to_rgba(cen_wv), marker=ss, ms=2,
-            alpha=0.7)
+        amp_box = []
         
-        amp_box.append(np.nanmax(tab['RV']) - np.nanmin(tab['RV']))
-    
-    ax.xaxis.set_minor_locator(AutoMinorLocator(4))
-    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-    ax.set_xlabel('Phase')
-    ax.set_ylabel('RV [km/s]')
-    ax.legend(
-        fontsize=4, ncol=2, edgecolor='white', bbox_to_anchor=(1.05, 1.))
-    # ax.set_ylim(-20, 20)
-    fig.savefig(
-        f'./outputs/{RVandEWR_dir}/{outdir.split("/")[-1]}_RV_{line_centers[0]}_{line_centers[-1]}.png', 
-        bbox_inches='tight')
+        for i, ss in zip(
+            range(len(SPEC_photo_box)), itertools.cycle('ox>^+d*s')):
+            band = list(_bands.keys())[i]
+            cen_wv = center_wvs[i]
 
-    ## ---
+            tab = Table.read(
+                f'./outputs/{SaveDir}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv', 
+                format='csv'
+                )
+            
+            ax.plot(
+                tab['Phase'], tab['RV'], '.-', 
+                label=fr'$\sim${cen_wv:>4.2f}um {band}', 
+                c=s_m.to_rgba(cen_wv), marker=ss, ms=2,
+                alpha=0.7)
+            
+            amp_box.append(np.nanmax(tab['RV']) - np.nanmin(tab['RV']))
+        
+        ax.xaxis.set_minor_locator(AutoMinorLocator(4))
+        ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+        ax.set_xlabel('Phase')
+        ax.set_ylabel('RV [km/s]')
+        ax.legend(
+            fontsize=4, ncol=2, edgecolor='white', bbox_to_anchor=(1.05, 1.))
+        # ax.set_ylim(-20, 20)
+        fig.savefig(
+            f'./outputs/{SaveDir}/{outdir.split("/")[-1]}_RV_{SimSpecLineCenters[0]}_{SimSpecLineCenters[-1]}.png', 
+            bbox_inches='tight')
 
-    fig, ax = plt.subplots(1, 1, figsize=(3, 2.5), dpi=300)    
-    ax.plot(center_wvs, amp_box, 'o', ms=3, c='k')
+        ## ---
 
-    ax.set_xlabel('Wavelength [um]')
-    ax.set_ylabel('RV amplitude [km/s]')
-    ax.set_xlim(0, 3.0)
-    # ax.set_ylim(0, np.round(np.max(amp_box))+1)
+        fig, ax = plt.subplots(1, 1, figsize=(3, 2.5), dpi=300)    
+        ax.plot(center_wvs, amp_box, 'o', ms=3, c='k')
 
-    fig.savefig(
-        f'./outputs/{RVandEWR_dir}/{outdir.split("/")[-1]}_RV_amp_{line_centers[0]}_{line_centers[-1]}.png', 
-        bbox_inches='tight')
+        ax.set_xlabel('Wavelength [um]')
+        ax.set_ylabel('RV amplitude [km/s]')
+        ax.set_xlim(0, 3.0)
+        # ax.set_ylim(0, np.round(np.max(amp_box))+1)
+
+        fig.savefig(
+            f'./outputs/{SaveDir}/{outdir.split("/")[-1]}_RV_amp_{SimSpecLineCenters[0]}_{SimSpecLineCenters[-1]}.png', 
+            bbox_inches='tight')
 

@@ -1,6 +1,6 @@
 # Don't track content of these folders
 outputs/
-syn_spec
+syn_spec*/
 
 # someOtherfoler/
 

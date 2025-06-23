@@ -272,7 +272,7 @@ def spot_view_pel(
         0.05, -0.18, text1, family='monospace', size=5, 
         transform=ax1.transAxes, ha='left', va='top')
     ax1.text(
-        0.05, -0.45, text2, family='monospace', size=5, 
+        0.05, -0.5, text2, family='monospace', size=5, 
         transform=ax1.transAxes, ha='left', va='top')
 
     out_dir_pre = f'./outputs/{outdir.split("/")[2]}'
@@ -300,8 +300,8 @@ def spot_view(
     
     # for ii in np.arange(len(visible_phi)):
     #     spot_view_pel(Star, grid, visible_phi, 
-    #     SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, depth_d_fe1, depth_d_fe2, 
-    #     depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0, text1, text2, band, ii)
+    #     SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, ohfe_ratio, 
+    #     text1, text2, band, ii)
     
     pqdm(np.arange(len(visible_phi)), func, n_jobs=cpu_use)
     

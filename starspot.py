@@ -386,7 +386,8 @@ def rndup(n: float, nb_decimal: int) -> float:
 #     return CCF_blueshifted
 
 @njit
-def shifting_CCF(_lambda: np.ndarray, CCF: np.ndarray, v_shift: float, n1: int) -> np.ndarray:
+def shifting_CCF(
+    _lambda: np.ndarray, CCF: np.ndarray, v_shift: float, n1: int) -> np.ndarray:
     """
     Shift the CCF with a given velocity v_shift using linear interpolation.
 
@@ -428,7 +429,7 @@ def shifting_CCF(_lambda: np.ndarray, CCF: np.ndarray, v_shift: float, n1: int) 
 
 
 @njit
-def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte, 
+def itot_flux(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte, 
     grid, vrad_spec, intensity_spec, v_interval_spec, n_v_spec, n_spec):
     """Calculates the flux, spec, and CCF in each cell of the grid and integrate
     over the entire stellar disc to have the integrated flux, spec, and CCF
@@ -454,13 +455,13 @@ def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
     # delta_v_ccf = 2*v_interval_ccf/(n_v_ccf-1) # step in speed of the CCF. There is (n_v-1) intervals
 
     # Scan of each cell on the grid
-    for iy in range(grid+1):
+    for iy in range(grid):
         y = -1. + iy*delta_grid; # y between -1 et 1
         delta = y * v * sin(i) # Give the velocity of the rotation for the given grid 
                                    # cell as a function of y. For y=-1 => Vrot min, 
                                    # for y=1 => Vrot max, and for y=0 => Vrot = 0.
         
-        for iz in range(grid+1):
+        for iz in range(grid):
             f_star_once = np.zeros(n_v_spec, dtype=np.float64)
 
             z = -1. + iz*delta_grid # z between -1 et 1
@@ -471,11 +472,12 @@ def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
                 # limb-darkening
                 # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
                 # and 0 on the limb. This is often referred in the literature as cos(theta)
-                r_cos = np.sqrt( 1 - (y*y+z*z) )  
-
+                r_cos = np.sqrt( 1 - (y*y+z*z) )  # mu angle
+                
                 # intensity due to limb-darkening (Mandel & Agol 2002)
                 limb = 1 - limba1*(1-r_cos) - limba2*(1-r_cos)**2 
-                
+                intensity_spec_use = intensity_spec.copy()
+ 
                 ##### modify SOAP2 code from only cal CCF to also cal SPEC #####
                 # -------------------------- CCF ------------------------------
                 # # The CCF is defined between -20 and +20 km/s with a sampling "delta_v" of 0.1 km/s, 
@@ -528,17 +530,18 @@ def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
                 #     f_star_ccf[j] += intensity_ccf_shift[n_ccf-1]*limb
                 
                 # -------------------------- SPEC ------------------------------
-                n_v_shifted = delta/delta_v_spec        # by how much steps the CCF is shifted due to rotation
+
+                n_v_shifted = float(delta)/float(delta_v_spec)        # by how much steps the CCF is shifted due to rotation
                 n_v_shifted_quotient = rndup(n_v_shifted, 0)
                 n_v_shifted_remainder = delta - n_v_shifted_quotient*delta_v_spec
                 v_shift = n_v_shifted_remainder
-                
+            
                 intensity_spec_shift = shifting_CCF(
-                    vrad_spec, intensity_spec, v_shift, n_spec
+                    vrad_spec, intensity_spec_use, v_shift, n_spec
                     )
-                
-                diff_SPEC_non_v_and_v = (n_v_spec - n_spec) / 2.
 
+                diff_SPEC_non_v_and_v = (n_v_spec - n_spec) / 2.
+                
                 for j in range(
                     int(diff_SPEC_non_v_and_v + n_v_shifted_quotient)
                     ):
@@ -564,7 +567,124 @@ def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
                     f_star_spec[j] += intensity_spec_shift[n_spec-1]*limb
                     f_star_once[j] += intensity_spec_shift[n_spec-1]*limb
                 
+                # sum_star += intensity_spec_shift[0]*limb
+                quite_surface[iz][iy] = np.sum(f_star_once)
 
+
+    return f_star_spec, quite_surface
+
+@njit
+def itot_int(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte, 
+    grid, vrad_spec, intensity_spec, v_interval_spec, n_v_spec, n_spec):
+    """Calculates the flux, spec, and CCF in each cell of the grid and integrate
+    over the entire stellar disc to have the integrated flux, spec, and CCF
+    """
+
+    f_star_spec = np.zeros(n_v_spec, dtype=np.float64)
+    # f_star_ccf = np.zeros(n_v_ccf, dtype=np.float64)
+    # sum_star = 0
+
+    delta_grid = 2./grid # step of the grid. grid goes from -1 to 1, therefore 2 in total
+
+    i = incl*np.pi/180. # inclination in radian
+
+    quite_surface = np.zeros((grid, grid), dtype=np.float64) # for 2d disk plotting
+
+    # v_interval is from the velocity 0 to the edge of the spectrum taking into 
+    # account minimal or maximal rotation (width - v to 0 or 0 to width + v). 
+    # n_v is the number of points for all the CCF from minimum rotation to 
+    # maximum one (from width - v to width + v).
+    # n_v represent therefore the double than v_interval, we therefore have to multiply 
+    # v_interval by 2.
+    delta_v_spec = 2*v_interval_spec/(n_v_spec-1) # step in speed of the CCF. There is (n_v-1) intervals
+    # delta_v_ccf = 2*v_interval_ccf/(n_v_ccf-1) # step in speed of the CCF. There is (n_v-1) intervals
+
+    # Scan of each cell on the grid
+    for iy in range(grid):
+        y = -1. + iy*delta_grid; # y between -1 et 1
+        delta = y * v * sin(i) # Give the velocity of the rotation for the given grid 
+                                   # cell as a function of y. For y=-1 => Vrot min, 
+                                   # for y=1 => Vrot max, and for y=0 => Vrot = 0.
+        
+        for iz in range(grid):
+            f_star_once = np.zeros(n_v_spec, dtype=np.float64)
+
+            z = -1. + iz*delta_grid # z between -1 et 1
+            if (y*y + z*z)<=1: 
+                # projected radius on the sky smaller than 1, which means that 
+                # we are on the stellar disc
+
+                # limb-darkening
+                # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
+                # and 0 on the limb. This is often referred in the literature as cos(theta)
+                r_cos = np.sqrt( 1 - (y*y+z*z) )  # mu angle
+                
+                # -------------------------- SPEC ------------------------------
+                limb = 1
+                mu_s = np.array(
+                    [0.9636, 0.8864, 0.8018, 0.7071, 0.5976, 0.4629, 0.2673], dtype=np.float64)
+
+                f_loc = int(np.argmin(np.abs(mu_s - r_cos))) # index of the closest mu value to r_cos
+                # intensity_spec_use = intensity_spec[:, f_loc]
+
+                # --- interpolate on mu spectra ---
+                if r_cos >= mu_s[0]:
+                    intensity_spec_use = intensity_spec[:, 0]
+                elif r_cos <= mu_s[-1]:
+                    intensity_spec_use = intensity_spec[:, -1]
+                else:
+                    if r_cos > mu_s[f_loc]:
+                        mu1_low = mu_s[f_loc-1]
+                        mu1_high = mu_s[f_loc]
+                        mu1_int_low = intensity_spec[:, f_loc-1]
+                        mu1_int_high = intensity_spec[:, f_loc]
+                    elif r_cos < mu_s[f_loc]:
+                        mu1_low = mu_s[f_loc]
+                        mu1_high = mu_s[f_loc+1]    
+                        mu1_int_low = intensity_spec[:, f_loc]
+                        mu1_int_high = intensity_spec[:, f_loc+1]
+
+                    intensity_spec_use = mu1_int_low + ( (r_cos - mu1_low)/(mu1_high - mu1_low) )\
+                                    *(mu1_int_high - mu1_int_low)
+                
+                # -------------------------- SPEC ------------------------------
+
+                n_v_shifted = float(delta)/float(delta_v_spec)        # by how much steps the CCF is shifted due to rotation
+                n_v_shifted_quotient = rndup(n_v_shifted, 0)
+                n_v_shifted_remainder = delta - n_v_shifted_quotient*delta_v_spec
+                v_shift = n_v_shifted_remainder
+            
+                intensity_spec_shift = shifting_CCF(
+                    vrad_spec, intensity_spec_use, v_shift, n_spec
+                    )
+
+                diff_SPEC_non_v_and_v = (n_v_spec - n_spec) / 2.
+                
+                for j in range(
+                    int(diff_SPEC_non_v_and_v + n_v_shifted_quotient)
+                    ):
+                    f_star_spec[j] += intensity_spec_shift[0]*limb
+                    f_star_once[j] += intensity_spec_shift[0]*limb
+                
+                for j in range(
+                    int(diff_SPEC_non_v_and_v+n_v_shifted_quotient), 
+                    int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient))
+                    ):
+                    # value of the CCF, weighted by the limb-darkening
+                    f_star_spec[j] += \
+                        intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb
+                    f_star_once[j] += \
+                        intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb
+
+                for j in range(
+                    int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient)), 
+                    n_v_spec
+                    ):
+                    # extrapolation on the right of the CCF with the value of the right boundary, 
+                    # weighted by the limb-darkening
+                    f_star_spec[j] += intensity_spec_shift[n_spec-1]*limb
+                    f_star_once[j] += intensity_spec_shift[n_spec-1]*limb
+                
                 # sum_star += intensity_spec_shift[0]*limb
                 quite_surface[iz][iy] = np.sum(f_star_once)
 
@@ -579,7 +699,7 @@ def itot(v, incl, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte,
 #     return 2*h*c**2*1./lambda0**5*1./(np.exp((h*c)/(lambda0*k_b*Temp))-1)
 
 @njit
-def spot_scan(
+def spot_scan_flux(
     v, i, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte, grid, 
     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
     s, longitude, phase, latitude, iminy, iminz, imaxy, imaxz, 
@@ -643,7 +763,12 @@ def spot_scan(
                     # limb-darkening
                     r_cos = np.sqrt( 1-(y*y+z*z) ) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
                                                   # and 0 on the limb. This is often referred in the literature as cos(theta)
-                    limb = 1. - limba1*(1-r_cos) - limba2*(1-r_cos)**2
+                                  
+                    # intensity due to limb-darkening (Mandel & Agol 2002)
+                    limb_photo = 1 - limba1[0]*(1-r_cos) - limba2[0]*(1-r_cos)**2 
+                    limb_act = 1 - limba1[1]*(1-r_cos) - limba2[1]*(1-r_cos)**2
+                    intensity_spec_use = intensity_spec.copy()
+                    intensity_spec_spot_use = intensity_spec_spot.copy()
                     
                     # intensity of the spot (magn_feature_type==0) or the plage (magn_feature_type==1)
                     # if magn_feature_type==0:
@@ -715,10 +840,10 @@ def spot_scan(
                     v_shift = n_v_shifted_remainder
 
                     intensity_spec_shift = shifting_CCF(
-                        vrad_spec, intensity_spec, v_shift, n_spec
+                        vrad_spec, intensity_spec_use, v_shift, n_spec
                         )
                     intensity_spec_spot_shift = shifting_CCF(
-                        vrad_spec, intensity_spec_spot, v_shift, n_spec
+                        vrad_spec, intensity_spec_spot_use, v_shift, n_spec
                         )
                     
                     # difference in number of step between the CCF without any rotation and the one with rotation
@@ -746,35 +871,162 @@ def spot_scan(
                     #     f_star_once[j]   += intensity_spec_shift[n_spec-1]*limb * (1-intensity)
 
                     for j in range(int(diff_SPEC_non_v_and_v+n_v_shifted_quotient)):
-                        f_spot_spec_tot[j] += intensity_spec_spot_shift[0]*limb * int_ratio  # combined effect
-                        flux_spot_once[j] += intensity_spec_spot_shift[0]*limb * int_ratio  # combined effect
+                        f_spot_spec_tot[j] += intensity_spec_spot_shift[0]*limb_act * int_ratio  # combined effect
+                        flux_spot_once[j] += intensity_spec_spot_shift[0]*limb_act * int_ratio  # combined effect
                         
-                        f_photo_duplicated[j] += intensity_spec_shift[0]*limb* (1)  # combined effect
-                        flux_quite_once[j] += intensity_spec_shift[0]*limb* (1)  # combined effect
+                        f_photo_duplicated[j] += intensity_spec_shift[0]*limb_photo* (1)  # combined effect
+                        flux_quite_once[j] += intensity_spec_shift[0]*limb_photo* (1)  # combined effect
                
                     for j in range(
                         int(diff_SPEC_non_v_and_v+n_v_shifted_quotient),
                         int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient))
                         ):                   
                         f_spot_spec_tot[j] += \
-                            int_ratio * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
+                            int_ratio * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb_act
                         flux_spot_once[j] += \
-                             int_ratio * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb
+                             int_ratio * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb_act
                         
                         f_photo_duplicated[j] += \
-                            (1) * intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb  # combined effect
+                            (1) * intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb_photo  # combined effect
                         flux_quite_once[j] += \
-                            (1) * intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb  # combined effect
+                            (1) * intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb_photo  # combined effect
 
                     for j in range(
                         int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient)),
                         n_v_spec
                         ):      
-                        f_spot_spec_tot[j]   += intensity_spec_spot_shift[n_spec-1]*limb * int_ratio
-                        flux_spot_once[j]   += intensity_spec_spot_shift[n_spec-1]*limb * int_ratio
+                        f_spot_spec_tot[j]   += intensity_spec_spot_shift[n_spec-1]*limb_act * int_ratio
+                        flux_spot_once[j]   += intensity_spec_spot_shift[n_spec-1]*limb_act * int_ratio
 
-                        f_photo_duplicated[j]   += intensity_spec_shift[n_spec-1]*limb * (1)
-                        flux_quite_once[j]   += intensity_spec_shift[n_spec-1]*limb * (1)
+                        f_photo_duplicated[j]   += intensity_spec_shift[n_spec-1]*limb_photo * (1)
+                        flux_quite_once[j]   += intensity_spec_shift[n_spec-1]*limb_photo * (1)
+                                                                
+                    active_surface[iz][iy] = np.sum(flux_spot_once)
+                    quite_surface_duplicate[iz][iy] = np.sum(flux_quite_once)
+
+    return f_spot_spec_tot, f_photo_duplicated, active_surface, quite_surface_duplicate
+
+@njit
+def spot_scan_int(
+    v, i, limba1, limba2, modif_bis_quad, modif_bis_lin, modif_bis_cte, grid, 
+    vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
+    s, longitude, phase, latitude, iminy, iminz, imaxy, imaxz, 
+    magn_feature_type, T_star, T_diff_spot, int_ratio
+    ):
+    """Scan of the yz-area where the spot is.
+    For each grid-point (y,z) we need to check whether it belongs to the spot
+    or not. Sadly, we do not know the projected geometry of the spot in its
+    actual position. Thus, we have to do an inverse rotation to replace the
+    grid point where it would be in the initial configuration. Indeed, in the
+    initial configuration, the spot has a well known geometry of a circle
+    centered on the x-axis.f
+    """
+
+    delta_grid = 2./grid
+    # delta_v_ccf = 2.*v_interval_ccf/(n_v_ccf-1)
+    delta_v_spec = 2.*v_interval_spec/(n_v_spec-1)
+
+    xayaza = np.ones(3, dtype=np.float64) # actual coordinates
+    xiyizi = np.ones(3, dtype=np.float64) # coordinates transformed back to the initial configuration
+
+    # f_spot_ccf_tot = np.zeros(n_v_ccf, dtype=np.float64)
+    f_spot_spec_tot = np.zeros(n_v_spec, dtype=np.float64)
+    f_photo_duplicated = np.zeros(n_v_spec, dtype=np.float64)
+
+    active_surface = np.zeros((grid, grid), dtype=np.float64)
+    quite_surface_duplicate = np.zeros((grid, grid), dtype=np.float64)
+
+    # the wavelength of the Kitt peak spectrum goes from 3921.2441+6665.5789, the mean being 5293.4115
+    # IGRINS H band OH line center 15631.3246 A
+    # use_wave_center = 15631.3246e-10
+    # loi_Planck_star = loi_Planck(use_wave_center, T_star) 
+
+    # Scan of each cell on the grid
+    for iy in range(iminy, imaxy):
+        y = -1. + iy*delta_grid; # y between -1 et 1
+        delta = y * v * sin(i*np.pi/180.)     # Give the velocity of the rotation for the given grid 
+                                   # cell as a function of y. For y=-1 => Vrot min, 
+                                   # for y=1 => Vrot max, and for y=0 => Vrot = 0.
+        xayaza[1] = y
+
+        for iz in range(iminz, imaxz):
+
+            z = -1. + iz*delta_grid # z between -1 et 1
+            if (y*y + z*z)<1: 
+                xayaza[0] = np.sqrt(1.-(y*y+z*z)) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
+                                                  # and 0 on the limb. This is often referred in the literature as cos(theta)
+                xayaza[2] = z
+
+                # xayaza --> xiyizi: Rotate the star so that the spot is on the disc center
+                xiyizi = spot_inverse_rotation(xayaza, longitude, latitude, i, phase)    
+
+                # if inside the active region when scanning the grid
+                if xiyizi[0]**2 >= (1.-s*s):
+
+                    flux_spot_once = np.zeros(n_v_spec, dtype=np.float64)
+                    flux_quite_once = np.zeros(n_v_spec, dtype=np.float64)
+                    
+                    # x^2 >= 1-sspot_scan_npsi^2, which means that you are inside the active region      
+                    
+                    # limb-darkening
+                    r_cos = np.sqrt( 1-(y*y+z*z) ) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
+                                                  # and 0 on the limb. This is often referred in the literature as cos(theta)
+                    
+                    # -------------------------- SPEC ------------------------------
+                    mu_s = np.array([0.9636, 0.8864, 0.8018, 0.7071, 0.5976, 0.4629, 0.2673])
+
+                    f_loc = np.argmin(np.abs(mu_s - r_cos)) # index of the closest mu value to r_cos
+                    intensity_spec_use = intensity_spec[:, f_loc]
+                    intensity_spec_spot_use = intensity_spec_spot[:, f_loc]
+                    limb_act = 1
+                    limb_photo = 1
+
+                    # -------------------------- SPEC -----------------------------
+                    n_v_shifted = delta/delta_v_spec # by how much steps the CCF is shifted due to rotation
+                    n_v_shifted_quotient = rndup(n_v_shifted, 0) # integer number of steps
+                    n_v_shifted_remainder = (delta - n_v_shifted_quotient*delta_v_spec)
+                    v_shift = n_v_shifted_remainder
+
+                    intensity_spec_shift = shifting_CCF(
+                        vrad_spec, intensity_spec_use, v_shift, n_spec
+                        )
+                    intensity_spec_spot_shift = shifting_CCF(
+                        vrad_spec, intensity_spec_spot_use, v_shift, n_spec
+                        )
+                    
+                    # difference in number of step between the CCF without any rotation and the one with rotation
+                    diff_SPEC_non_v_and_v = (n_v_spec - n_spec) / 2.
+
+                    for j in range(int(diff_SPEC_non_v_and_v+n_v_shifted_quotient)):
+                        f_spot_spec_tot[j] += intensity_spec_spot_shift[0]*limb_act * int_ratio  # combined effect
+                        flux_spot_once[j] += intensity_spec_spot_shift[0]*limb_act * int_ratio  # combined effect
+                        
+                        f_photo_duplicated[j] += intensity_spec_shift[0]*limb_photo* (1)  # combined effect
+                        flux_quite_once[j] += intensity_spec_shift[0]*limb_photo* (1)  # combined effect
+               
+                    for j in range(
+                        int(diff_SPEC_non_v_and_v+n_v_shifted_quotient),
+                        int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient))
+                        ):                   
+                        f_spot_spec_tot[j] += \
+                            int_ratio * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb_act
+                        flux_spot_once[j] += \
+                             int_ratio * (intensity_spec_spot_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))])*limb_act
+                        
+                        f_photo_duplicated[j] += \
+                            (1) * intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb_photo  # combined effect
+                        flux_quite_once[j] += \
+                            (1) * intensity_spec_shift[int(j-(diff_SPEC_non_v_and_v+n_v_shifted_quotient))]*limb_photo  # combined effect
+
+                    for j in range(
+                        int(n_spec+(diff_SPEC_non_v_and_v+n_v_shifted_quotient)),
+                        n_v_spec
+                        ):      
+                        f_spot_spec_tot[j]   += intensity_spec_spot_shift[n_spec-1]*limb_act * int_ratio
+                        flux_spot_once[j]   += intensity_spec_spot_shift[n_spec-1]*limb_act * int_ratio
+
+                        f_photo_duplicated[j]   += intensity_spec_shift[n_spec-1]*limb_photo * (1)
+                        flux_quite_once[j]   += intensity_spec_shift[n_spec-1]*limb_photo * (1)
                                                                 
                     active_surface[iz][iy] = np.sum(flux_spot_once)
                     quite_surface_duplicate[iz][iy] = np.sum(flux_quite_once)
@@ -785,7 +1037,7 @@ def spot_scan_npsi_pal(
     xyz, inclination, nrho, psi, grid, v, limba1, limba2, 
     modif_bis_quad, modif_bis_lin, modif_bis_cte, 
     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
-    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, int_ratio, ipsi
+    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, int_ratio, fluxORint, ipsi
     ):
 
     xyz2 = spot_phase(xyz, inclination, nrho, psi[ipsi])
@@ -794,16 +1046,28 @@ def spot_scan_npsi_pal(
     # print(f'limba1, limba2: {limba1}, {limba2}')
     
     if visual==1:
-        f_spec_spot_tot, f_photo_duplicated, active_surface, quite_surface_duplicate =\
-            spot_scan(
-                v, inclination, limba1, limba2, modif_bis_quad, 
-                modif_bis_lin, modif_bis_cte, grid, 
-                vrad_spec, intensity_spec, intensity_spec_spot, 
-                v_interval_spec, n_v_spec, n_spec,  
-                s, longitude, psi[ipsi], latitude, 
-                iminy, iminz, imaxy, imaxz,
-                magn_feature_type, T_star, T_diff_spot, int_ratio
-            )
+        if fluxORint == 'flux':
+            f_spec_spot_tot, f_photo_duplicated, active_surface, quite_surface_duplicate =\
+                spot_scan_flux(
+                    v, inclination, limba1, limba2, modif_bis_quad, 
+                    modif_bis_lin, modif_bis_cte, grid, 
+                    vrad_spec, intensity_spec, intensity_spec_spot, 
+                    v_interval_spec, n_v_spec, n_spec,  
+                    s, longitude, psi[ipsi], latitude, 
+                    iminy, iminz, imaxy, imaxz,
+                    magn_feature_type, T_star, T_diff_spot, int_ratio
+                )
+        if fluxORint == 'int':
+            f_spec_spot_tot, f_photo_duplicated, active_surface, quite_surface_duplicate =\
+                spot_scan_int(
+                    v, inclination, limba1, limba2, modif_bis_quad, 
+                    modif_bis_lin, modif_bis_cte, grid, 
+                    vrad_spec, intensity_spec, intensity_spec_spot, 
+                    v_interval_spec, n_v_spec, n_spec,  
+                    s, longitude, psi[ipsi], latitude, 
+                    iminy, iminz, imaxy, imaxz,
+                    magn_feature_type, T_star, T_diff_spot, int_ratio
+                )
     else:
         # f_ccf_spot_tot = np.zeros(n_v_ccf, dtype=np.float64)
         f_spec_spot_tot = np.zeros(n_v_spec, dtype=np.float64)
@@ -848,7 +1112,8 @@ def spot_scan_npsi(
     xyz, nrho, psi, npsi, v, inclination, limba1, limba2, modif_bis_quad, 
     modif_bis_lin, modif_bis_cte, grid, 
     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
-    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, cpu_use, int_ratio
+    s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, cpu_use, 
+    int_ratio, fluxORint
     ):
     """Scans the yz-area where the spot is for different phases (psi) and        
     returns the spot's "non-contribution" to the total flux and its           
@@ -870,8 +1135,19 @@ def spot_scan_npsi(
         xyz, inclination, nrho, psi, grid, v, limba1, limba2, 
         modif_bis_quad, modif_bis_lin, modif_bis_cte, 
         vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
-        s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, int_ratio
+        s, longitude, latitude, magn_feature_type, T_star, T_diff_spot, 
+        int_ratio, fluxORint
         )
+    
+    # for i in range(npsi):
+    #     print(f'Scanning phase {i+1}/{npsi} ({psi[i]})')
+    #     spot_scan_npsi_pal(
+    #         xyz, inclination, nrho, psi, grid, v, limba1, limba2, 
+    #         modif_bis_quad, modif_bis_lin, modif_bis_cte, 
+    #         vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, n_spec, 
+    #         s, longitude, latitude, magn_feature_type, T_star, T_diff_spot,
+    #         int_ratio, fluxORint, i
+    #     )
 
     outs = pqdm(np.arange(npsi), func, n_jobs=cpu_use)
     

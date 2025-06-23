@@ -13,6 +13,7 @@ dependencies:
   - cython
   - requests
   - numba=0.60
+  - pytables
   - pip
   - pip:
     - more_itertools
