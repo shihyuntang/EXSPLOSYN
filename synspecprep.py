@@ -4,8 +4,9 @@ Download PHX synthetic spectra and flatten them using Rassine
 
 Shih-Yun Tang 20241017
 """
-import warnings
+import warnings, logging
 warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 import os, sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from astropy.io import fits
 import astropy.units as u
 from scipy import interpolate
 from specutils import Spectrum1D
+import h5py
 
 from rds3v import rds3v
 # from specutils.manipulation import FluxConservingResampler
@@ -85,6 +87,11 @@ for j in np.arange(73):
     else:
         TEMP_ARRAY[j] = 7000.0 + 200.0*(j-49)
 
+# remove 5000 from TEMP_ARRAY
+idx_remove = np.where(TEMP_ARRAY == 5000.0)[0]
+if idx_remove.size > 0:
+    TEMP_ARRAY = np.delete(TEMP_ARRAY, idx_remove[0])
+
 # --- Flux spectra (all mu integrated) ---
 PHX_FTP_prefix = 'ftp://phoenix.astro.physik.uni-goettingen.de/HiResFITS/PHOENIX-ACES-AGSS-COND-2011/'
 PHX_FTP_wave_prefix = 'ftp://phoenix.astro.physik.uni-goettingen.de/HiResFITS/'
@@ -131,22 +138,22 @@ def get_phx_flux_spec(temp, logg, FeH, alpha, phx_path, out_path):
     name_high_file = Path(f'{phx_path}/SpecFlux/{sub_dir_high}/{name_high}')
     
     if not wave_file.is_file():
-        print('Download wavelength data...')
+        logger.info('Download wavelength data...')
         os.system(f'curl {PHX_FTP_wave_prefix}/{WAVE_FILE} -o {phx_path}/SpecFlux/{WAVE_FILE}')
     else:
-        print('Wavelength data exists...')
+        logger.debug('Wavelength data exists...')
     
     os.makedirs(f'{phx_path}/SpecFlux/{sub_dir_low}', exist_ok=True)
     if not name_low_file.is_file():
-        print('Download spectral data...')
+        logger.info('Download spectral data...')
         os.system(f'curl {PHX_FTP_prefix}/{sub_dir_low}/{name_low} -o {phx_path}/SpecFlux/{sub_dir_low}/{name_low}')
     else:
-        print(f'{name_low} exists...')
+        logger.debug(f'{name_low} exists...')
     if not name_high_file.is_file():
-        print('Download spectral data...')
+        logger.info('Download spectral data...')
         os.system(f'curl {PHX_FTP_prefix}/{sub_dir_high}/{name_high} -o {phx_path}/SpecFlux/{sub_dir_high}/{name_high}')
     else:
-        print(f'{name_high} exists...')
+        logger.debug(f'{name_high} exists...')
 
     wave_data_vac = fits.getdata(f'{phx_path}/SpecFlux/{WAVE_FILE}')
     waveIndex = (wave_data_vac >= (wvmin-500)) & (wave_data_vac <= (wvmax+500))
@@ -183,12 +190,87 @@ def get_phx_flux_spec(temp, logg, FeH, alpha, phx_path, out_path):
     # # ax.set_xscale('log')
     # plt.show()
 
-def get_phx_intensity_spec(temp, logg, FeH, alpha, phx_path, out_path):
+# def get_phx_intensity_spec(temp, logg, FeH, alpha, phx_path, out_path):
 
-    # file name example:
-    #    ---> lte03900-3.50-0.0.PHOENIX-ACES-AGSS-COND-2011-SpecInt.fits
+#     # file name example:
+#     #    ---> lte03900-3.50-0.0.PHOENIX-ACES-AGSS-COND-2011-SpecInt.fits
 
-    wvmin, wvmax = (3000, 30000)
+#     wvmin, wvmax = (3000, 30000)
+
+#     index_logg = np.argmin(np.abs(LOGG_ARRAY - logg))
+#     index_FeH = np.argmin(np.abs(FeH_ARRAY - FeH))
+#     index_alpha = np.argmin(np.abs(ALPHA_ARRAY - alpha))
+#     logg_val = LOGG_ARRAY[index_logg]
+#     FeH_val = FeH_ARRAY[index_FeH]
+
+#     if FeH_val > 0.0:
+#         alpha_val = 0.0
+#     else:
+#         alpha_val = ALPHA_ARRAY[index_alpha]
+
+#     index_temp = np.argmin(np.abs(TEMP_ARRAY - temp))
+#     if temp > TEMP_ARRAY[index_temp]:
+#         temp_low = TEMP_ARRAY[index_temp]
+#         temp_high = TEMP_ARRAY[index_temp+1]
+#     else:
+#         temp_low = TEMP_ARRAY[index_temp-1]
+#         temp_high = TEMP_ARRAY[index_temp]
+
+#     sub_dir_low, name_low = PHOENIX_name(
+#         temp_low, logg_val, FeH_val, alpha_val, fluxORint='int')
+#     sub_dir_high, name_high = PHOENIX_name(
+#         temp_high, logg_val, FeH_val, alpha_val, fluxORint='int')
+    
+#     _, name_use = PHOENIX_name(temp, logg, FeH, alpha)
+#     name_use = name_use.replace('.fits', '').replace('/', '')
+    
+#     name_low_file = Path(f'{phx_path}/SpecInt/{sub_dir_high}/{name_low}')
+#     name_high_file = Path(f'{phx_path}/SpecInt/{sub_dir_high}/{name_high}')
+    
+#     os.makedirs(f'{phx_path}/SpecInt/{sub_dir_low}', exist_ok=True)
+#     if not name_low_file.is_file():
+#         print('Download spectral data...')
+#         os.system(f'curl {PHX_FTP_prefix_Int}/{sub_dir_low}/{name_low} -o {phx_path}/SpecInt/{sub_dir_low}/{name_low}')
+#     else:
+#         print(f'{name_low} exists...')
+#     if not name_high_file.is_file():
+#         print('Download spectral data...')
+#         os.system(f'curl {PHX_FTP_prefix_Int}/{sub_dir_high}/{name_high} -o {phx_path}/SpecInt/{sub_dir_low}/{name_high}')
+#     else:
+#         print(f'{name_high} exists...')
+
+#     # wave_data_vac = fits.getdata(phx_syn_path+name_high)
+#     with fits.open(f'{phx_path}/SpecInt/{sub_dir_low}/{name_low}') as hdul:
+#         wl0 = hdul[0].header['crval1'] # Wavelength at d[:,0] [AA]
+#         dwl = hdul[0].header['cdelt1'] # Delta wavelength     [AA]
+#         nwl = hdul[0].header['naxis1'] # Number of wl samples
+#         wave_data_vac = wl0 + np.arange(nwl) * dwl
+#         mu = hdul[1].data
+#         spec_low_vac = hdul[0].data
+
+    
+#     waveIndex = (wave_data_vac >= (wvmin-500)) & (wave_data_vac <= (wvmax+500))
+    
+#     wavelength_vac = wave_data_vac[waveIndex]
+#     spec_low_vac = fits.getdata(f'{phx_path}/SpecInt/{sub_dir_low}/{name_low}')[:, waveIndex]
+#     spec_high_vac = fits.getdata(f'{phx_path}/SpecInt/{sub_dir_low}/{name_high}')[:, waveIndex]
+    
+#     flux_temp = spec_low_vac + ( (temp - temp_low)/(temp_high - temp_low) )*(spec_high_vac - spec_low_vac)
+#     data_name = out_path + f'PHX_ACES_SpecInt_{int(temp)}_{logg}_{FeH}_wv{wvmin}_{wvmax}.p'
+#     print(f'   >> Save {data_name}')
+#     mu_flux = {f'flux_{mu[i]}': flux_temp[i, :] for i in range(len(mu))}
+#     mu_flux['wave'] = wavelength_vac
+#     spec_df = pd.DataFrame(mu_flux)
+
+#     # spec_df.to_pickle(data_name)
+#     spec_df.to_hdf(data_name, complevel=5, index=False)
+
+def prep_phx_intensity_spec(temp, logg, FeH, alpha, out_path):
+    wvmin, wvmax = (500, 50000)
+    # Currently, phx int spectra is only use for photometry.
+    # The intensity spectra from PHX has too low resolution in wavelength.
+    # Use the low-res (50AA res) int spectra that already dw by ldtk pkg
+    phx_low_res = Path(f'~/.ldtk/cache_visir-lowres').expanduser()
 
     index_logg = np.argmin(np.abs(LOGG_ARRAY - logg))
     index_FeH = np.argmin(np.abs(FeH_ARRAY - FeH))
@@ -214,54 +296,182 @@ def get_phx_intensity_spec(temp, logg, FeH, alpha, phx_path, out_path):
     sub_dir_high, name_high = PHOENIX_name(
         temp_high, logg_val, FeH_val, alpha_val, fluxORint='int')
     
-    _, name_use = PHOENIX_name(temp, logg, FeH, alpha)
-    name_use = name_use.replace('.fits', '').replace('/', '')
+    _, name_use = PHOENIX_name(temp, logg, FeH, alpha, fluxORint='int')
     
-    name_low_file = Path(f'{phx_path}/SpecInt/{sub_dir_high}/{name_low}')
-    name_high_file = Path(f'{phx_path}/SpecInt/{sub_dir_high}/{name_high}')
-    
-    os.makedirs(f'{phx_path}/SpecInt/{sub_dir_low}', exist_ok=True)
-    if not name_low_file.is_file():
-        print('Download spectral data...')
-        os.system(f'curl {PHX_FTP_prefix_Int}/{sub_dir_low}/{name_low} -o {phx_path}/SpecInt/{sub_dir_low}/{name_low}')
-    else:
-        print(f'{name_low} exists...')
-    if not name_high_file.is_file():
-        print('Download spectral data...')
-        os.system(f'curl {PHX_FTP_prefix_Int}/{sub_dir_high}/{name_high} -o {phx_path}/SpecInt/{sub_dir_low}/{name_high}')
-    else:
-        print(f'{name_high} exists...')
+    dir_low_file = phx_low_res / sub_dir_low / name_low
+    dir_high_file = phx_low_res / sub_dir_high / name_high
 
-    # wave_data_vac = fits.getdata(phx_syn_path+name_high)
-    with fits.open(f'{phx_path}/SpecInt/{sub_dir_low}/{name_low}') as hdul:
+    with fits.open(dir_low_file) as hdul:
         wl0 = hdul[0].header['crval1'] # Wavelength at d[:,0] [AA]
         dwl = hdul[0].header['cdelt1'] # Delta wavelength     [AA]
         nwl = hdul[0].header['naxis1'] # Number of wl samples
         wave_data_vac = wl0 + np.arange(nwl) * dwl
         mu = hdul[1].data
-
         spec_low_vac = hdul[0].data
 
-
-        # z = np.sqrt(1 - mu ** 2)
-        # nmu = mu.size
+    with fits.open(dir_high_file) as hdul:
+        # wl0 = hdul[0].header['crval1'] # Wavelength at d[:,0] [AA]
+        # dwl = hdul[0].header['cdelt1'] # Delta wavelength     [AA]
+        # nwl = hdul[0].header['naxis1'] # Number of wl samples
+        # wave_data_vac = wl0 + np.arange(nwl) * dwl
+        # mu = hdul[1].data
+        spec_high_vac = hdul[0].data
     
+    # there are 78 mu angles from PHX.
+    # We only use [0.067653, 0.13025, 0.2545, 0.37875, 0.503, 0.62725, 0.7515, 0.87575, 1]
+    mu = mu[-17::2]
+    spec_low_vac = spec_low_vac[-17::2, :]
+    spec_high_vac = spec_high_vac[-17::2, :]
+
     waveIndex = (wave_data_vac >= (wvmin-500)) & (wave_data_vac <= (wvmax+500))
     
     wavelength_vac = wave_data_vac[waveIndex]
-    spec_low_vac = fits.getdata(phx_SpecInt_path+name_low)[:, waveIndex]
-    spec_high_vac = fits.getdata(phx_SpecInt_path+name_high)[:, waveIndex]
-    
+    spec_low_vac = spec_low_vac[:, waveIndex]
+    spec_high_vac = spec_high_vac[:, waveIndex]
     flux_temp = spec_low_vac + ( (temp - temp_low)/(temp_high - temp_low) )*(spec_high_vac - spec_low_vac)
-    data_name = out_path + f'PHX_ACES_SpecInt_{int(temp)}_{logg}_{FeH}_wv{wvmin}_{wvmax}.p'
-    print(f'   >> Save {data_name}')
-    mu_flux = {f'flux_{mu[i]}': flux_temp[i, :] for i in range(len(mu))}
-    mu_flux['wave'] = wavelength_vac
-    spec_df = pd.DataFrame(mu_flux)
 
-    # spec_df.to_pickle(data_name)
-    spec_df.to_hdf(data_name, complevel=5, index=False)
+    # spec_df = pd.DataFrame({'wave':wavelength_vac, 'flux':flux_temp, 'mu':mu})    
+    # spec_df.to_hdf(out_name, key='spec', complevel=5, index=False)
+
+    out_name = f"{out_path}/Photometry_use_Spec/{name_use.replace('.fits', '.h5')}"
+    with h5py.File(out_name, 'w') as f:
+        f.create_dataset('wave', data=wavelength_vac, compression='gzip', compression_opts=5)
+        f.create_dataset('mu', data=mu, compression='gzip', compression_opts=5)
+        f.create_dataset('flux', data=flux_temp, compression='gzip', compression_opts=5)
+
+    return out_name
+
     
+def prep_synmast_intensity_spec(temp, logg, FeH, out_path):
+
+    # Currently, phx int spectra is only use for photometry.
+    # The intensity spectra from PHX has too low resolution in wavelength.
+    # Use the low-res (50AA res) int spectra that already dw by ldtk pkg
+    syn_marcs = Path('./data/synmast/LisaGrid_synmast_v1.9_spirou_marcs')
+
+    syn_files = os.listdir(syn_marcs)
+    # clean hidden files and leave file ended with .prf
+    syn_files = [f for f in syn_files if f.endswith('.prf') and not f.startswith('.')]
+
+    # make TEMP, LOGG, FeH, array for synmast spec
+    # file name ex., mc_5400400+000_b4_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
+    syn_temp_array = np.unique(np.array([float(f[3:7]) for f in syn_files]))
+    syn_logg_array = np.unique(np.array([float(f[7:10])/100 for f in syn_files]))
+    syn_FeH_array = np.unique(np.array([float(f[10:14])/100 for f in syn_files]))
+    
+    index_logg = np.argmin(np.abs(syn_logg_array - logg))
+    index_FeH = np.argmin(np.abs(syn_FeH_array - FeH))
+    logg_val = syn_logg_array[index_logg]
+    FeH_val = syn_FeH_array[index_FeH]
+
+    index_temp = np.argmin(np.abs(syn_temp_array - temp))
+    if temp > syn_temp_array[index_temp]:
+        temp_low = syn_temp_array[index_temp]
+        temp_high = syn_temp_array[index_temp+1]
+    else:
+        temp_low = syn_temp_array[index_temp-1]
+        temp_high = syn_temp_array[index_temp]
+
+    name_low = f'mc_{temp_low:1.0f}{logg_val*100:1.0f}{FeH_val*100:+04.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+    name_high = f'mc_{temp_high:1.0f}{logg_val*100:1.0f}{FeH_val*100:+04.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+    name_use = f'mc_{temp:1.0f}{logg*100:1.0f}{FeH*100:+04.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+    
+    dir_low_file = str(syn_marcs / name_low)
+    dir_high_file = str(syn_marcs / name_high)
+
+    wave, mu, spec_low_vac = rds3v(
+        dir_low_file, vsini=0, vrt=2.0, if_flat=False, 
+        get_intensity=True)
+
+    wave_data_vac = air2vac(wave)
+
+    _, _, spec_high_vac = rds3v(
+        dir_high_file, vsini=0, vrt=2.0, if_flat=False, 
+        get_intensity=True)
+    
+    wavelength_vac = wave_data_vac
+    spec_low_vac = spec_low_vac
+    spec_high_vac = spec_high_vac
+
+    # dimemnsion (15106, 7)
+    flux_temp = spec_low_vac + ( (temp - temp_low)/(temp_high - temp_low) )*(spec_high_vac - spec_low_vac)
+
+    # spec_df = pd.DataFrame({'wave':wavelength_vac, 'flux':flux_temp, 'mu':mu})    
+    # spec_df.to_hdf(out_name, key='spec', complevel=5, index=False)
+
+    out_name = f"{out_path}/SimUse/{name_use.replace('.prf', '.h5')}"
+    with h5py.File(out_name, 'w') as f:
+        f.create_dataset('wave', data=wavelength_vac, compression='gzip', compression_opts=5)
+        f.create_dataset('mu', data=mu, compression='gzip', compression_opts=5)
+        f.create_dataset('flux', data=flux_temp, compression='gzip', compression_opts=5)
+
+    return out_name
+
+def prep_synmast_flux_spec(temp, logg, FeH, out_path):
+
+    # Currently, phx int spectra is only use for photometry.
+    # The intensity spectra from PHX has too low resolution in wavelength.
+    # Use the low-res (50AA res) int spectra that already dw by ldtk pkg
+    syn_marcs = Path('./data/synmast/LisaGrid_synmast_v1.9_spirou_marcs')
+
+    syn_files = os.listdir(syn_marcs)
+    # clean hidden files and leave file ended with .prf
+    syn_files = [f for f in syn_files if f.endswith('.prf') and not f.startswith('.')]
+
+    # make TEMP, LOGG, FeH, array for synmast spec
+    # file name ex., mc_5400400+000_b4_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
+    syn_temp_array = np.unique(np.array([float(f[3:7]) for f in syn_files]))
+    syn_logg_array = np.unique(np.array([float(f[7:10])/100 for f in syn_files]))
+    syn_FeH_array = np.unique(np.array([float(f[10:14])/100 for f in syn_files]))
+    
+    index_logg = np.argmin(np.abs(syn_logg_array - logg))
+    index_FeH = np.argmin(np.abs(syn_FeH_array - FeH))
+    logg_val = syn_logg_array[index_logg]
+    FeH_val = syn_FeH_array[index_FeH]
+
+    index_temp = np.argmin(np.abs(syn_temp_array - temp))
+    if temp > syn_temp_array[index_temp]:
+        temp_low = syn_temp_array[index_temp]
+        temp_high = syn_temp_array[index_temp+1]
+    else:
+        temp_low = syn_temp_array[index_temp-1]
+        temp_high = syn_temp_array[index_temp]
+
+    name_low = f'mc_{temp_low:1.0f}{logg_val*100:1.0f}{FeH_val*100:+04.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+    name_high = f'mc_{temp_high:1.0f}{logg_val*100:1.0f}{FeH_val*100:+04.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+    name_use = f'mc_{temp:1.0f}{logg*100:1.0f}{FeH*100:+04.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+    
+    dir_low_file = str(syn_marcs / name_low)
+    dir_high_file = str(syn_marcs / name_high)
+
+    wave, spec_low_vac = rds3v(
+        dir_low_file, vsini=0, vrt=2.0, if_flat=False, 
+        get_intensity=False)
+
+    wave_data_vac = air2vac(wave)
+
+    _, spec_high_vac = rds3v(
+        dir_high_file, vsini=0, vrt=2.0, if_flat=False, 
+        get_intensity=False)
+    
+    wavelength_vac = wave_data_vac
+    spec_low_vac = spec_low_vac
+    spec_high_vac = spec_high_vac
+
+    # dimemnsion (15106, 7)
+    flux_temp = spec_low_vac + ( (temp - temp_low)/(temp_high - temp_low) )*(spec_high_vac - spec_low_vac)
+
+    # spec_df = pd.DataFrame({'wave':wavelength_vac, 'flux':flux_temp, 'mu':mu})    
+    # spec_df.to_hdf(out_name, key='spec', complevel=5, index=False)
+
+    out_name = f"{out_path}/SimUse/{name_use.replace('.prf', '_flux.h5')}"
+    with h5py.File(out_name, 'w') as f:
+        f.create_dataset('wave', data=wavelength_vac, compression='gzip', compression_opts=5)
+        f.create_dataset('flux', data=flux_temp, compression='gzip', compression_opts=5)
+
+    return out_name
+
+
 
 def flatten_spec(rassine_path, out_path, phx_flux_file):
 
@@ -269,10 +479,10 @@ def flatten_spec(rassine_path, out_path, phx_flux_file):
 
     outname = f'{out_path}/RASSINE_PHX/RASSINE_{phx_flux_file}.h5'
     if os.path.exists(outname): 
-        print(f'RASSINE flattened spectrum already exists: {outname}')
+        logger.debug(f'RASSINE flattened spectrum already exists: {outname}')
         return outname
     else:
-        print(f'Flattening PHX spectrum: {outname}')
+        logger.info(f'Flattening PHX spectrum: {outname}')
     
     # RASSINE take pickle file as input
     pd.read_hdf(f'{out_path}/RASSINE_PHX/{phx_flux_file}.h5').to_pickle(
@@ -282,8 +492,8 @@ def flatten_spec(rassine_path, out_path, phx_flux_file):
     cmds = f'python3 {rassine_path}/Rassine.py ' + \
             f'{out_path}/RASSINE_PHX/{phx_flux_file}.p ' + \
             f'{out_path}/RASSINE_PHX {rassine_path}/'
-    print('\nUse Rassine to flatten the spectrum...\n')
-    print(f'Running > {cmds}\n')
+    logger.debug('\nUse Rassine to flatten the spectrum...\n')
+    logger.debug(f'Running > {cmds}\n')
     os.system(cmds)
 
     # Only save wave, flux, and continuum_cubic to reduce file size
@@ -318,9 +528,13 @@ def final_flux_spec(
             flux = np.array(final_spec['flux'])
 
     elif spec_type.lower() == 'synmast':
-        wave, flux = rds3v(spec_dir, vsini=0, vrt=2.0, if_flat=flatten)
-        wave = air2vac(wave)
-    
+        # wave, flux = rds3v(spec_dir, vsini=0, vrt=2.0, if_flat=flatten)
+        # wave = air2vac(wave)
+        with h5py.File(spec_dir, 'r') as f:
+            wave = f['wave'][:]
+            flux = f['flux'][:] # (15106, 7)
+            flux = np.array(flux)
+
     elif spec_type.lower() == 'ccf_temp':
         _, _, _, ccf_vsini, ccf_resolution = pars
         wave, flux = rds3v(
@@ -385,24 +599,31 @@ def final_flux_spec(
 
 
 def final_intensity_spec(
-        spec_type, spec_dir, sim_spec_path, wvmin, wvmax, Vel_bin_size, plot,
+        model_type, spec_dir, sim_spec_path, wvmin, wvmax, Vel_bin_size, plot,
         flatten=True, pars=None):
 
-    if spec_type.lower() == 'phx':
-        final_spec = pd.read_hdf(spec_dir)
-        wave = np.array(final_spec['wave'])
+    if model_type.lower() == 'phx':
+        with h5py.File(spec_dir, 'r') as f:
+            wave = f['wave'][:]
+            mu = f['mu'][:][::-1] # let mu from larger to small
+            fluxes = f['flux'][:].T[:, ::-1]
         if flatten:
-            flux = np.array(final_spec['flux']/final_spec['continuum_cubic'])
-        else:
-            flux = np.array(final_spec['flux'])
+            # rise error indicate that furrent PHX int spectra is not support to flatten
+            raise ValueError(
+                'Flattening PHX intensity spectra is not supported')
 
-    elif spec_type.lower() == 'synmast':
-        wave, mu, fluxes = rds3v(
-            spec_dir, vsini=0, vrt=2.0, if_flat=flatten, 
-            get_intensity=True)
-        wave = air2vac(wave)
-    
-    elif spec_type.lower() == 'ccf_temp':
+    elif model_type.lower() == 'synmast':
+        # wave, mu, fluxes = rds3v(
+        #     spec_dir, vsini=0, vrt=2.0, if_flat=flatten, 
+        #     get_intensity=True)
+        # wave = air2vac(wave)
+        with h5py.File(spec_dir, 'r') as f:
+            wave = f['wave'][:]
+            mu = f['mu'][:]
+            fluxes = f['flux'][:] # (15106, 7)
+
+        
+    elif model_type.lower() == 'ccf_temp':
         _, _, _, ccf_vsini, ccf_resolution = pars
         wave, flux = rds3v(
             spec_dir, vsini=ccf_vsini, vrt=2.0, instrum=ccf_resolution, 
@@ -414,10 +635,16 @@ def final_intensity_spec(
     f = fluxes[waveIndex, :]
     w = wave[waveIndex]    
 
+    # print('\n', spec_dir)
     c_kms = 299792.458
     w_center = (wvmin + wvmax) / 2
     v = c_kms * (w - w_center) / w_center
-    resolution = Vel_bin_size # km
+    if model_type.lower() != 'phx':
+        resolution = Vel_bin_size # km
+    else:
+        resolution = np.max(np.diff(v)) # km/s
+        # print('resolution:', resolution)
+
     v_new = np.arange(
             np.round(np.min(v)), -np.round(np.min(v))+resolution, resolution)
     
@@ -426,8 +653,10 @@ def final_intensity_spec(
         tck = interpolate.splrep(v, f[:, i], s=0)    
         f_new[:, i] = interpolate.splev(v_new, tck, der=0)
 
-    v_new = v_new[200:-200]
-    f_new = f_new[200:-200, :]
+    if 'Photo' not in sim_spec_path:
+        v_new = v_new[200:-200]
+        f_new = f_new[200:-200, :]
+
     _pd_dict = {'v':v_new}
     for i in range(f_new.shape[1]):
         _pd_dict[f'mu_{mu[i]}'] = f_new[:, i]

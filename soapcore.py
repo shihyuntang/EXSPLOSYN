@@ -1,4 +1,5 @@
-import sys, os
+import sys, os, logging
+logger = logging.getLogger()
 from functools import partial
 
 import numpy as np
@@ -22,6 +23,9 @@ from macbro_dynamic import macbro_dyn
 from pqdm.processes import pqdm
 
 from ldtk import LDPSetCreator, BoxcarFilter, TabulatedFilter
+from pyphot import astropy as pyphot
+from pyphot import svo, unit
+
 
 from rebin_jv import rebin_jv
 
@@ -66,74 +70,94 @@ class Star:
     def get_quadratic_limbdarken(
             self, temperature, line_centers, l_widths):
         
-        if len(line_centers) == 1:
-            line_centers = np.array([line_centers])
-            l_widths = np.array([l_widths])
-        elif len(line_centers) >1:
-            line_centers = np.array(line_centers)
-            l_widths = np.array(l_widths)
+        LD_teff_wv_coeff = {}
+        for tt in temperature:
+            if len(line_centers) == 1:
+                line_centers = np.array([line_centers])
+                l_widths = np.array([l_widths])
+            elif len(line_centers) >1:
+                line_centers = np.array(line_centers)
+                l_widths = np.array(l_widths)
 
-        # print('line_centers:', line_centers)
+            # print('line_centers:', line_centers)
 
-        # -- Limb darkening coefficients --
-        lc_s = line_centers / 10 # AA --> nm
-        _width = l_widths / 10 # AA --> nm
+            # -- Limb darkening coefficients --
+            lc_s = line_centers / 10 # AA --> nm
+            _width = l_widths / 10 # AA --> nm
 
-        filters = [
-            BoxcarFilter(
-                f'lc{lc_s[i]//1000}', lc_s[i]-_width[i], lc_s[i]+_width[i]
-                ) for i in range(len(lc_s))
-                ]
-        
-        # This decide how many PHX intensity spectra (diff temp, logg, etc) to be dw
-        # I cannot find a way to only dw one spectra in ldtk pkg as it is a 
-        #    Bayesian base code. Thus, here are min std par that make sure ldtk works.
-        sc = LDPSetCreator(
-            teff=(temperature,1), logg=(self.logg,0.01), z=(self.FeH,0.01),
-            filters=filters, dataset='visir-lowres')
+            filters = [
+                BoxcarFilter(
+                    f'lc{lc_s[i]//1000}', lc_s[i]-_width[i], lc_s[i]+_width[i]
+                    ) for i in range(len(lc_s))
+                    ]
+            
+            # This decide how many PHX intensity spectra (diff temp, logg, etc) to be dw
+            # I cannot find a way to only dw one spectra in ldtk pkg as it is a 
+            #    Bayesian base code. Thus, here are min std par that make sure ldtk works.
+            sc = LDPSetCreator(
+                teff=(tt,1), logg=(self.logg,0.01), z=(self.FeH,0.01),
+                filters=filters, dataset='visir-lowres')
 
-        ps = sc.create_profiles(nsamples=1000)
-        qc, _ = ps.coeffs_qd()
-        LD_coeff = {
-            f"w{int(line_centers[i] // 100)}": qc[i]
-            for i in range(len(line_centers))
-            }
-        
-        if 15631.35 in line_centers:
-            print('Find FeOH line center...')
-            _loc = np.where(line_centers==15631.35)[0][0]
-            LD_coeff['EWR_FeOH'] = qc[_loc]
-        return LD_coeff
+            ps = sc.create_profiles(nsamples=10)
+            qc, _ = ps.coeffs_qd()
+            LD_wv_coeff = {
+                f"w{int(line_centers[i] // 100)}_{int(tt)}": qc[i]
+                for i in range(len(line_centers))
+                }
+            
+            if 15631.35 in line_centers:
+                # print('Find FeOH line center...')
+                _loc = np.where(line_centers==15631.35)[0][0]
+                LD_wv_coeff[f'ewr_FeOH_{int(tt)}'] = qc[_loc]
+            
+            LD_teff_wv_coeff.update(LD_wv_coeff)
+
+        self.LD_coeff = LD_teff_wv_coeff    
+            # LD_teff_wv_coeff[int(tt)] = LD_wv_coeff
+        # return LD_teff_wv_coeff
 
 
     def find_fluxspec_flatten(
-            self, spec_type, Vel_bin_size, plot, syn_spec_path=None):
+            self, Vel_bin_size, plot, syn_model_path=None):
         
-        self.spec_type = spec_type
+        # self.spec_type = spec_type
         self.out_path = f'{os.getcwd()}/syn_spec'
-        temp_list = [self.Temp, self.Tspot, self.Tfaculae]
+        temp_list = np.concatenate(
+            [[self.Temp], self.Tspot, self.Tfaculae]
+            )
+        temp_list = np.unique(temp_list)
 
-        print('\nChecking flatten spectra templates for')
-        print(f'   {temp_list} K\n')
-        
+        logger.info(f'\nChecking model spectra for temperatures {temp_list} K')
+
         self.dw_phx_flux(temp_list, alpha=0)
 
+        # self.star_spec_flatten = {}
+        # self.spot_spec_flatten = {}
+        # self.plage_spec_flatten = {}
+        self.spec_flatten = {}
+
         wv_regions = list(self.bands2use.keys())
-        for idx, band in enumerate(wv_regions):
+        for band in wv_regions:
 
             line_cen = self.bands2use[band][0]
             delta_wv = self.bands2use[band][1]
+            rvORphoto = self.bands2use[band][2]
+            intORflux = self.bands2use[band][3]
+            model_type = self.bands2use[band][4]
+            
+            if rvORphoto != 'rv': continue
+
             wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
             wvmin = int(wvmin); wvmax = int(wvmax)
             
-            for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
+            for tt in temp_list:
                 # ---------------------- Read PHX SYN Spectra ----------------------
-                if spec_type.lower() == 'phx':
+                if model_type.lower() == 'phx':
                     
                     ## --- flatten syn spectra ---
                     # 1. flatten PHX spectra at a larger wv range (3000 - 30000 AA)
                     flat_spec_dir = ssp.flatten_spec(
-                        syn_spec_path, self.out_path, self.phx_flux_file[tt])
+                        syn_model_path[model_type], self.out_path, self.phx_flux_file[tt])
                     
                     # sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_flatten.h5'
                     sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
@@ -141,198 +165,253 @@ class Star:
                     
                     # 2. cut the flattened spectra to the region of interest and transfer wavelength to velocity
                     ssp.final_flux_spec(
-                        spec_type, flat_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        model_type, flat_spec_dir, sim_spec_path, wvmin, wvmax, 
                         Vel_bin_size, plot, flatten=True)
                     flatten_spec = pd.read_hdf(sim_spec_path)
                 
                 # ---------------------- Read Synmast Spectra ----------------------
-                elif spec_type.lower() == 'synmast':
-                    prf_dir = syn_spec_path
+                elif model_type.lower() == 'synmast':
+                    # ----- We will all use PHX as CCF template -----
+                    # prf_dir = syn_model_path[model_type]
                     
-                    # mc_2700350+000_b2_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
-                    spec_base_name = f'mc_{tt}{self.logg*100:1.0f}+{self.FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
-                    unflatten_spec_dir = f'{prf_dir}/{spec_base_name}'
+                    # # mc_2700350+000_b2_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
+                    # spec_base_name = f'mc_{tt}{self.logg*100:1.0f}+{self.FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+                    # unflatten_spec_dir = f'{prf_dir}/{spec_base_name}'
 
-                    # Check if the prf file already exists
-                    if not os.path.exists(unflatten_spec_dir):
-                        print(f'   Don\'t have {unflatten_spec_dir}.')
-                        sys.exit('   Please get the spectra from synmast and put it in the syn_spec folder!')
+                    # # Check if the prf file already exists
+                    # if not os.path.exists(unflatten_spec_dir):
+                    #     sys.exit(f'   Don\'t have {unflatten_spec_dir}.\n   Please get the spectra from synmast and put it in the syn_spec folder!')
 
-                    sim_use_spec = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
+                    # sim_use_spec = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
+                    # sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
+                    
+                    # ssp.final_flux_spec(
+                    #     model_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                    #     Vel_bin_size, plot, flatten=True)
+                    # flatten_spec = pd.read_hdf(sim_spec_path) 
+                    # -------------------------------------------------
+                    ## --- flatten syn spectra --- SAME AS PHX ---
+                    # 1. flatten PHX spectra at a larger wv range (3000 - 30000 AA)
+                    flat_spec_dir = ssp.flatten_spec(
+                        syn_model_path['phx'], self.out_path, self.phx_flux_file[tt])
+                    
+                    # sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_flatten.h5'
+                    sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
                     
+                    # 2. cut the flattened spectra to the region of interest and transfer wavelength to velocity
                     ssp.final_flux_spec(
-                        spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        'phx', flat_spec_dir, sim_spec_path, wvmin, wvmax, 
                         Vel_bin_size, plot, flatten=True)
-                    flatten_spec = pd.read_hdf(sim_spec_path) 
+                    flatten_spec = pd.read_hdf(sim_spec_path)
 
                 else:
-                    print('\n[ERROR] Can only handel PHX and Synmast spec!\n')
+                    logger.error('\n[ERROR] Can only handel PHX and Synmast spec!\n')
                 
                 # sum total flux for intensity ratio calculation
                 # sum_up_flux = self.flux_sum(spec_base_path, tt, wvmin, wvmax)
                 # sum_up_flux_box.append(sum_up_flux)
 
                 spec = {
-                    f'{band}_v': flatten_spec['v'].to_numpy(), 
-                    f'{band}_f': flatten_spec['f'].to_numpy()
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': flatten_spec['v'].to_numpy(), 
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': flatten_spec['f'].to_numpy()
                     }
-            
-                if idx==0:
-                    if nn=='star':
-                        self.star_spec_flatten = spec
-                    elif nn=='spot':
-                        self.spot_spec_flatten = spec
-                    elif nn=='plage':
-                        self.plage_spec_flatten = spec
-                    elif nn=='ccf_temp':
-                        self.ccf_spec_flatten = spec
-                else:
-                    if nn=='star':
-                        self.star_spec_flatten.update(spec)
-                    elif nn=='spot':
-                        self.spot_spec_flatten.update(spec)
-                    elif nn=='plage':
-                        self.plage_spec_flatten.update(spec)
-                    elif nn=='ccf_temp':
-                        self.ccf_spec_flatten.update(spec)
+                
+                self.spec_flatten.update(spec)
+                # if tt==self.Temp:
+                #     self.star_spec_flatten.update(spec)
+                # elif tt<self.Temp:
+                #     self.spot_spec_flatten.update(spec)
+                # elif tt>self.Temp:
+                #     self.plage_spec_flatten.update(spec)
+                #         
+                # if idx==0:
+                #     if tt==self.Temp:
+                #         self.star_spec_flatten = spec
+                #     elif tt<self.Temp:
+                #         self.spot_spec_flatten = spec
+                #     elif tt>self.Temp:
+                #         self.plage_spec_flatten = spec
+                #     # elif nn=='ccf_temp':
+                #     #     self.ccf_spec_flatten = spec
+                # else:
+                #     if tt==self.Temp:
+                #         self.star_spec_flatten.update(spec)
+                #     elif tt<self.Temp:
+                #         self.spot_spec_flatten.update(spec)
+                #     elif tt>self.Temp:
+                #         self.plage_spec_flatten.update(spec)
+                #     # elif nn=='ccf_temp':
+                #     #     self.ccf_spec_flatten.update(spec)
             
             # self.intensity_ratio[band] = sum_up_flux_box[1]/sum_up_flux_box[0]
             # print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
         
-    def find_fluxspec(self, spec_type, Vel_bin_size, plot, syn_spec_path=None):
+    def find_fluxspec(self, Vel_bin_size, plot, syn_model_path=None):
         
-        self.spec_type = spec_type          
-        temp_list = [self.Temp, self.Tspot, self.Tfaculae]
+        # self.spec_type = spec_type          
+        temp_list = np.concatenate(
+            [[self.Temp], self.Tspot, self.Tfaculae]
+            )
+        temp_list = np.unique(temp_list)
+        # logger.info('\nChecking spectra templates for')
+        # logger.info(f'   {temp_list} K\n')
 
-        print('\nChecking spectra templates for')
-        print(f'   {temp_list} K\n')
-
+        # self.star_flux_spec = {}
+        # self.spot_flux_spec = {}
+        # self.plage_flux_spec = {}
+        self.flux_spec = {}
+        
         wv_regions = list(self.bands2use.keys())
-        for idx, band in enumerate(wv_regions):
-
+        for band in wv_regions:
+            
             line_cen = self.bands2use[band][0]
             delta_wv = self.bands2use[band][1]
+            intORflux = self.bands2use[band][3]
+            model_type = self.bands2use[band][4]
+            
+            if intORflux != 'flux': continue
+            
             wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
             wvmin = int(wvmin); wvmax = int(wvmax)
 
-            for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
+            for tt in temp_list:
                 # ---------------------- Read PHX SYN Spectra ----------------------
-                if spec_type.lower() == 'phx':
+                if model_type.lower() == 'phx':
                     
                     sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
                     unflattened_spec_dir = f'{self.out_path}/RASSINE_PHX/{self.phx_flux_file[tt]}'
                     ssp.final_flux_spec(
-                        spec_type, unflattened_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        model_type, unflattened_spec_dir, sim_spec_path, wvmin, wvmax, 
                         Vel_bin_size, plot, flatten=False)
                     final_spec = pd.read_hdf(sim_spec_path)
 
                 # ---------------------- Read SYNmast Spectra ----------------------
-                elif spec_type.lower() == 'synmast':
-                    prf_dir = syn_spec_path
+                elif model_type.lower() == 'synmast':
+                    prf_dir = syn_model_path[model_type]
                     
+                    unflatten_spec_dir = ssp.prep_synmast_flux_spec(
+                        tt, self.logg, self.FeH, self.out_path) 
                     # mc_2700350+000_b2_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
-                    spec_base_name = f'mc_{tt}{self.logg*100:1.0f}+{self.FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
-                    unflatten_spec_dir = f'{prf_dir}/{spec_base_name}'
+                    # spec_base_name = f'mc_{tt}{self.logg*100:1.0f}+{self.FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+                    # unflatten_spec_dir = f'{prf_dir}/{spec_base_name}'
 
-                    # Check if the prf file already exists
-                    if not os.path.exists(unflatten_spec_dir):
-                        print(f'   Don\'t have {unflatten_spec_dir}.')
-                        sys.exit('   Please get the spectra from synmast and put it in the syn_spec folder!')
+                    # # Check if the prf file already exists
+                    # if not os.path.exists(unflatten_spec_dir):
+                    #     sys.exit(f'   Don\'t have {unflatten_spec_dir}.\n   Please get the spectra from synmast and put it in the syn_spec folder!')
 
-                    sim_spec_name = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}.h5'
+                    sim_spec_name = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}_flux.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_spec_name}'
                     
                     ssp.final_flux_spec(
-                        spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        model_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
                         Vel_bin_size, plot, flatten=False)
                     final_spec = pd.read_hdf(sim_spec_path) 
 
                 else:
-                    print('\n[ERROR] Can only handel PHX and Synmast spec!\n')
+                    logger.error('\n[ERROR] Can only handel PHX and Synmast spec!\n')
                 
-                # # sum total flux for intensity ratio calculation
-                # sum_up_flux = self.flux_sum(spec_base_path, tt, wvmin, wvmax)
-                # sum_up_flux_box.append(sum_up_flux)
-
                 spec = {
-                    f'{band}_v': final_spec['v'].to_numpy(), 
-                    f'{band}_f': final_spec['f'].to_numpy()
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': final_spec['v'].to_numpy(), 
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': final_spec['f'].to_numpy()
                     }
-            
-                if idx==0:
-                    if nn=='star':
-                        self.star_spec = spec
-                    elif nn=='spot':
-                        self.spot_spec = spec
-                    elif nn=='plage':
-                        self.plage_spec = spec
-                else:
-                    if nn=='star':
-                        self.star_spec.update(spec)
-                    elif nn=='spot':
-                        self.spot_spec.update(spec)
-                    elif nn=='plage':
-                        self.plage_spec.update(spec)
-            
-            # self.intensity_ratio[band] = 1
-            # print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
 
-    def find_intensityspec(self, spec_type, Vel_bin_size, plot, syn_spec_path=None):
+                self.flux_spec.update(spec)
+                # if tt==self.Temp:
+                #     self.star_flux_spec.update(spec)
+                # elif tt<self.Temp:
+                #     self.spot_flux_spec.update(spec)
+                # elif tt>self.Temp:
+                #     self.plage_flux_spec.update(spec)
+
+                # if _first:
+                #     if nn=='star':
+                #         self.star_flux_spec = spec
+                #     elif nn=='spot':
+                #         self.spot_flux_spec = spec
+                #     elif nn=='plage':
+                #         self.plage_flux_spec = spec
+                # else:
+                #     if nn=='star':
+                #         self.star_flux_spec.update(spec)
+                #     elif nn=='spot':
+                #         self.spot_flux_spec.update(spec)
+                #     elif nn=='plage':
+                #         self.plage_flux_spec.update(spec)
+            # _first = False
+
+    def find_intensityspec(self, Vel_bin_size, plot, syn_model_path=None):
         
-        self.spec_type = spec_type            
-        temp_list = [self.Temp, self.Tspot, self.Tfaculae]
+        # self.spec_type = spec_type            
+        temp_list = np.concatenate(
+            [[self.Temp], self.Tspot, self.Tfaculae]
+            )
+        temp_list = np.unique(temp_list)
+        # print('\nChecking spectra templates for')
+        # print(f'   {temp_list} K\n')
 
-        print('\nChecking spectra templates for')
-        print(f'   {temp_list} K\n')
+        # self.star_int_spec = {}
+        # self.spot_int_spec = {}
+        # self.plage_int_spec = {}
+        self.int_spec = {}
 
         wv_regions = list(self.bands2use.keys())
-        for idx, band in enumerate(wv_regions):
+        for band in wv_regions:
 
             line_cen = self.bands2use[band][0]
             delta_wv = self.bands2use[band][1]
+            intORflux = self.bands2use[band][3]
+            model_type = self.bands2use[band][4]
+
+            if intORflux != 'intensity': continue
+
             wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
             wvmin = int(wvmin); wvmax = int(wvmax)
 
-            for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
+            for tt in temp_list:
                 # ---------------------- Read PHX SYN Spectra ----------------------
-                if spec_type.lower() == 'phx':
-                    raise NotImplementedError(
-                        'Intensity spectra calculation is not implemented yet for PHX.'
-                        'Please use the *synmast* spectra instead.'
-                    )
+                if model_type.lower() == 'phx':
+                    # raise NotImplementedError(
+                    #     'Intensity spectra calculation is not implemented yet for PHX.'
+                    #     'Please use the *synmast* spectra instead.'
+                    # )
 
+                    # ----- Don't need to dw, just use LD's low res PHX INT spec ---
                     # self.dw_phx_mu_intensity(temp_list, alpha=0)
                     
-                    # sim_spec_name = f'SimUse_PHX_ACES_SpecInt_{tt}_{self.logg}_{self.FeH}_wv{wvmin}_{wvmax}_NOTflatten.p'
-                    # sim_spec_path = f'{self.out_path}{sim_spec_name}'
-                    
-                    # unflatten_spec_dir = spec_base_path.format(tt, self.logg, self.FeH)
-                    
-                    # ssp.final_spec(
-                    #     spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
-                    #     Vel_bin_size, flatten=False)
-                    # final_spec = pd.read_pickle(sim_spec_path)
+                    unflatten_spec_dir = ssp.prep_phx_intensity_spec(
+                        tt, self.logg, self.FeH, 0, self.out_path) 
+
+                    sim_spec_name = f'PhotoUse_phx_{tt}_{self.logg}_{self.FeH}_{band}.h5'
+                    sim_spec_path = f'{self.out_path}/SimUse/{sim_spec_name}'
+         
+                    ssp.final_intensity_spec(
+                        model_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        Vel_bin_size, plot, flatten=False)
+                    final_spec = pd.read_hdf(sim_spec_path)
 
                 # ---------------------- Read SYNmast Spectra ----------------------
-                elif spec_type.lower() == 'synmast':
-                    prf_dir = syn_spec_path
+                elif model_type.lower() == 'synmast':
+                    prf_dir = syn_model_path[model_type]
                     
-                    # mc_2700350+000_b2_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
-                    spec_base_name = f'mc_{tt}{self.logg*100:1.0f}+{self.FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
-                    unflatten_spec_dir = f'{prf_dir}/{spec_base_name}'
+                    unflatten_spec_dir = ssp.prep_synmast_intensity_spec(
+                        tt, self.logg, self.FeH, self.out_path) 
+                    
+                    # # mc_2700350+000_b2_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf
+                    # spec_base_name = f'mc_{tt}{self.logg*100:1.0f}+{self.FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+                    # unflatten_spec_dir = f'{prf_dir}/{spec_base_name}'
 
                     # Check if the prf file already exists
-                    if not os.path.exists(unflatten_spec_dir):
-                        print(f'   Don\'t have {unflatten_spec_dir}.')
-                        sys.exit('   Please get the spectra from synmast and put it in the syn_spec folder!')
+                    # if not os.path.exists(unflatten_spec_dir):
+                    #     print(f'   Don\'t have {unflatten_spec_dir}.')
+                    #     sys.exit('   Please get the spectra from synmast and put it in the syn_spec folder!')
 
                     sim_spec_name = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_spec_name}'
                     
                     ssp.final_intensity_spec(
-                        spec_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
+                        model_type, unflatten_spec_dir, sim_spec_path, wvmin, wvmax, 
                         Vel_bin_size, plot, flatten=False)
                     final_spec = pd.read_hdf(sim_spec_path) 
 
@@ -344,27 +423,41 @@ class Star:
                 # sum_up_flux_box.append(sum_up_flux)
 
                 # mu_s = np.array([0.9636, 0.8864, 0.8018, 0.7071, 0.5976, 0.4629, 0.2673])
+                mu_s = [float(col.split('_')[1]) for col in final_spec.columns if col.startswith("mu_")]
                 mu_cols = [col for col in final_spec.columns if col.startswith("mu_")]
                 df_mu = final_spec[mu_cols]
                 spec = {
-                    f'{band}_v': final_spec['v'].to_numpy(), 
-                    f'{band}_f': df_mu.to_numpy(),
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': final_spec['v'].to_numpy(), 
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': df_mu.to_numpy(),
                     }
-            
-                if idx==0:
-                    if nn=='star':
-                        self.star_spec = spec
-                    elif nn=='spot':
-                        self.spot_spec = spec
-                    elif nn=='plage':
-                        self.plage_spec = spec
-                else:
-                    if nn=='star':
-                        self.star_spec.update(spec)
-                    elif nn=='spot':
-                        self.spot_spec.update(spec)
-                    elif nn=='plage':
-                        self.plage_spec.update(spec)
+
+                # if tt==self.Temp:
+                #     self.star_int_spec.update(spec)
+                # elif tt<self.Temp:
+                #     self.spot_int_spec.update(spec)
+                # elif tt>self.Temp:
+                #     self.plage_int_spec.update(spec)
+                self.int_spec.update(spec)
+
+            self.int_spec[f'mu_{model_type}'] = np.array(mu_s, dtype=float)
+                       
+                # if _first:
+                #     if nn=='star':
+                #         self.star_int_spec = spec
+                #         self.star_int_spec['mu'] = np.array(mu_s, dtype=float)
+                #     elif nn=='spot':
+                #         self.spot_int_spec = spec
+                #         self.spot_int_spec['mu'] = np.array(mu_s, dtype=float)
+                #     elif nn=='plage':
+                #         self.plage_int_spec = spec
+                #         self.plage_int_spec['mu'] = np.array(mu_s, dtype=float)
+                # else:
+                #     if nn=='star':
+                #         self.star_int_spec.update(spec)
+                #     elif nn=='spot':
+                #         self.spot_int_spec.update(spec)
+                #     elif nn=='plage':
+                #         self.plage_int_spec.update(spec)
             
             # self.intensity_ratio[band] = 1
             # print(f'\n--> Intensity rato for {band}: {sum_up_flux_box[1]/sum_up_flux_box[0]:1.2f}')
@@ -372,7 +465,7 @@ class Star:
 
     def dw_phx_flux(self, temp_list, alpha=0):
         self.phx_flux_file = {}
-        for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
+        for tt in temp_list:
             if (tt > 7000) | (tt < 2300) | (tt is None):
         
                 raise Exception(
@@ -385,17 +478,17 @@ class Star:
                     tt, self.logg, self.FeH, alpha, self.phx_path, self.out_path)
                 self.phx_flux_file[tt] = phx_flux_file
                 
-    def dw_phx_mu_intensity(self, temp_list, alpha=0):
-        for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
-            if (tt > 7000) | (tt < 2300) | (tt is None):
+    # def dw_phx_mu_intensity(self, temp_list, alpha=0):
+    #     for tt, nn in zip(temp_list, ['star', 'spot', 'plage']):
+    #         if (tt > 7000) | (tt < 2300) | (tt is None):
         
-                raise Exception(
-                    f'   [ERROR] Rassine normalization cfg not tuned for {tt}K\n'
-                    '   Please check the temperature range in the config file!'
-                )
-            else:
-                ssp.get_phx_intensity_spec(
-                    tt, self.logg, self.FeH, alpha, self.phx_path, self.out_path)
+    #             raise Exception(
+    #                 f'   [ERROR] Rassine normalization cfg not tuned for {tt}K\n'
+    #                 '   Please check the temperature range in the config file!'
+    #             )
+    #         else:
+    #             ssp.get_phx_intensity_spec(
+    #                 tt, self.logg, self.FeH, alpha, self.phx_path, self.out_path)
 
 
 
@@ -534,11 +627,11 @@ class Active_region:
             nrho (int): Resolution for the spot's circumference 
         """
         # Calculates the initial coordinates of the active region circumference
-        xyz = stsp.spot_init(self.s, self.long, self.lat, star.incl, nrho) 
+        xyz = stsp.spot_location_init(self.s, self.long, self.lat, star.incl, nrho) 
         self.xyz = xyz
         
         # Calculates the coordinates of the active region circumference at phase psi
-        xyz2 = stsp.spot_phase(xyz, star.incl, nrho, star.psi) 
+        xyz2 = stsp.get_spot_phase_coord(xyz, star.incl, nrho, star.psi) 
         self.xyz2 = xyz2
 
         # Check is the active region is visible at phase psi
@@ -547,45 +640,46 @@ class Active_region:
             stsp.spot_area(xyz2, nrho, grid) 
 
 
-class Ccf:
-    def __init__(self, rv, intensity, width, step, star):
-        """_summary_
+# class Ccf:
+#     def __init__(self, rv, intensity, width, step, star):
+#         """_summary_
 
-        Args:
-            rv (float): Radial velocity of each point of the CCF
-            intensity (float): Intensity of each point of the CCF
-            width (float): Width of the CCF
-            step (float): Sampling of the CCF
-            star (class): Star class
-        """
-        self.rv         = rv              
-        self.intensity  = intensity       
-        self.width      = width           
-        self.step       = step            
-        self.n          = len(self.rv)   # Number of points of the CCF
+#         Args:
+#             rv (float): Radial velocity of each point of the CCF
+#             intensity (float): Intensity of each point of the CCF
+#             width (float): Width of the CCF
+#             step (float): Sampling of the CCF
+#             star (class): Star class
+#         """
+#         self.rv         = rv              
+#         self.intensity  = intensity       
+#         self.width      = width           
+#         self.step       = step            
+#         self.n          = len(self.rv)   # Number of points of the CCF
 
-        # The CCF has a width of self.width. This CCF has a rotational velocity of 0 because taken in the stellar disk 
-        # center. To consider rotation when simulating the emerging spectrum on the limb of the star 
-        # (velocity different from 0), We have to extrapolate outside of the range [-self.width;self.width]. This is 
-        # done by calculating self.n_v which is the number of point of the CCF required to consider a stellar rotation 
-        # of star.vrot. 
-        # self.n_v must by an odd integer so that we have as many values on the positive side of the CCF than on the 
-        # negative one (because 0 is present).
+#         # The CCF has a width of self.width. This CCF has a rotational velocity of 0 because taken in the stellar disk 
+#         # center. To consider rotation when simulating the emerging spectrum on the limb of the star 
+#         # (velocity different from 0), We have to extrapolate outside of the range [-self.width;self.width]. This is 
+#         # done by calculating self.n_v which is the number of point of the CCF required to consider a stellar rotation 
+#         # of star.vrot. 
+#         # self.n_v must by an odd integer so that we have as many values on the positive side of the CCF than on the 
+#         # negative one (because 0 is present).
         
-        if np.round(((1.1*star.vrot)/self.step)*2)%2 == 0:
-            self.n_v = int(self.n + round(((1.1*star.vrot)/self.step)*2))
-        else:
-            self.n_v = int(self.n + round(((1.1*star.vrot)/self.step)*2)+1)
+#         if np.round(((1.1*star.vrot)/self.step)*2)%2 == 0:
+#             self.n_v = int(self.n + round(((1.1*star.vrot)/self.step)*2))
+#         else:
+#             self.n_v = int(self.n + round(((1.1*star.vrot)/self.step)*2)+1)
         
-        # self.v_interval gives the difference in radial velocity between the minimum and maximum values of the CCF, once 
-        # the extrapolation is done. 
-        # self.n_v gives the number of points of the extrapolated CCF. (self.n_v-1) gives the number of intervals, which 
-        # is then multiplied by the sampling of the CCF self.step to give self.v_interval
-        self.v_interval = self.step*(self.n_v-1) / 2.
+#         # self.v_interval gives the difference in radial velocity between the minimum and maximum values of the CCF, once 
+#         # the extrapolation is done. 
+#         # self.n_v gives the number of points of the extrapolated CCF. (self.n_v-1) gives the number of intervals, which 
+#         # is then multiplied by the sampling of the CCF self.step to give self.v_interval
+#         self.v_interval = self.step*(self.n_v-1) / 2.
 
 class Spec:
     # def __init__(self, rv, intensity, width, step, star):
-    def __init__(self, type, star, band):
+    # def __init__(self, type, star, band, intORflux, model_type):
+    def __init__(self, star, band, temperature, intORflux, model_type):
         """_summary_
 
         Args:
@@ -594,28 +688,56 @@ class Spec:
             width (float): Width of the CCF
             step (float): Sampling of the CCF
             star (class): Star class
+            n_v (int): Number of points of the CCF required to consider a stellar rotation of star.vrot
         """
 
-        if type == 'photosphere':
-            self.rv         = star.star_spec[f'{band}_v']             
-            self.intensity  = star.star_spec[f'{band}_f']        
-            self.width      = np.max(self.rv)           
-            self.step       = self.rv[1]-self.rv[0]            
-            self.n          = len(self.rv)   # Number of points of the CCF
-        elif type == 'spot':
-            self.rv         = star.spot_spec[f'{band}_v']             
-            self.intensity  = star.spot_spec[f'{band}_f']        
-            self.width      = np.max(self.rv)           
-            self.step       = self.rv[1]-self.rv[0]            
-            self.n          = len(self.rv)
-        elif type == 'plage':
-            self.rv         = star.plage_spec[f'{band}_v']
-            self.intensity  = star.plage_spec[f'{band}_f']
-            self.width      = np.max(self.rv)
-            self.step       = self.rv[1]-self.rv[0]
-            self.n          = len(self.rv)
-        else:
-            sys.exit('The type of spectrum is not supported yet!')
+        if intORflux == 'flux':
+            self.rv         = star.flux_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.0f}_v']             
+            self.intensity  = star.flux_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.0f}_f']        
+        if intORflux == 'intensity':
+            self.rv         = star.int_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.0f}_v']             
+            self.intensity  = star.int_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.0f}_f']        
+            self.mu         = star.int_spec[f'mu_{model_type}']
+        self.width      = np.max(self.rv)           
+        self.step       = self.rv[1]-self.rv[0]            
+        self.n          = len(self.rv)   # Number of points of the CCF
+
+
+        # if type == 'photosphere':
+        #     if intORflux == 'flux':
+        #         self.rv         = star.star_flux_spec[f'{band}_{model_type}_{intORflux}_v']             
+        #         self.intensity  = star.star_flux_spec[f'{band}_{model_type}_{intORflux}_f']        
+        #     elif intORflux == 'intensity':
+        #         self.rv         = star.star_int_spec[f'{band}_{model_type}_{intORflux}_v']             
+        #         self.intensity  = star.star_int_spec[f'{band}_{model_type}_{intORflux}_f']
+        #         self.mu         = star.star_int_spec['mu']
+        #     self.width      = np.max(self.rv)           
+        #     self.step       = self.rv[1]-self.rv[0]            
+        #     self.n          = len(self.rv)   # Number of points of the CCF
+        # elif type == 'spot':
+        #     if intORflux == 'flux':
+        #         self.rv         = star.spot_flux_spec[f'{band}_{model_type}_{intORflux}_v']             
+        #         self.intensity  = star.spot_flux_spec[f'{band}_{model_type}_{intORflux}_f']        
+        #     elif intORflux == 'intensity':
+        #         self.rv         = star.spot_int_spec[f'{band}_{model_type}_{intORflux}_v']             
+        #         self.intensity  = star.spot_int_spec[f'{band}_{model_type}_{intORflux}_f']  
+        #         self.mu         = star.star_int_spec['mu']
+        #     self.width      = np.max(self.rv)           
+        #     self.step       = self.rv[1]-self.rv[0]            
+        #     self.n          = len(self.rv)
+        # elif type == 'plage':
+        #     if intORflux == 'flux':
+        #         self.rv         = star.plage_flux_spec[f'{band}_{model_type}_{intORflux}_v']             
+        #         self.intensity  = star.plage_flux_spec[f'{band}_{model_type}_{intORflux}_f']        
+        #     elif intORflux == 'intensity':
+        #         self.rv         = star.plage_int_spec[f'{band}_{model_type}_{intORflux}_v']             
+        #         self.intensity  = star.plage_int_spec[f'{band}_{model_type}_{intORflux}_f']  
+        #         self.mu         = star.star_int_spec['mu']
+        #     self.width      = np.max(self.rv)
+        #     self.step       = self.rv[1]-self.rv[0]
+        #     self.n          = len(self.rv)
+        # else:
+        #     sys.exit('The type of spectrum is not supported yet!')
 
         # The CCF has a width of self.width. This CCF has a rotational 
         # velocity of 0 because taken in the stellar disk center. 
@@ -814,10 +936,15 @@ def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir, plot):
         
     return np.array(fluxp_flat)
 
-def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir, plot):
+def flatten_model_spec(
+        Star, flux_phi, visible_phi, band, intORflux, model_type, 
+        RVandEWR_dir, plot):
     # plot = True
-    vel = Star.star_spec[f'{band}_v']
-
+    if intORflux == 'flux':
+        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+    elif intORflux == 'intensity':
+        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+    
     nomral_spec_box = []
     for i in range(len(visible_phi)):
         flux = flux_phi[i]
@@ -859,7 +986,8 @@ def flatten_model_spec(Star, flux_phi, visible_phi, band, RVandEWR_dir, plot):
         nomral_spec_box.append(fluxp_flat)
     return np.array(nomral_spec_box)
 
-def get_equivalent_width(Star, flux_phi, visible_phi, band):
+def get_equivalent_width(
+        Star, flux_phi, visible_phi, band, intORflux, model_type):
 
     ew_fe1 = []; ew_fe2 = []; ew_oh0 = []
 
@@ -869,7 +997,10 @@ def get_equivalent_width(Star, flux_phi, visible_phi, band):
         [1.56335, 1.56395]]
 
     band_center_wv = Star.bands2use[band][0] # [15631.35, 30, ['rv', 'photo']]
-    vel = Star.star_spec[f'{band}_v']
+    if intORflux == 'flux':
+        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+    elif intORflux == 'intensity':
+        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
 
     c_kms = 299792.458
 
@@ -906,7 +1037,8 @@ def get_equivalent_width(Star, flux_phi, visible_phi, band):
 
     return line_ratio
 
-def get_line_depth(Star, CCFstar_tot, visible_phi, band):
+def get_line_depth(
+        Star, CCFstar_tot, visible_phi, band, intORflux, model_type):
 
     depth_d_fe1 = []
     depth_d_fe2 = []
@@ -915,7 +1047,10 @@ def get_line_depth(Star, CCFstar_tot, visible_phi, band):
     depth_l_fe2 = []
     depth_l_oh0 = []
 
-    vel = Star.star_spec[f'{band}_v']
+    if intORflux == 'flux':
+        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+    elif intORflux == 'intensity':
+        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
 
     for i in range(len(visible_phi)):
         
@@ -941,11 +1076,12 @@ def get_line_depth(Star, CCFstar_tot, visible_phi, band):
 
 
 def calculate_activity_signal_spec(
-    nrho, grid, star, psi, 
-    Spec_photo, Spec_spot, Spec_plage,
+    nrho, grid_size, star, psi, 
+    # Spec_photosphere, Spec_spot, Spec_plage,
+    Spec,
     active_regions_number, active_region_box,
-    inst_reso, cpu_use, int_ratio, RVandEWR_dir, band, 
-    savespec, fluxORint
+    instrumental_resolution, cpu_use, save_dir, band, 
+    save_spec_flag, fluxORint
     ):
     """
 
@@ -954,186 +1090,204 @@ def calculate_activity_signal_spec(
         grid (int): model grid resolution NxN
         star (class): input star pars
         psi (float): initial phase
-        spec (class): quite model spec 
-        spec_active_region (class): active model spec 
-        ccf (class): quite model ccf 
-        ccf_active_region (class): active model ccf 
-        active_regions (class): input info. on the spot(s)
-        inst_reso (float): instrumental resolution (R)
+        Spec_xxx (class): Spec model spec 
+        active_regions_number (int): number of active regions
+        active_region_box (list): list of active regions info, e.g., type, lat...
+        instrumental_resolution (float): instrumental resolution (R)
         cpu_use (int): cpu to use while multiprocessing
 
     Returns:
-        _type_: _description_
+        SPECstar_tot (CCF): CCF of the star affected by active regions
+        active_surface_box (np.array): 2D array of the active region surface
+        quite_surface_2d (np.array): 2D array of the quite surface
+        visible_phi (np.array): visible phases of the star
     """
 
-    # initiate the quite surface
-    Spec_photo.intensity = np.array(
-        Spec_photo.intensity, dtype=np.float64)
-
+    # Initiate the quite surface
+    Spec_photosphere = Spec[star.Temp]
     if fluxORint == 'flux':
-        SPECstar_quiet, quite_surface = stsp.itot_flux(
-            star.vrot, star.incl, star.limba1[0], star.limba2[0], 0., 0., 0., grid, 
-            Spec_photo.rv, Spec_photo.intensity, Spec_photo.v_interval, 
-            Spec_photo.n_v, Spec_photo.n
-            )
-    if fluxORint == 'int':
-        SPECstar_quiet, quite_surface = stsp.itot_int(
-            star.vrot, star.incl, star.limba1[0], star.limba2[0], 0., 0., 0., grid, 
-            Spec_photo.rv, Spec_photo.intensity, Spec_photo.v_interval, 
-            Spec_photo.n_v, Spec_photo.n
-            )
-    quite_surface_2d = quite_surface.copy()
-    # initialization of the variables
-    # FLUXstar      = FLUXstar_quiet
-    # CCFstar_flux  = CCFstar_quiet
-    # CCFstar_bconv = CCFstar_quiet
-    # CCFstar_tot   = CCFstar_quiet
-    SPECstar_tot  = SPECstar_quiet
-
-    (active_region_checks, active_region_longs, active_region_lats, 
-        active_region_sizes, active_region_types) = active_region_box
-    
-    #Loop over the different active regions
-    print('\nCalculate Activate Regions...')
-    # for rr, active_region in enumerate(np.arange(active_regions_number)):
-    for rr in range(active_regions_number):
-        # active_region.check = 1 if the active region is activated, 0 otherwise
+        limba1_q = star.LD_coeff[f"{band}_{int(star.Temp)}"][0]
+        limba2_q = star.LD_coeff[f"{band}_{int(star.Temp)}"][1]
         
-        if not active_region_checks[rr]: 
-            continue 
+        integrated_stellar_spectrum, quite_2d_surface_flux_sum = stsp.itot_flux(
+            star.vrot, star.incl, limba1_q, limba2_q, grid_size, 
+            Spec_photosphere.rv, Spec_photosphere.intensity, Spec_photosphere.v_interval, 
+            Spec_photosphere.n_v, Spec_photosphere.n
+            )
+    if fluxORint == 'intensity':    
+        integrated_stellar_spectrum, quite_2d_surface_flux_sum = stsp.itot_int(
+            star.vrot, star.incl, None, None, grid_size, 
+            Spec_photosphere.rv, Spec_photosphere.intensity, Spec_photosphere.v_interval, 
+            Spec_photosphere.n_v, Spec_photosphere.n, Spec_photosphere.mu
+        )
+
+    final_2d_surface_flux_sum = quite_2d_surface_flux_sum.copy()
+
+    (active_region_longs, active_region_lats, 
+        active_region_sizes, active_region_Temp) = active_region_box
+    
+    # --- Loop over all active regions ---
+    logger.info('\nCalculate Activate Regions...')
+
+    # set act grid flag to avoid overlapping active region fluxes
+    active_2d_surface_flag_psi = np.zeros(
+        (len(psi), grid_size, grid_size), dtype=int)   
             
-        print(f'\nCalculate Active Region {rr+1}')
+    for rr in range(active_regions_number):
+                    
+        logger.info(f'\nCalculate Active Region {rr+1}')
+
         # Calculates the position of the spot initialized at the disc center
-        xyz = stsp.spot_init(
+        xyz = stsp.spot_location_init(
             active_region_sizes[rr], active_region_longs[rr], active_region_lats[rr], 
             star.incl, nrho
             )
         
-        active_intensity = Spec_spot.intensity if active_region_types[rr] == 0 else Spec_plage.intensity
-        limba1 = np.array([star.limba1[0], star.limba1[1]]) if active_region_types[rr] == 0 else np.array([star.limba1[0], star.limba1[2]])
-        limba2 = np.array([star.limba2[0], star.limba2[1]]) if active_region_types[rr] == 0 else np.array([star.limba2[0], star.limba2[2]])
+        # active_intensity = Spec_spot.intensity if active_region_types[rr] == 0 else Spec_plage.intensity
+        # limba1 = np.array([star.limba1[0], star.limba1[1]]) if active_region_types[rr] == 0 else np.array([star.limba1[0], star.limba1[2]])
+        # limba2 = np.array([star.limba2[0], star.limba2[1]]) if active_region_types[rr] == 0 else np.array([star.limba2[0], star.limba2[2]])
 
-        # print(active_region_sizes[rr], active_region_longs[rr], active_region_lats[rr])
+        # Determine if region is a spot (0) or plage (1)
+        # is_spot = active_region_types[rr] == 0
+
+        # active_intensity = Spec_spot.intensity if is_spot else Spec_plage.intensity
+        # limba1 = np.array([star.limba1[0], star.limba1[1 if is_spot else 2]])
+        # limba2 = np.array([star.limba2[0], star.limba2[1 if is_spot else 2]])
+        active_temp = int(active_region_Temp[rr])
+        active_intensity = Spec[active_temp].intensity
 
         # Scans the yz-area where the spot is for different phases (psi) and
         # returns the spot's "non-contribution" to the total flux and its
         # "non-contribution" to the ccf, for each phase.
         # Thus the result is to be subtracted to the output of the itot() function.
-        SPECactive_region_tot, SPECphoto_region_duplicated, visible_phi, active_surface_box, quite_surface_duplicated_box =\
+        if fluxORint == 'flux':
+            mu_s = None
+            limba1 = np.array([
+                limba1_q, star.LD_coeff[f"{band}_{active_temp}"][0]])
+            limba2 = np.array([
+                limba2_q, star.LD_coeff[f"{band}_{active_temp}"][1]])
+        elif fluxORint == 'intensity':
+            mu_s = Spec[active_temp].mu
+            limba1 = None
+            limba2 = None
+
+        (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
+         visible_phi, active_2d_surface_flux_sum, quiet_2d_surface_flux_sum,
+         active_2d_surface_flag_psi) =\
                 stsp.spot_scan_npsi(
-                    xyz, nrho, psi, len(psi), star.vrot, star.incl, limba1, 
-                    limba2, 0., 0., 0., grid, 
-                    Spec_photo.rv, Spec_photo.intensity, active_intensity, 
-                    Spec_photo.v_interval, Spec_photo.n_v, Spec_photo.n, 
-                    active_region_sizes[rr], active_region_longs[rr], active_region_lats[rr], 
-                    active_region_types[rr], star.Temp, star.Tdiff_spot, cpu_use, int_ratio, 
-                    fluxORint
+                    xyz, nrho, psi, len(psi), star.vrot, star.incl, 
+                    limba1, limba2, grid_size, 
+                    Spec_photosphere.rv, Spec_photosphere.intensity, active_intensity, 
+                    Spec_photosphere.v_interval, Spec_photosphere.n_v, Spec_photosphere.n, mu_s,
+                    active_region_sizes[rr], active_region_longs[rr], 
+                    active_region_lats[rr], cpu_use, fluxORint, active_2d_surface_flag_psi
                     )
 
-        # Calculate the total flux of the star affected by active regions
-        # FLUXstar      = FLUXstar-np.array(FLUXactive_region)
-        
-        # Calculate the CCF of the star affected by the flux effect of active regions
-        # CCFstar_flux  = CCFstar_flux-np.array(CCFactive_region_flux)   
-        
-        # Calculate the CCF of the star affected by the convective blueshift effect of active regions
-        # CCFstar_bconv = CCFstar_bconv-np.array(CCFactive_region_bconv) 
-        
-        # Calculate the CCF of the star affected by the total effect of active regions
-        # CCFstar_tot   = CCFstar_tot - np.array(CCFactive_region_tot)  
+        if save_spec_flag:
+            istart = (Spec_photosphere.n_v-len(Spec_photosphere.rv))//2         
+            iend   = istart+len(Spec_photosphere.rv)
+            spec_qs = integrated_stellar_spectrum[istart:iend]
 
-        # sytang old
-        # SPECstar_tot   = SPECstar_tot - np.array(SPECactive_region_tot)  
-        # quite_surface_2d = quite_surface_2d - np.array(active_surface_box)
-
-        if savespec:
-            istart = (Spec_photo.n_v-len(Spec_photo.rv))//2         
-            iend   = istart+len(Spec_photo.rv)
-            spec_qs = SPECstar_tot[istart:iend]
-
-            spec_qs_duplicated = np.array(SPECphoto_region_duplicated)
+            spec_qs_duplicated = np.array(intergrated_total_quiet_spectrum)
             spec_qs_duplicated = spec_qs_duplicated[:,istart:iend]
 
-            spec_ss = np.array(SPECactive_region_tot)
+            spec_ss = np.array(intergrated_total_stellar_spectrum)
             spec_ss = spec_ss[:,istart:iend]
 
             # save to .npy
-            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_qs_{rr+1}.npy', spec_qs)
-            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_ss_{rr+1}.npy', spec_ss)
-            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_qsdup_{rr+1}.npy', spec_qs_duplicated)
+            np.save(f'./outputs/{save_dir}/spec/{band}_qs_{rr+1}.npy', spec_qs)
+            np.save(f'./outputs/{save_dir}/spec/{band}_ss_{rr+1}.npy', spec_ss)
+            np.save(f'./outputs/{save_dir}/spec/{band}_qsdup_{rr+1}.npy', spec_qs_duplicated)
             
-            vel = np.array(Spec_photo.rv)
-            np.save(f'./outputs/{RVandEWR_dir}/spec/{band}_vel_{rr+1}.npy', vel)
+            vel = np.array(Spec_photosphere.rv)
+            np.save(f'./outputs/{save_dir}/spec/{band}_vel_{rr+1}.npy', vel)
         
-        SPECstar_tot   = SPECstar_tot - np.array(SPECphoto_region_duplicated) + np.array(SPECactive_region_tot)  
-        quite_surface_2d = quite_surface_2d - np.array(quite_surface_duplicated_box) + np.array(active_surface_box)
+        integrated_stellar_spectrum  = integrated_stellar_spectrum \
+            - np.array(intergrated_total_quiet_spectrum) \
+            + np.array(intergrated_total_stellar_spectrum)  
+        final_2d_surface_flux_sum = final_2d_surface_flux_sum \
+            - np.array(quiet_2d_surface_flux_sum) \
+            + np.array(active_2d_surface_flux_sum)
 
-
-    # Calculate where the extrapolated CCF corresponds to the boundaries of the non-extrapolated CCF.
-    # istart = (Ccf.n_v-len(Ccf.rv))//2   # ccf.n_v is odd given our definition, like len(ccf.rv), therefore 
-    #                                     # the difference can be divided by 2. The CCF has been extrapolated 
-    #                                     # the same way on each boundary, so dividing the difference between 
-    #                                     # the extrapolated and non extrapolated CCF by 2 gives by how many 
-    #                                     # points the CCF was extrapolated on each side
-    # iend   = istart+len(Ccf.rv)
-
+    # Calculate where the extrapolated SPEC corresponds to the boundaries of 
+    # the non-extrapolated SPEC.
+    istart = (Spec_photosphere.n_v-len(Spec_photosphere.rv))//2 # ccf.n_v is odd given our definition, like len(ccf.rv), therefore 
+                                        # the difference can be divided by 2. The CCF has been extrapolated 
+                                        # the same way on each boundary, so dividing the difference between 
+                                        # the extrapolated and non extrapolated CCF by 2 gives by how many 
+                                        # points the CCF was extrapolated on each side
+    iend   = istart+len(Spec_photosphere.rv)
     # truncate the extrapolated rotating CCF to the same interval as the non-rotating CCF
-    # CCFstar_flux  = CCFstar_flux[:,istart:iend]
-    # CCFstar_bconv = CCFstar_bconv[:,istart:iend]
-    # CCFstar_tot   = CCFstar_tot[:,istart:iend]
-    # CCFstar_quiet = CCFstar_quiet[istart:iend]
+    integrated_stellar_spectrum = integrated_stellar_spectrum[:, istart:iend]
 
-    # -- Spec ---
-    istart = (Spec_photo.n_v-len(Spec_photo.rv))//2         
-    iend   = istart+len(Spec_photo.rv)
-    SPECstar_tot   = SPECstar_tot[:,istart:iend]
-    # SPECstar_quiet = SPECstar_quiet[istart:iend]
-
-
-    # Normalization, loop through diff phases
-    # CCFstar_flux  = np.array([f/np.max(f) for f in CCFstar_flux], dtype=np.float64)
-    # CCFstar_bconv = np.array([f/np.max(f) for f in CCFstar_bconv], dtype=np.float64)
-    # CCFstar_tot   = np.array([f/np.percentile(f,95) for f in CCFstar_tot], dtype=np.float64)
-    # CCFstar_quiet = CCFstar_quiet/np.percentile(CCFstar_quiet, 95)
-
+    # Normalization, loop through diff phases   
+    if band != 'photo': 
+        integrated_stellar_spectrum = np.array(
+            [f/np.percentile(f,99) for f in integrated_stellar_spectrum], 
+            dtype=np.float64
+            )
     
-    SPECstar_tot = np.array([f/np.percentile(f,99) for f in SPECstar_tot], dtype=np.float64)
-    # SPECstar_quiet = SPECstar_quiet/np.percentile(SPECstar_quiet, 95)
-
     # Convolution with a Gaussian instrumental profile of a given resolution, 
     # given by the "instrument_reso" variable in the "config.cfg" file
-    if inst_reso != 0:
+    if (instrumental_resolution != 0) and (band != 'photo'):
+        integrated_stellar_spectrum = _apply_instrumental_broadening(
+            instrumental_resolution, Spec_photosphere.rv, integrated_stellar_spectrum)
 
-        # CCFstar_tot, CCFstar_quiet = _inst_broaden(inst_reso, Ccf.rv, CCFstar_tot, CCFstar_quiet)
-        SPECstar_tot = _inst_broaden(inst_reso, Spec_photo.rv, SPECstar_tot)
-    
-    return (visible_phi, SPECstar_tot, quite_surface, quite_surface_2d)
+    return (visible_phi, integrated_stellar_spectrum, quite_2d_surface_flux_sum, 
+            final_2d_surface_flux_sum)
 
 
-def _inst_broaden(inst_reso, rv, star_tot):
-    c = 299792458. # speed of light in m/s
-    inst_resolution         = inst_reso # resolution R = lambda / Delta(lambda)
-    inst_inst_profile_FWHM  = c/inst_resolution/1000. # Resolution = c/Delta_v -> Delta_v = c/R
-    inst_inst_profile_sigma = inst_inst_profile_FWHM/(2*np.sqrt(2*np.log(2)))
-    Gaussian_low_reso        = np.exp(-rv**2/(2*(inst_inst_profile_sigma)**2))
-    
-    # star_quiet_tmp = signal.convolve(
-    #     -star_quiet+1, Gaussian_low_reso, 'same'
-    #     )
-    # star_quiet = 1-star_quiet_tmp\
-    #     *(1-np.min(star_quiet))/np.max(star_quiet_tmp) # normalization
-    
-    # Convolution of the CCF with the Gaussian instrumental profile to reduce 
-    # the resolution of the CCF
-    for i in np.arange(len(star_tot)):
-        # CCFstar_flux_tmp  = signal.convolve(-CCFstar_flux[i]+1,Gaussian_low_reso,'same')
-        # CCFstar_flux[i]   = 1-CCFstar_flux_tmp*(1-np.min(CCFstar_flux[i]))/np.max(CCFstar_flux_tmp)
-        # CCFstar_bconv_tmp = signal.convolve(-CCFstar_bconv[i]+1,Gaussian_low_reso,'same')
-        # CCFstar_bconv[i]  = 1-CCFstar_bconv_tmp*(1-np.min(CCFstar_bconv[i]))/np.max(CCFstar_bconv_tmp)
-        star_tot_tmp   = signal.convolve(-star_tot[i]+1,Gaussian_low_reso,'same')
-        star_tot[i]    = 1-star_tot_tmp*(1-np.min(star_tot[i]))/np.max(star_tot_tmp)
+# def _inst_broaden(inst_reso, rv, star_tot):
+#     c = 299792458. # speed of light in m/s
+#     inst_resolution         = inst_reso # resolution R = lambda / Delta(lambda)
+#     inst_inst_profile_FWHM  = c/inst_resolution/1000. # Resolution = c/Delta_v -> Delta_v = c/R
+#     inst_inst_profile_sigma = inst_inst_profile_FWHM/(2*np.sqrt(2*np.log(2)))
+#     Gaussian_low_reso        = np.exp(-rv**2/(2*(inst_inst_profile_sigma)**2))
+        
+#     # Convolution of the CCF with the Gaussian instrumental profile to reduce 
+#     # the resolution of the CCF
+#     for i in np.arange(len(star_tot)):
+#         star_tot_tmp   = signal.convolve(-star_tot[i]+1,Gaussian_low_reso,'same')
+#         star_tot[i]    = 1-star_tot_tmp*(1-np.min(star_tot[i]))/np.max(star_tot_tmp)
 
-    return star_tot
+#     return star_tot
+
+def _apply_instrumental_broadening(inst_reso, vel_grid, spec_flux):
+    """
+    Apply instrumental broadening to a spectrum
+    by convolving it with a Gaussian kernel defined by the instrumental resolution.
+
+    Parameters
+    ----------
+    inst_reso : float
+        Instrumental resolution (R = lambda / delta_lambda)
+    rv_grid : np.ndarray
+        Radial velocity grid in km/s
+    ccf_array : np.ndarray
+        2D array of CCF values (shape: N x len(rv_grid))
+
+    Returns
+    -------
+    np.ndarray
+        Broadened CCF array (same shape as input)
+    """
+    c_kms = 299792.458  # speed of light in km/s
+
+    fwhm = c_kms / inst_reso
+    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+
+    # Gaussian kernel on the RV grid
+    kernel = np.exp(-vel_grid**2 / (2 * sigma**2))
+
+    # Apply instrumental broadening via convolution
+    broadened_spec = np.empty_like(spec_flux)
+    for i in range(len(spec_flux)):
+        convolved = signal.convolve(1 - spec_flux[i], kernel, mode='same')
+        min_val = np.min(spec_flux[i])
+        max_val = np.max(convolved)
+        broadened_spec[i] = 1 - convolved * (1 - min_val) / max_val
+
+    return broadened_spec
 
 
 # # @njit
@@ -1508,10 +1662,14 @@ def get_ccf_peak(ccf_box, drvs, visible_phi, band):
     
 
 def cal_ccf_rv(
-        star_tot, Star, visible_phi, band, rv_ccf_pars, prf_dir, 
+        star_tot, Star, visible_phi, band, intORflux, model_type, rv_ccf_pars, prf_dir, 
         cpu_use, RVandEWR_dir, Vel_bin_size, plot):
     visible_phi = np.array(visible_phi)
-    vel = Star.star_spec[f'{band}_v']
+    
+    if intORflux == 'flux':
+        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+    elif intORflux == 'intensity':
+        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
     # vel = np.array([stsp.rndup(i, 4) for i in vel])
 
     # --- get ccf template ---
@@ -1544,8 +1702,8 @@ def cal_ccf_rv(
         spec_temp = _temp['f'].to_numpy()
     # Use spot covergae to estimate the teff for spec as ccf template
     else:
-        vel_temp = Star.star_spec_flatten[f'{band}_v']
-        spec_temp = Star.star_spec_flatten[f'{band}_f']
+        vel_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        spec_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_f']
 
         wave_temp = vel_temp * w_center / c_kms + w_center
         # do vsini
@@ -1630,7 +1788,7 @@ def cal_ccf_rv(
         drvs = np.arange(-_edge, _edge, ccf_step)
         _rv_shift = get_ccf_peak(
             np.array(outs), drvs, visible_phi[trial_locs], band) 
-        print('_rv_shift', _rv_shift)
+        logger.debug('_rv_shift', _rv_shift)
 
         ccf_bounds = np.round(_rv_shift, decimals=3)
         # ccf_bound_lw = ccf_bounds[np.nanargmin(ccf_bounds)]
@@ -1638,7 +1796,7 @@ def cal_ccf_rv(
         # ccf_bound = ccf_bound_up - ccf_bound_lw
         ccf_bound = np.nanmax(np.abs(ccf_bounds))
         # print(f'org ccf_bounds: {ccf_bounds}')
-        print(f'org ccf_bound: {ccf_bound}')
+        logger.debug(f'org ccf_bound: {ccf_bound}')
         
         if ccf_bound <= 0.02:
             ccf_rv_shift = np.zeros(len(star_tot), dtype=np.float64)
@@ -1655,18 +1813,10 @@ def cal_ccf_rv(
             ccf_bound = ccf_bound * 4
             ccf_step = ccf_step*100
 
-        print(f'ccf_bound: {ccf_bound}, ccf_step: {ccf_step}')
-        # print(f'lower bound: {ccf_bound_lw}, upper bound: {ccf_bound_up}')
-        # print(f'ccf_bound: {ccf_bound}')
-
+        logger.debug(f'ccf_bound: {ccf_bound}, ccf_step: {ccf_step}')
         clip_obs_edges = (ccf_bound) / np.diff(vel_temp)[0]
         clip_obs_edges = int(clip_obs_edges*5)
-            
-        # print(f'clip_obs_edges: {clip_obs_edges}')
-        
-        # func = partial(
-        #     _cc, drvs_full, star_tot, vel, vel_temp, spec_temp, visible_phi)
-        # ccf_rv_shift_box = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
+
         func = partial(
             mc_ccf, wave, star_tot, wave_temp, spec_temp, 
             -ccf_bound, ccf_bound, ccf_step, clip_obs_edges, visible_phi)
@@ -1679,7 +1829,72 @@ def cal_ccf_rv(
     return ccf_rv_shift
 
 
+def get_photometric(
+        integrated_stellar_spectrum, Star, visible_phi, band, intORflux, model_type):
+    
+    vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
 
+    # --- transfer velocity back to wavelength ---
+    line_center = Star.bands2use[band][0]
+    delta_wave = Star.bands2use[band][1]
+    wvmin, wvmax = (line_center-delta_wave, line_center+delta_wave)
+    wvmin = int(wvmin); wvmax = int(wvmax)
+
+    c_kms = 299792.458
+    w_center = (wvmin + wvmax) / 2
+    wave = vel * w_center / c_kms + w_center
+    wave  = wave * unit['AA']
+
+    lightcurve_mag_box = []
+    lightcurve_flux_box = []
+    for filt in Star.filters:
+        logger.info(f'Calculating photometric light curve for {filt} filter...')
+        mag_box = []
+        flux_box = []
+        for flux in integrated_stellar_spectrum:
+            flux = flux * unit['erg/s/cm**2/AA']
+        
+            f = svo.get_pyphot_filter(filt) 
+            band_flux = f.get_flux(wave, flux).value
+            mag = -2.5 * np.log10(band_flux) #- f.Vega_zero_mag
+            
+            flux_box.append(band_flux)
+            mag_box.append(mag)
+
+        relative_mag = np.array(mag_box) - np.nanmean(mag_box)
+        normalized_flux = np.array(flux_box) / np.nanmean(flux_box)
+        lightcurve_flux_box.append(normalized_flux)
+        lightcurve_mag_box.append(relative_mag)
+
+    return np.array(lightcurve_mag_box), np.array(lightcurve_flux_box)
+
+
+    
+
+def grid_resolution_check(grid):
+    '''The final spectra are approximated by summing all flux in each grid cell,
+    therefore the finner the grid, the better the flux scale is conserved.
+    Assuming the stellar disk has an area of pi, thus with a disk radius of 1. 
+    Each grid cell will then have an area of (2/grid)^2. Here, we want to see
+    how close the final summed area is to pi.
+    '''
+
+    grid_side_length = 2./grid # Grid goes from -1 to 1, therefore 2 in total
+
+    # Scan of each cell on the grid (on the y-z plane)
+    _area = 0.0
+    for iy in range(grid):
+        y = -1 + iy*grid_side_length # y between -1 to 1
+        for iz in range(grid):
+            z = -1. + iz*grid_side_length # z between -1 to 1
+            if (y*y + z*z)<=1: 
+                # If the cell is inside the disk, add its area
+                _area += grid_side_length**2
+    accuracy = _area/np.pi
+    if accuracy < 0.999:
+        logger.warning(f'Grid resolution check WARNING.\n' 
+            f'   Grid {grid}x{grid} has an area/pi={accuracy:1.2%} < 99.9%.\n'
+            '   Consider increasing the number of grid to improve accuracy.')    
 
 
 # def Calculate_activity_signal(

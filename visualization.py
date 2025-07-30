@@ -195,7 +195,7 @@ def map_add_grid(axins, incl, radius, phase):
 
 def spot_view_pel(
     Star, grid, visible_phi, SPECstar_tot, ccf_rv_shift, quite_surface_2d, 
-    outdir, ohfe_ratio, text1, text2, band, j):
+    outdir, ohfe_ratio, text1, text2, band, intORflux, model_type, j):
     
     fig = plt.figure(figsize = (7, 3.5), dpi=300 )
 
@@ -210,7 +210,7 @@ def spot_view_pel(
 
     radius = grid//2
 
-    st_spot_surface = quite_surface_2d[j]/np.max(quite_surface_2d[j])
+    st_spot_surface = quite_surface_2d[j]/np.max(quite_surface_2d)
     st_spot_surface[st_spot_surface == 0.0] = np.nan
     ax1.imshow(
         st_spot_surface, extent=[-radius, radius, -radius, radius], 
@@ -221,11 +221,31 @@ def spot_view_pel(
         0.5, -0.1, f'Phase {visible_phi[j]:.3f}', va='center', ha='center', size='small',
         transform=ax1.transAxes)
     
-    ax2.plot(Star.star_spec[f'{band}_v'], SPECstar_tot[j], '-k', lw=1)
+    c_kms = 299792.458
+    w_center = Star.bands2use[band][0]  # [15631.35, 30, ['rv', 'photo']]
+    if intORflux == 'intensity':
+        _v = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        _wave =( _v * w_center / c_kms) + w_center
+        ax2.plot(_wave, SPECstar_tot[j], '-k', lw=1)
+    elif intORflux == 'flux':
+        _v = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        _wave =( _v * w_center / c_kms) + w_center
+        ax2.plot(_wave, SPECstar_tot[j], '-k', lw=1)
 
     ax2.set_ylim(np.min(SPECstar_tot)-0.05, 1.05)
-    ax2.set_xlim(Star.star_spec[f'{band}_v'][0], Star.star_spec[f'{band}_v'][-1])
-    ax2.set_xlabel(r'Velocity [km s$^{-1}$]',  size='small')
+    ax2.set_xlim(_wave[0], _wave[-1])
+    # if intORflux == 'intensity':
+    #     ax2.set_xlim(
+    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][0], 
+    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][-1]
+    #         )
+    # elif intORflux == 'flux':
+    #     ax2.set_xlim(
+    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][0], 
+    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][-1]
+    #         )
+    # ax2.set_xlabel(r'Velocity [km s$^{-1}$]',  size='small')
+    ax2.set_xlabel(r'Wavelength [$\AA$]',  size='small')
     ax2.set_ylabel(f'Normalized Flux',  size='small')
     
     if 'OH' in band:
@@ -272,7 +292,7 @@ def spot_view_pel(
         0.05, -0.18, text1, family='monospace', size=5, 
         transform=ax1.transAxes, ha='left', va='top')
     ax1.text(
-        0.05, -0.5, text2, family='monospace', size=5, 
+        0.05, -0.38, text2, family='monospace', size=4.5, 
         transform=ax1.transAxes, ha='left', va='top')
 
     out_dir_pre = f'./outputs/{outdir.split("/")[2]}'
@@ -282,8 +302,9 @@ def spot_view_pel(
     plt.close(fig)
 
 def spot_view(
-    Star, grid, visible_phi, SPECstar_tot, ccf_rv_shift, quite_surface_2d, 
-    outdir, cpu_use, ohfe_ratio, text1, text2, band
+    Star, grid_size, visible_phi, integrated_stellar_spectrum, ccf_rv_shift, 
+    final_2d_surface_flux_sum, outdir, cpu_use, ohfe_ratio, text1, text2, 
+    band, intORflux, model_type
     ):
 
     # ------------------------------------------
@@ -293,15 +314,15 @@ def spot_view(
     out_dir_pre_tmp = f"{out_dir_pre}/gif_tmp"
     os.makedirs(out_dir_pre_tmp, exist_ok=True)
     func = partial(
-        spot_view_pel, Star, grid, visible_phi, 
-        SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, ohfe_ratio, 
-        text1, text2, band
+        spot_view_pel, Star, grid_size, visible_phi, 
+        integrated_stellar_spectrum, ccf_rv_shift, final_2d_surface_flux_sum, outdir, ohfe_ratio, 
+        text1, text2, band, intORflux, model_type
         )
     
     # for ii in np.arange(len(visible_phi)):
     #     spot_view_pel(Star, grid, visible_phi, 
     #     SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, ohfe_ratio, 
-    #     text1, text2, band, ii)
+    #     text1, text2, band, intORflux, model_type, ii)
     
     pqdm(np.arange(len(visible_phi)), func, n_jobs=cpu_use)
     
@@ -318,8 +339,6 @@ def spot_view(
         os.chdir(working_dir)
     else:
         print('\n"magick or convert" function not found, skip making .gif\n')
-
-
 
 def plot_cc(drvs, cc, new_rv, phase, band, properties):
     drvs_temp = drvs[cc == np.max(cc)]

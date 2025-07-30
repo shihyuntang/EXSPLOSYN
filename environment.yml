@@ -19,3 +19,4 @@ dependencies:
     - more_itertools
     - pqdm
     - specutils
+    - git+https://github.com/mfouesneau/pyphot
