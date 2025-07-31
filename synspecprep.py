@@ -342,13 +342,13 @@ def prep_phx_intensity_spec(temp, logg, FeH, alpha, out_path):
     return out_name
 
     
-def prep_synmast_intensity_spec(temp, logg, FeH, out_path):
+def prep_synmast_intensity_spec(temp, logg, FeH, out_path, syn_marcs):
 
     # Currently, phx int spectra is only use for photometry.
     # The intensity spectra from PHX has too low resolution in wavelength.
     # Use the low-res (50AA res) int spectra that already dw by ldtk pkg
-    syn_marcs = Path('./data/synmast/LisaGrid_synmast_v1.9_spirou_marcs')
-
+    # syn_marcs = Path('./data/synmast/LisaGrid_synmast_v1.9_spirou_marcs')
+    syn_marcs = Path(syn_marcs)
     syn_files = os.listdir(syn_marcs)
     # clean hidden files and leave file ended with .prf
     syn_files = [f for f in syn_files if f.endswith('.prf') and not f.startswith('.')]

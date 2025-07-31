@@ -17,6 +17,7 @@ dependencies:
   - pip
   - pip:
     - more_itertools
+    - pyphot
     - pqdm
     - specutils
     - git+https://github.com/mfouesneau/pyphot

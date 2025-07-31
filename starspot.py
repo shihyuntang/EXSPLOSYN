@@ -1076,7 +1076,7 @@ def spot_scan_npsi(
     xyz, nrho, psi, npsi, vrot, inclination, limba1, limba2, grid_size, 
     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, 
     n_spec, mu_s, spot_size, longitude, latitude, cpu_use, fluxORint, 
-    active_2d_surface_flag_psi
+    active_2d_surface_flag_psi, silence_pbar
     ):
     """Scans the yz-area where the spot is for different phases (psi) and        
     returns the spot's "non-contribution" to the total flux and its           
@@ -1110,7 +1110,7 @@ def spot_scan_npsi(
     #     active_2d_surface_flag_psi, i
     #     )
 
-    outs = pqdm(np.arange(npsi), func, n_jobs=cpu_use)
+    outs = pqdm(np.arange(npsi), func, n_jobs=cpu_use, disable=silence_pbar)
     
     for i in range(npsi):
         outsbox = outs[i]
