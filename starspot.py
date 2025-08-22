@@ -827,7 +827,7 @@ def spot_scan_flux(
                         intergrated_total_stellar_spectrum[j] += intensity_spec_active_shift[0] * limb_active
                         cell_integrated_active_spectrum[j] += intensity_spec_active_shift[0] * limb_active
                         
-                        intergrated_total_quiet_spectrum[j] += intensity_spec_quiet_shift[0]*limb_quiet * limb_quiet
+                        intergrated_total_quiet_spectrum[j] += intensity_spec_quiet_shift[0] * limb_quiet
                         cell_integrated_quite_spectrum[j] += intensity_spec_quiet_shift[0] * limb_quiet
                
                     for j in range(

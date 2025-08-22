@@ -30,8 +30,8 @@ from soapcore import flatten_model_spec
 # CONFIG_FILE = 'config_LkCa4base_SizeDelT_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_2SPOTS_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_study.cfg'
-# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_9spots.cfg'
-CONFIG_FILE = 'config_teff_study.cfg'
+CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_9spots.cfg'
+# CONFIG_FILE = 'config_teff_study.cfg'
 # SAVE_DIR = f'RVandEWR_SizeDelT_width100'
 
 # SimSpecWinSize = 100 # in AA
@@ -147,7 +147,7 @@ def init_setup_cfg(
     grid_size = int(config.get('main', 'grid'))
     nrho = int(config.get('main', 'nrho'))
     instrument_res = int(config.get('main', 'instrument_reso'))
-    cpu_use = 6 if hostname == 'Swing' else 25
+    cpu_use = 6 if hostname == 'Swing' else 30
 
     # --- Stellar parameters ---
     stellar_radius = float(config.get('star', 'radius')) * SOLAR_RADIUS
@@ -253,7 +253,7 @@ def init_setup_cfg(
         with open(phase_in) as f:
             PSI = np.array([float(l.split()[0]) for l in f.readlines()])
     elif phase_step > 0:
-        PSI = np.arange(0, 1.0, phase_step)
+        PSI = np.arange(-0.75, 0.751, phase_step)
     else:
         logger.warning("Put a positive phase step ('ph_step') or provide a phase file ('ph_in').")
 

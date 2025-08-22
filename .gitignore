@@ -1,6 +1,7 @@
 # Don't track content of these folders
 outputs/
 syn_spec*/
+__pycache__/
 
 # someOtherfoler/
 
