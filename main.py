@@ -13,25 +13,25 @@ from time import time
 warnings.filterwarnings("ignore")
 
 # === Third-party libraries ===
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import numpy as np
 from astropy.table import Table
 
 # === Custom modules ===
-import soapcore
-import starspot as stsp
+import spotact_core, spotact_utils
+import spotact_spot as stsp
 import visualization as vis
-from pyphot import astropy as pyphot
+# from pyphot import astropy as pyphot
 from pyphot import svo
-from soapcore import flatten_model_spec
+from spotact_core import flatten_model_spec
+
 
 # CONFIG_FILE = 'config_LkCa4base_SizeDelT_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_2SPOTS_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_study.cfg'
-# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_9spots.cfg'
-CONFIG_FILE = 'config_teff_study.cfg'
+CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_9spots.cfg'
+# CONFIG_FILE = 'config_teff_study.cfg'
 # SAVE_DIR = f'RVandEWR_SizeDelT_width100'
 
 # SimSpecWinSize = 100 # in AA
@@ -68,8 +68,7 @@ def setup_logging(debug: bool = False) -> logging.Logger:
 def init_setup_cfg(
     logger: logging.Logger,
     config_file: str,
-    post_fix: str = None,
-    fit_temp_range=None
+    post_fix: str = None
 ):
     """
     Initialize and parse configuration, set up directories, and prepare simulation parameters.
@@ -78,7 +77,6 @@ def init_setup_cfg(
         logger (logging.Logger): Logger for status and warnings.
         config_file (str): Path to the configuration file.
         post_fix (str, optional): Suffix for output directory naming.
-        fit_temp_range (optional): Temperature range for fitting.
 
     Returns:
         tuple: (STAR, bands, SAVE_DIR, nrho, grid_size, instrument_res, cpu_use, plot_flag,
@@ -147,7 +145,7 @@ def init_setup_cfg(
     grid_size = int(config.get('main', 'grid'))
     nrho = int(config.get('main', 'nrho'))
     instrument_res = int(config.get('main', 'instrument_reso'))
-    cpu_use = 6 if hostname == 'Swing' else 25
+    cpu_use = 6 if hostname == 'Swing' else 30
 
     # --- Stellar parameters ---
     stellar_radius = float(config.get('star', 'radius')) * SOLAR_RADIUS
@@ -215,7 +213,7 @@ def init_setup_cfg(
     active_region_box = [active_region_longs, active_region_lats, active_region_sizes, active_region_Temp]
 
     # --- Star object ---
-    STAR = soapcore.Star(
+    STAR = spotact_core.Star(
         prot=rotation_period,
         vrot=(2 * np.pi * stellar_radius) / (rotation_period * 86400),
         incl=incl,
@@ -253,7 +251,8 @@ def init_setup_cfg(
         with open(phase_in) as f:
             PSI = np.array([float(l.split()[0]) for l in f.readlines()])
     elif phase_step > 0:
-        PSI = np.arange(0, 1.0, phase_step)
+        # PSI = np.arange(0, 1.0, phase_step)
+        PSI = np.arange(-0.75, 0.751, phase_step)
     else:
         logger.warning("Put a positive phase step ('ph_step') or provide a phase file ('ph_in').")
 
@@ -264,8 +263,7 @@ def init_setup_cfg(
     os.makedirs(STAR.phx_path / 'SpecFlux', exist_ok=True)
 
     # --- Grid check and flatten synthetic spectra ---
-    soapcore.grid_resolution_check(grid_size)
-    # STAR.find_fluxspec_flatten(SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path, fit_temp_range)
+    spotact_utils.grid_resolution_check(grid_size)
 
     STAR.ccf_template_photosphereORnot = float(config.get('ccf', 'Use_photosphere_teff'))
     if STAR.ccf_template_photosphereORnot == 1:
@@ -318,7 +316,7 @@ def setup_activate_spectra(bands, STAR, plot_flag, syn_model_path):
         int_or_flux = band_params[3]
         model_type = band_params[4]
         spec_dict = {
-            int(temp): soapcore.Spec(
+            int(temp): spotact_core.Spec(
                 star=STAR,
                 band=band_name,
                 temperature=temp,
@@ -506,7 +504,7 @@ def main_model(
         SPEC = SPEC_box[i]
 
         # --- Main simulation ---
-        (visible_phi, integrated_stellar_spectrum, _, final_2d_surface_flux_sum) = soapcore.calculate_activity_signal_spec(
+        (visible_phi, integrated_stellar_spectrum, _, final_2d_surface_flux_sum) = spotact_core.calculate_activity_signal_spec(
             nrho, grid_size, STAR, PSI, SPEC, active_regions_number, active_region_box,
             instrument_res, cpu_use, SAVE_DIR, band, save_spec_flag, intORflux.lower(), silence_pbar
         )
@@ -525,7 +523,7 @@ def main_model(
 
         # --- Equivalent Width Ratio (EWR) or placeholder ---
         if band == 'ewr_FeOH':
-            ohfe_ratio = soapcore.get_equivalent_width(
+            ohfe_ratio = spotact_utils.get_equivalent_width(
                 STAR, integrated_stellar_spectrum, visible_phi, band, intORflux, model_type
             )
         else:
@@ -534,7 +532,7 @@ def main_model(
         # --- Calculate CCF RV ---
         if band != 'photo':
             logger.info('\nCalculating the RV with CCF...\n')
-            ccf_rv_shift = soapcore.cal_ccf_rv(
+            ccf_rv_shift = spotact_core.cal_ccf_rv(
                 integrated_stellar_spectrum, STAR, visible_phi, band, intORflux, model_type,
                 rv_ccf_pars, syn_model_path['synmast'], cpu_use, SAVE_DIR, SIMSPEC_VEL_BIN_SIZE,
                 plot_flag, silence_pbar, save_spec_flag
@@ -544,7 +542,7 @@ def main_model(
 
         # --- Calculate relative photometric variation ---
         if band == 'photo':
-            lightcurves_mag, lightcurves_flux = soapcore.get_photometric(
+            lightcurves_mag, lightcurves_flux = spotact_core.get_photometric(
                 integrated_stellar_spectrum, STAR, visible_phi, band, intORflux, model_type
             )
         else:

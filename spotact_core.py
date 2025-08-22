@@ -3,31 +3,29 @@ logger = logging.getLogger()
 from functools import partial
 
 import numpy as np
-from numpy import cos, sin
-from numba import njit
-from scipy import signal,interpolate
-from scipy.signal import find_peaks
-from astropy.table import Table
-import astropy.units as u
+# from numpy import cos, sin
+# from scipy import signal,interpolate
+# from scipy.signal import find_peaks
+# from astropy.table import Table
+# import astropy.units as u
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
-from specutils import Spectrum1D
-from specutils.analysis import equivalent_width
-
-import starspot as stsp
-import visualization as vis
-import synspecprep as ssp
-from basic_spec import rotint
-from macbro_dynamic import macbro_dyn
 from pqdm.processes import pqdm
 
-from ldtk import LDPSetCreator, BoxcarFilter, TabulatedFilter
-from pyphot import astropy as pyphot
+
+from ldtk import LDPSetCreator, BoxcarFilter
 from pyphot import svo, unit
 
-
-from rebin_jv import rebin_jv
+from basic_spec import rotint
+from macbro_dynamic import macbro_dyn
+import spotact_spot as stsp
+# import visualization as vis
+import synspecprep as ssp
+# from rebin_jv import rebin_jv
+# from spotact_utils import _apply_instrumental_broadening, a0cont, save_phase_pngs, coverage_and_teff
+import spotact_utils as utils
+from spotact_rv import *
 
 
 class Star:
@@ -451,145 +449,6 @@ class Spec:
         # (n_v-1) intervals, each of size self.step
         self.v_interval = self.step * (self.n_v - 1) / 2.
 
-def detect_peaks(
-        x, mph=None, mpd=1, threshold=0, edge='rising',
-        kpsh=False, valley=False, show=False, ax=None):
-    """
-    Detect peaks in a 1D array.
-
-    Args:
-        x (array): 1D data array.
-        mph (float, optional): Minimum peak height.
-        mpd (int, optional): Minimum peak distance.
-        threshold (float, optional): Minimum threshold between peak and neighbors.
-        edge (str, optional): 'rising', 'falling', 'both', or None.
-        kpsh (bool, optional): Keep peaks with same height even if closer than mpd.
-        valley (bool, optional): If True, detect valleys (local minima) instead of peaks.
-        show (bool, optional): If True, plot the result.
-        ax (matplotlib axis, optional): Axis to plot on.
-
-    Returns:
-        ind (np.ndarray): Indices of detected peaks.
-    """
-    x = np.atleast_1d(x).astype('float64')
-    if x.size < 3:
-        return np.array([], dtype=int)
-    if valley:
-        x = -x
-    # Find indices of all peaks
-    dx = x[1:] - x[:-1]
-    # Handle NaN's
-    indnan = np.where(np.isnan(x))[0]
-    if indnan.size:
-        x[indnan] = np.inf
-        dx[np.where(np.isnan(dx))[0]] = np.inf
-    ine, ire, ife = np.array([[], [], []], dtype=int)
-    if not edge:
-        ine = np.where((np.hstack((dx, 0)) < 0) & (np.hstack((0, dx)) > 0))[0]
-    else:
-        if edge.lower() in ['rising', 'both']:
-            ire = np.where((np.hstack((dx, 0)) <= 0) & (np.hstack((0, dx)) > 0))[0]
-        if edge.lower() in ['falling', 'both']:
-            ife = np.where((np.hstack((dx, 0)) < 0) & (np.hstack((0, dx)) >= 0))[0]
-    ind = np.unique(np.hstack((ine, ire, ife)))
-    # Remove peaks near NaNs
-    if ind.size and indnan.size:
-        ind = ind[np.in1d(ind, np.unique(np.hstack((indnan, indnan-1, indnan+1))), invert=True)]
-    # First and last values cannot be peaks
-    if ind.size and ind[0] == 0:
-        ind = ind[1:]
-    if ind.size and ind[-1] == x.size-1:
-        ind = ind[:-1]
-    # Remove peaks below minimum peak height
-    if ind.size and mph is not None:
-        ind = ind[x[ind] >= mph]
-    # Remove peaks with neighbors too close in height
-    if ind.size and threshold > 0:
-        dx = np.min(np.vstack([x[ind]-x[ind-1], x[ind]-x[ind+1]]), axis=0)
-        ind = np.delete(ind, np.where(dx < threshold)[0])
-    # Remove small peaks closer than minimum peak distance
-    if ind.size and mpd > 1:
-        ind = ind[np.argsort(x[ind])][::-1]  # sort by peak height
-        idel = np.zeros(ind.size, dtype=bool)
-        for i in range(ind.size):
-            if not idel[i]:
-                # Keep peaks with the same height if kpsh is True
-                idel = idel | (ind >= ind[i] - mpd) & (ind <= ind[i] + mpd) \
-                    & (x[ind[i]] > x[ind] if kpsh else True)
-                idel[i] = 0  # Keep current peak
-        # Remove the small peaks and sort back the indices by their occurrence
-        ind = np.sort(ind[~idel])
-
-    if show:
-        if indnan.size:
-            x[indnan] = np.nan
-        if valley:
-            x = -x
-        # _plot(x, mph, mpd, threshold, edge, valley, ax, ind)
-    return ind
-
-def a0cont(a0vcut, plot=False, poly_order=1, spline_k=1, mpd=100):
-    """
-    Performs first-pass fit to blaze shape of telluric standard spectrum.
-
-    Args:
-        a0vcut (array): Flux of telluric standard spectrum.
-        plot (bool): If True, plot the result.
-        poly_order (int): Polynomial order for initial fit.
-        spline_k (int): Spline degree.
-        mpd (int): Minimum peak distance for peak detection.
-
-    Returns:
-        continuum (np.ndarray): Best fit blaze model.
-        peaks (np.ndarray): Indices of detected peaks.
-    """
-    x = np.arange(len(a0vcut))
-
-    # Detect peaks that are at least separated by minimum peak distance
-    peaks = detect_peaks(a0vcut, mpd=mpd)
-    xtimes = 1
-
-    for _ in range(xtimes):
-        mask = np.ones(len(peaks), dtype=bool)
-
-        # Fit a polynomial to the detected peaks
-        f = np.polyfit(x[peaks], a0vcut[peaks], poly_order)
-        q = np.poly1d(f)
-        residual = a0vcut[peaks] - q(x[peaks])
-        MAD = np.median(np.abs(residual - np.median(residual)))
-
-        # Mask out outliers and low points
-        mask[(a0vcut[peaks]/np.nanmedian(a0vcut) < .1)] = False
-        mask[(a0vcut[peaks] < q(x[peaks])-2*MAD)] = False
-        mask[(a0vcut[peaks] > q(x[peaks])+6*MAD)] = False
-        peaks = peaks[mask]
-
-    c = 0
-    for smoothing in np.arange(1e6, 1e8, 1e6):
-        # Fit a spline to the filtered peaks
-        f = interpolate.UnivariateSpline(
-            x[peaks], a0vcut[peaks], k=spline_k, s=smoothing)
-        continuum = f(x)
-        peaks2 = detect_peaks(continuum)
-        if len(peaks2) == 1:
-            c += 1
-        if c == 2:
-            break
-
-    # If not converged, try larger smoothing
-    if smoothing == 99000000.0:
-        for smoothing in np.arange(1e8, 1e10, 1e8):
-            f = interpolate.UnivariateSpline(
-                x[peaks], a0vcut[peaks], k=spline_k, s=smoothing)
-            continuum = f(x)
-            peaks2 = detect_peaks(continuum)
-            if len(peaks2) == 1:
-                c += 1
-            if c == 2:
-                break
-
-    return continuum, peaks
-
 def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir, plot):
     """
     Flatten a model spectrum by dividing by its continuum, estimated via spline fit to peaks.
@@ -605,7 +464,7 @@ def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir, plot):
         np.ndarray: Flattened flux array.
     """
     _mpd = int(len(vel) * 0.04)
-    cont, peaks = a0cont(flux, plot=False, poly_order=2, spline_k=2, mpd=_mpd)
+    cont, peaks = utils.a0cont(flux, plot=False, poly_order=2, spline_k=2, mpd=_mpd)
     fluxp_flat = flux / cont
     fluxp_flat = fluxp_flat / np.nanpercentile(fluxp_flat, 99)
 
@@ -656,7 +515,7 @@ def flatten_model_spec(
     for i in range(len(visible_phi)):
         flux = flux_phi[i]
         _mpd = int(len(vel) * 0.04)
-        cont, peaks = a0cont(flux, plot=False, poly_order=2, spline_k=2, mpd=_mpd)
+        cont, peaks = utils.a0cont(flux, plot=False, poly_order=2, spline_k=2, mpd=_mpd)
         fluxp_flat = flux / cont
         fluxp_flat = fluxp_flat / np.nanpercentile(fluxp_flat, 99)
 
@@ -679,119 +538,6 @@ def flatten_model_spec(
             plt.close(fig)
         nomral_spec_box.append(fluxp_flat)
     return np.array(nomral_spec_box)
-
-def get_equivalent_width(
-        Star, flux_phi, visible_phi, band, intORflux, model_type):
-    """
-    Calculate the equivalent width ratio (OH/Fe) for a given band and all phases.
-
-    Args:
-        Star (Star): Star object.
-        flux_phi (array): 2D array of flux for each phase.
-        visible_phi (array): Array of phases.
-        band (str): Band name.
-        intORflux (str): 'flux' or 'intensity'.
-        model_type (str): Model type.
-
-    Returns:
-        np.ndarray: Array of OH/Fe equivalent width ratios for all phases.
-    """
-    ew_fe1 = []
-    ew_fe2 = []
-    ew_oh0 = []
-
-    ew_cal_regions = [
-        [1.56230, 1.56290], 
-        [1.56290, 1.56335], 
-        [1.56335, 1.56395]
-    ]
-
-    band_center_wv = Star.bands2use[band][0]
-
-    if intORflux == 'flux':
-        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-    elif intORflux == 'intensity':
-        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-
-    c_kms = 299792.458
-    del_wv = vel * band_center_wv / c_kms
-    wave = (band_center_wv + del_wv) / 1e4  # Convert to microns
-    nor_region = np.where((wave > 1.5610) & (wave < 1.5650))[0]
-    
-    for i in range(len(visible_phi)):
-        flux = flux_phi[i]
-        nor_level = np.percentile(flux[nor_region], 95)
-        flux = flux / nor_level
-        # --- EW ---
-        for r_udx, rr in enumerate(ew_cal_regions):
-            use_r = (wave >= rr[0]) & (wave <= rr[1])
-            spec = Spectrum1D(
-                spectral_axis=wave[use_r] * u.um, 
-                flux=flux[use_r] * u.Unit('erg cm-2 s-1 AA-1')
-            )
-            ew = equivalent_width(spec)
-            if r_udx == 0:
-                ew_fe1.append(ew.value)
-            elif r_udx == 1:
-                ew_oh0.append(ew.value)
-            elif r_udx == 2:
-                ew_fe2.append(ew.value)
-
-    oh_line = np.array(ew_oh0)
-    fe_line = (np.array(ew_fe1) + np.array(ew_fe2)) / 2
-    line_ratio = oh_line / fe_line
-
-    return line_ratio
-
-def get_line_depth(
-        Star, CCFstar_tot, visible_phi, band, intORflux, model_type):
-    """
-    Measure the depth and velocity location of Fe and OH lines in the CCF for all phases.
-
-    Args:
-        Star (Star): Star object.
-        CCFstar_tot (array): 2D array of CCFs for each phase.
-        visible_phi (array): Array of phases.
-        band (str): Band name.
-        intORflux (str): 'flux' or 'intensity'.
-        model_type (str): Model type.
-
-    Returns:
-        tuple: (depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0)
-            Each is a list of depths or velocities for Fe1, Fe2, and OH0 lines.
-    """
-    depth_d_fe1 = []
-    depth_d_fe2 = []
-    depth_d_oh0 = []
-    depth_l_fe1 = []
-    depth_l_fe2 = []
-    depth_l_oh0 = []
-
-    if intORflux == 'flux':
-        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-    elif intORflux == 'intensity':
-        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-
-    for i in range(len(visible_phi)):
-        CCFstar_tot_flip = 1 + -1 * CCFstar_tot[i]
-
-        fe_1 = (vel > -150) & (vel < -50)
-        oh_0 = (vel > -50) & (vel < 50)
-        fe_2 = (vel > 50) & (vel < 250)
-
-        fe_1_loc = np.argmax(CCFstar_tot_flip[fe_1])
-        oh_0_loc = np.argmax(CCFstar_tot_flip[oh_0])
-        fe_2_loc = np.argmax(CCFstar_tot_flip[fe_2])
-
-        depth_d_fe1.append(CCFstar_tot_flip[fe_1][fe_1_loc])
-        depth_d_fe2.append(CCFstar_tot_flip[fe_2][fe_2_loc])
-        depth_d_oh0.append(CCFstar_tot_flip[oh_0][oh_0_loc])
-        
-        depth_l_fe1.append(vel[fe_1][fe_1_loc])
-        depth_l_fe2.append(vel[fe_2][fe_2_loc])
-        depth_l_oh0.append(vel[oh_0][oh_0_loc])
-
-    return depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0
 
 
 def calculate_activity_signal_spec(
@@ -856,79 +602,130 @@ def calculate_activity_signal_spec(
     (active_region_longs, active_region_lats, 
         active_region_sizes, active_region_Temp) = active_region_box
 
-    # --- Step 2: Loop over all active regions and update the spectrum/flux ---
+    # -------------------------------------------------------------------------
+    # --- Step 2-1: Loop over all active regions and phases to make spot map ---
     logger.info('\nCalculate Activate Regions...')
 
-    # This flag array tracks which grid cells are covered by active regions at each phase
-    active_2d_surface_flag_psi = np.zeros(
-        (len(psi), grid_size, grid_size), dtype=int)   
-            
-    for rr in range(active_regions_number):
-        logger.info(f'\nCalculate Active Region {rr+1}')
+    # Make a cube to store each grid's temperautre at different phases
+    # For example, 200x200x45 for 200x200 grid and 45 phases
+    active_2d_surface_temperature_psi = np.zeros(
+        (len(psi), grid_size, grid_size), dtype=np.int16)   
+    
+    # assign the temperature of the quiet photosphere to all phases
+    # check grid within radius of 1
+    y = np.linspace(-1.0, 1.0, grid_size, dtype=np.float32)
+    z = np.linspace(-1.0, 1.0, grid_size, dtype=np.float32)
+    Y, Z = np.meshgrid(y, z, indexing="ij")   # Y.shape = Z.shape = (grid_size, grid_size)
 
-        # Calculate the position of the spot/plage initialized at the disc center
+    # 2) Inside-disk mask (unit circle): y^2 + z^2 <= 1
+    disk_mask = (Y * Y + Z * Z) <= 1.0        # shape (grid_size, grid_size), bool
+
+    # 3) Prepare a single-layer template with photosphere temp on-disk, sentinel off-disk
+    #    Cast to int16; clip just in case
+    single_layer = np.where(
+        disk_mask, int(star.Temp), 0).astype(np.int16)  # (grid_size, grid_size)
+
+    # 4) Broadcast to all phase-layers
+    active_2d_surface_temperature_psi[...] = single_layer[None, ...]
+    
+    # >>>> Could use numba <<<<<
+    for rr in range(active_regions_number):
+        # logger.info(f'\nCalculate Active Region {rr+1}')
+
+        # Calculate the circumference position of the spot/plage 
         xyz = stsp.spot_location_init(
             active_region_sizes[rr], active_region_longs[rr], active_region_lats[rr], 
             star.incl, nrho
         )
         
-        active_temp = int(active_region_Temp[rr])
-        active_intensity = Spec[active_temp].intensity
+        # spot changes location at difference phases, loop over all phases
+        for ipsi in np.arange(len(psi)):
+            xyz_psi = stsp.get_spot_phase_coord(xyz, star.incl, nrho, psi[ipsi])
+            
+            # narrow down the area of the spot/plage to speed up calculations
+            _, idx_miny, idx_minz, idx_maxy, idx_maxz = stsp.spot_area(
+                xyz_psi, nrho, grid_size)
+            
+            active_2d_surface_temperature = stsp.spot_scan(
+                star.incl, grid_size, active_region_sizes[rr], active_region_longs[rr], 
+                active_region_lats[rr], psi[ipsi],
+                idx_miny, idx_minz, idx_maxy, idx_maxz, int(active_region_Temp[rr]),
+                active_2d_surface_temperature_psi[ipsi], int(star.Temp))
+            
+            active_2d_surface_temperature_psi[ipsi] = active_2d_surface_temperature
+            
 
-        # For each phase, scan the grid and compute the "non-contribution" of the active region
-        # (i.e., the flux/intensity that is blocked or replaced by the spot/plage)
-        # This is subtracted from the quiet spectrum and replaced with the active region's spectrum.
-        if fluxORint == 'flux':
-            mu_s = None
-            limba1 = np.array([
-                limba1_q, star.LD_coeff[f"{band}_{active_temp}"][0]])
-            limba2 = np.array([
-                limba2_q, star.LD_coeff[f"{band}_{active_temp}"][1]])
-        elif fluxORint == 'intensity':
-            mu_s = Spec[active_temp].mu
-            limba1 = None
-            limba2 = None
+    # --- plot for checking the active region temperature map ---
+    utils.save_phase_pngs(
+        active_2d_surface_temperature_psi,
+        y, z,
+        outdir="phase_maps",
+        sentinel_offdisk=0,
+        cmap="inferno",
+        add_colorbar=True,
+        phase_values=psi,  # optional; remove if you don’t want it in titles
+        )
 
-        (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
-         visible_phi, active_2d_surface_flux_sum, quiet_2d_surface_flux_sum,
-         active_2d_surface_flag_psi) =\
-                stsp.spot_scan_npsi(
-                    xyz, nrho, psi, len(psi), star.vrot, star.incl, 
-                    limba1, limba2, grid_size, 
-                    Spec_photosphere.rv, Spec_photosphere.intensity, active_intensity, 
-                    Spec_photosphere.v_interval, Spec_photosphere.n_v, Spec_photosphere.n, mu_s,
-                    active_region_sizes[rr], active_region_longs[rr], 
-                    active_region_lats[rr], cpu_use, fluxORint, active_2d_surface_flag_psi,
-                    silence_pbar
-                )
+    Teff = utils.teff_obs_rotavg(active_2d_surface_temperature_psi, y, z, sentinel_offdisk=0, scale=1.0)
+    logger.info(f'\nAverage Teff of the active regions: {Teff:.1f} K')
 
-        # --- Step 2a: Optionally save the intermediate spectra for this region ---
-        if save_spec_flag:
-            istart = (Spec_photosphere.n_v-len(Spec_photosphere.rv))//2         
-            iend   = istart+len(Spec_photosphere.rv)
-            spec_qs = integrated_stellar_spectrum[istart:iend]
+    fspot, fspot_phi = utils.fspot_global_from_cube(
+        active_2d_surface_temperature_psi, y, z, star.Temp, sentinel_offdisk=0, scale=1.0, mu_min=0.05)
+    logger.info(f'\nTotal spot coverage: {fspot:.3%} of the visible hemisphere')
+     
+    # -------------------------------------------------------------------------
+    # --- Step 2-2: run the simulation based on the temperature map ---
+    
+    if fluxORint == 'flux':
+        star_LD_coeff = utils.LD_dict2array(star.LD_coeff, band) # returns temps_tab, coeffs_tab
+        Spec_dict = utils.Spec_intensity_dict2array(Spec, fluxORint='flux') # returns temps_tab, spectrum_tab, mu_s_tab
+    elif fluxORint == 'intensity':   
+        star_LD_coeff = (None, None)
+        Spec_dict = utils.Spec_intensity_dict2array(Spec, fluxORint='intensity')
 
-            spec_qs_duplicated = np.array(intergrated_total_quiet_spectrum)
-            spec_qs_duplicated = spec_qs_duplicated[:,istart:iend]
+    # For each phase, scan the grid and compute the "non-contribution" of the active region
+    # (i.e., the flux/intensity that is blocked or replaced by the spot/plage)
+    # This is subtracted from the quiet spectrum and replaced with the active region's spectrum.
 
-            spec_ss = np.array(intergrated_total_stellar_spectrum)
-            spec_ss = spec_ss[:,istart:iend]
+    (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
+        visible_phi, active_2d_surface_flux_sum, quiet_2d_surface_flux_sum) =\
+            stsp.spot_scan_npsi(
+                xyz, nrho, psi, len(psi), star.vrot, star.incl, star.Temp,
+                grid_size, Spec_dict, star_LD_coeff,
+                Spec_photosphere.rv, Spec_photosphere.intensity, 
+                Spec_photosphere.v_interval, Spec_photosphere.n_v, Spec_photosphere.n,
+                active_region_sizes[rr], active_region_longs[rr], 
+                active_region_lats[rr], cpu_use, fluxORint, active_2d_surface_temperature_psi,
+                silence_pbar
+            )
 
-            # Save to .npy files for later analysis
-            np.save(f'./outputs/{save_dir}/spec/{band}_qs_{rr+1}.npy', spec_qs)
-            np.save(f'./outputs/{save_dir}/spec/{band}_ss_{rr+1}.npy', spec_ss)
-            np.save(f'./outputs/{save_dir}/spec/{band}_qsdup_{rr+1}.npy', spec_qs_duplicated)
-            vel = np.array(Spec_photosphere.rv)
-            np.save(f'./outputs/{save_dir}/spec/{band}_vel_{rr+1}.npy', vel)
-        
-        # --- Step 2b: Update the integrated spectrum and surface flux ---
-        # Subtract the quiet region's contribution and add the active region's contribution
-        integrated_stellar_spectrum  = integrated_stellar_spectrum \
-            - np.array(intergrated_total_quiet_spectrum) \
-            + np.array(intergrated_total_stellar_spectrum)  
-        final_2d_surface_flux_sum = final_2d_surface_flux_sum \
-            - np.array(quiet_2d_surface_flux_sum) \
-            + np.array(active_2d_surface_flux_sum)
+    # --- Step 2a: Optionally save the intermediate spectra for this region ---
+    if save_spec_flag:
+        istart = (Spec_photosphere.n_v-len(Spec_photosphere.rv))//2         
+        iend   = istart+len(Spec_photosphere.rv)
+        spec_qs = integrated_stellar_spectrum[istart:iend]
+
+        spec_qs_duplicated = np.array(intergrated_total_quiet_spectrum)
+        spec_qs_duplicated = spec_qs_duplicated[:,istart:iend]
+
+        spec_ss = np.array(intergrated_total_stellar_spectrum)
+        spec_ss = spec_ss[:,istart:iend]
+
+        # Save to .npy files for later analysis
+        np.save(f'./outputs/{save_dir}/spec/{band}_qs_{rr+1}.npy', spec_qs)
+        np.save(f'./outputs/{save_dir}/spec/{band}_ss_{rr+1}.npy', spec_ss)
+        np.save(f'./outputs/{save_dir}/spec/{band}_qsdup_{rr+1}.npy', spec_qs_duplicated)
+        vel = np.array(Spec_photosphere.rv)
+        np.save(f'./outputs/{save_dir}/spec/{band}_vel_{rr+1}.npy', vel)
+    
+    # --- Step 2b: Update the integrated spectrum and surface flux ---
+    # Subtract the quiet region's contribution and add the active region's contribution
+    integrated_stellar_spectrum  = integrated_stellar_spectrum \
+        - np.array(intergrated_total_quiet_spectrum) \
+        + np.array(intergrated_total_stellar_spectrum)  
+    final_2d_surface_flux_sum = final_2d_surface_flux_sum \
+        - np.array(quiet_2d_surface_flux_sum) \
+        + np.array(active_2d_surface_flux_sum)
 
     # --- Step 3: Truncate the extrapolated spectrum to match the original velocity grid ---
     # The CCF is extrapolated to cover rotation broadening; here we cut it back to the original range.
@@ -946,313 +743,69 @@ def calculate_activity_signal_spec(
     # --- Step 5: Convolve with the instrumental profile if needed ---
     # This simulates the effect of finite spectrograph resolution.
     if (instrumental_resolution != 0) and (band != 'photo'):
-        integrated_stellar_spectrum = _apply_instrumental_broadening(
+        integrated_stellar_spectrum = utils._apply_instrumental_broadening(
             instrumental_resolution, Spec_photosphere.rv, integrated_stellar_spectrum)
 
     return (visible_phi, integrated_stellar_spectrum, quite_2d_surface_flux_sum, 
             final_2d_surface_flux_sum)
 
 
-def _apply_instrumental_broadening(inst_reso, vel_grid, spec_flux):
+def get_photometric(
+        integrated_stellar_spectrum, Star, visible_phi, band, intORflux, model_type):
     """
-    Apply instrumental broadening to a spectrum by convolving it with a Gaussian kernel.
+    Calculate photometric light curves (magnitude and normalized flux) for each filter.
 
     Args:
-        inst_reso (float): Instrumental resolution (R = lambda / delta_lambda).
-        vel_grid (np.ndarray): Radial velocity grid in km/s.
-        spec_flux (np.ndarray): 2D array of spectra (N_phases x N_vel).
-
-    Returns:
-        np.ndarray: Broadened spectra (same shape as input).
-    """
-    c_kms = 299792.458  # speed of light in km/s
-
-    fwhm = c_kms / inst_reso
-    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
-
-    # Gaussian kernel on the RV grid
-    kernel = np.exp(-vel_grid**2 / (2 * sigma**2))
-
-    broadened_spec = np.empty_like(spec_flux)
-    for i in range(len(spec_flux)):
-        # Convolve (1 - flux) to preserve line depth, then invert back
-        convolved = signal.convolve(1 - spec_flux[i], kernel, mode='same')
-        min_val = np.min(spec_flux[i])
-        max_val = np.max(convolved)
-        broadened_spec[i] = 1 - convolved * (1 - min_val) / max_val
-
-    return broadened_spec
-
-
-@njit
-def _ccf(drvs, mode, w, f, tw, tf, c, weights, meanWl):
-    """
-    Fast cross-correlation calculation using Numba.
-
-    Args:
-        drvs (np.ndarray): Array of RV shifts to compute [km/s].
-        mode (str): 'lin' or 'doppler' for shift method.
-        w (np.ndarray): Wavelength grid of observation.
-        f (np.ndarray): Flux of observation.
-        tw (np.ndarray): Wavelength grid of template.
-        tf (np.ndarray): Flux of template.
-        c (float): Speed of light [km/s].
-        weights (np.ndarray): Weights for each point.
-        meanWl (float): Mean wavelength (for 'lin' mode).
-
-    Returns:
-        np.ndarray: Cross-correlation function for each RV shift.
-    """
-    cc = np.zeros(len(drvs), dtype=float)
-    df = f - np.nansum(f)/len(f)
-
-    i = 0
-    for rv in drvs:
-        if mode == "lin":
-            # Linear shift
-            f_shifted = np.interp(w, tw + meanWl * (rv / c), tf) * weights
-            dfs = f_shifted - np.nansum(f_shifted)/len(f_shifted)
-        elif mode == "doppler":
-            # Doppler shift
-            f_shifted = np.interp(w, tw * (1.0 + rv / c), tf) * weights
-            dfs = f_shifted - np.nansum(f_shifted)/len(f_shifted)
-        i += 1
-        cc[i] = np.nansum(df * dfs * weights)
-    return cc
-
-def ccf_rv(
-    w,
-    f,
-    tw,
-    tf,
-    rvmin,
-    rvmax,
-    drv,
-    mode="doppler",
-    skipedge=0,
-    edgeTapering=None,
-    weights=None,
-    meanwvl=None,
-    ):
-    """
-    Cross-correlate a spectrum with a template.
-    modified from 
-    https://github.com/sczesla/PyAstronomy/blob/master/src/pyasl/asl/crosscorr.py#L138
-
-    The algorithm implemented here works as follows: For
-    each RV shift to be considered, the wavelength axis
-    of the template is shifted, either linearly or using
-    a proper Doppler shift depending on the `mode`. The
-    shifted template is then linearly interpolated at
-    the wavelength points of the observation
-    (spectrum) to calculate the cross-correlation function.
-
-    (see, e.g., `Lookwood et al. 2014, ApJ 783 <https://ui.adsabs.harvard.edu/abs/2014ApJ...783L..29L/abstract>`_).
-    
-    Parameters
-    ----------
-    w : array
-        The wavelength axis of the observation.
-    f : array
-        The flux axis of the observation.
-    tw : array
-        The wavelength axis of the template.
-    tf : array
-        The flux axis of the template.
-    rvmin : float
-        Minimum radial velocity for which to calculate
-        the cross-correlation function [km/s].
-    rvmax : float
-        Maximum radial velocity for which to calculate
-        the cross-correlation function [km/s].
-    drv : float
-        The width of the radial-velocity steps to be applied
-        in the calculation of the cross-correlation
-        function [km/s].
-    mode : string, {lin, doppler}, optional
-        The mode determines how the wavelength axis will be
-        modified to represent a RV shift. If "lin" is specified,
-        a mean wavelength shift will be calculated based on the
-        mean wavelength of the observation. The wavelength axis
-        will then be shifted by that amount. If "doppler" is
-        specified (the default), the wavelength axis will
-        properly be Doppler-shifted.
-    skipedge : int, optional
-        If larger zero, the specified number of bins will be
-        skipped from the begin and end of the observation. This
-        may be useful if the template does not provide sufficient
-        coverage of the observation.
-    edgeTapering : float or tuple of two floats
-        If not None, the method will "taper off" the edges of the
-        observed spectrum by multiplying with a sine function. If a float number
-        is specified, this will define the width (in wavelength units)
-        to be used for tapering on both sides. If different tapering
-        widths shall be used, a tuple with two (positive) numbers
-        must be given, specifying the width to be used on the low- and
-        high wavelength end. If a nonzero 'skipedge' is given, it
-        will be applied first. Edge tapering can help to avoid
-        edge effects (see, e.g., Gullberg and Lindegren 2002, A&A 390).
-    weights : array of floats, optional
-        If given, it specifies weights for individual data points (given by f).
-        A possible choice for weights is 1/sigma_i**2 where sigma_i is the
-        uncertainty of the i-th data point.
-    meanwvl : float, optional
-        If given, this value will be adopted for the mean wavelength
-        :math:`\\bar{w}` to calculate shifts in 'lin' mode instead of
-        the mean of the input array w.
-
-    Returns
-    -------
-    dRV : array
-        The RV axis of the cross-correlation function. The radial
-        velocity refer to a shift of the template, i.e., positive
-        values indicate that the template has been red-shifted and
-        negative numbers indicate a blue-shift of the template.
-        The numbers are given in km/s.
-    CC : array
-        The cross-correlation function.
-    """
-
-    
-
-    if weights is None:
-        weights = np.ones_like(w, dtype=float)
-    else:
-        weights = weights.copy()
-
-    # Copy and cut wavelength and flux arrays
-    w, f = w.copy(), f.copy()
-    if skipedge > 0:
-        w, f = w[skipedge:-skipedge], f[skipedge:-skipedge]
-        weights = weights[skipedge:-skipedge]
-
-    if edgeTapering is not None:
-        # Smooth the edges using a sine
-        if isinstance(edgeTapering, (float, int)):
-            edgeTapering = [float(edgeTapering), float(edgeTapering)]
-
-        # Carry out edge tapering (left edge)
-        indi = np.where(w < w[0] + edgeTapering[0])[0]
-        f[indi] *= np.sin((w[indi] - w[0]) / edgeTapering[0] * np.pi / 2.0)
-        # Carry out edge tapering (right edge)
-        indi = np.where(w > (w[-1] - edgeTapering[1]))[0]
-        f[indi] *= np.sin(
-            (w[indi] - w[indi[0]]) / edgeTapering[1] * np.pi / 2.0 + np.pi / 2.0
-        )
-
-    # Speed of light in km/s
-    c = 299792.458
-
-    # Check whether template is large enough
-    if mode == "lin":
-        if meanwvl is None:
-            meanWl = np.mean(w)
-        else:
-            meanWl = meanwvl
-        dwlmax = meanWl * (rvmax / c)
-        dwlmin = meanWl * (rvmin / c)
-        if (tw[0] + dwlmax) > w[0]:
-            print("The minimum wavelength is not covered by the template for all indicated RV shifts.")
-            return None
-               
-        if (tw[-1] + dwlmin) < w[-1]:
-            print("The maximum wavelength is not covered by the template for all indicated RV shifts.")
-            return None
-    elif mode == "doppler":
-        # Ensure that the template covers the entire observation range for all Doppler shifts
-        maxwl = tw[-1] * (1.0 + rvmin / c)
-        minwl = tw[0] * (1.0 + rvmax / c)
-
-        if minwl > w[0]:
-            print("The minimum wavelength is not covered by the template for all indicated RV shifts.")
-            print(f"  Template too short after applying RV: min shifted λ = {minwl:1.4f}, but observation starts at {w[0]:1.4f}")
-            return None
-
-        if maxwl < w[-1]:
-            print("The maximum wavelength is not covered by the template for all indicated RV shifts.")
-            print(f"  Template not long enough after applying RV: max shifted λ = {maxwl:1.4f}, but observation ends at {w[-1]:1.4f}")
-            return None
-    else:
-        print('Error')
-        return None
-    
-    # Calculate the cross correlation
-    drvs = np.arange(rvmin, rvmax, drv, dtype=float)
-
-    # --- using numba ---
-    if mode == "lin":
-        cc = _ccf(drvs, mode, w, f, tw, tf, c, weights, meanWl)
-    elif mode == "doppler":
-        meanWl = 0
-        cc = _ccf(drvs, mode, w, f, tw, tf, c, weights, meanWl)
-    # ------------------
-        
-    return cc
-
-def mc_ccf(
-        wave_obs, flux_obs_nor_box, wave_tem, flux_tem_nor, 
-        ccf_lw, ccf_up, step_size, skipedge, visible_phi, i):
-    """
-    Compute the CCF for a single phase (for parallelization).
-
-    Args:
-        wave_obs (np.ndarray): Wavelength grid of observation.
-        flux_obs_nor_box (np.ndarray): 2D array of normalized observed flux (N_phases x N_wave).
-        wave_tem (np.ndarray): Wavelength grid of template.
-        flux_tem_nor (np.ndarray): Normalized template flux.
-        ccf_lw (float): Lower RV bound [km/s].
-        ccf_up (float): Upper RV bound [km/s].
-        step_size (float): RV step size [km/s].
-        skipedge (int): Number of edge bins to skip.
+        integrated_stellar_spectrum (np.ndarray): 2D array of integrated spectra for each phase.
+        Star (Star): Star object containing filter and band info.
         visible_phi (np.ndarray): Array of phases.
-        i (int): Index of the phase.
+        band (str): Band name.
+        intORflux (str): 'intensity' (required for photometry).
+        model_type (str): Model type.
 
     Returns:
-        np.ndarray: CCF for this phase.
+        tuple: (lightcurve_mag_box, lightcurve_flux_box)
+            lightcurve_mag_box (np.ndarray): Relative magnitude light curves for each filter.
+            lightcurve_flux_box (np.ndarray): Normalized flux light curves for each filter.
     """
-    flux_obs_nor = flux_obs_nor_box[i]
-    cc = ccf_rv(
-        wave_obs, flux_obs_nor, wave_tem, flux_tem_nor, 
-        ccf_lw, ccf_up, step_size, mode="doppler", 
-        skipedge=skipedge)
-    return cc
+    vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
 
-def get_ccf_peak(ccf_box, drvs, visible_phi, band):
-    """
-    Find the RV shift for each phase by locating the most prominent peak in the CCF.
+    # Convert velocity grid back to wavelength grid (in Angstroms)
+    line_center = Star.bands2use[band][0]
+    delta_wave = Star.bands2use[band][1]
+    wvmin, wvmax = (line_center - delta_wave, line_center + delta_wave)
+    wvmin = int(wvmin)
+    wvmax = int(wvmax)
 
-    Args:
-        ccf_box (np.ndarray): 2D array of CCFs (N_phases x N_drvs).
-        drvs (np.ndarray): Array of RV shifts corresponding to CCF axis.
-        visible_phi (np.ndarray): Array of phases.
-        band (str): Band name (for logging).
+    c_kms = 299792.458
+    w_center = (wvmin + wvmax) / 2
+    wave = vel * w_center / c_kms + w_center
+    wave = wave * unit['AA']
 
-    Returns:
-        np.ndarray: Array of RV shifts (one per phase).
-    """
-    new_rv_box = []
+    lightcurve_mag_box = []
+    lightcurve_flux_box = []
+    for filt in Star.filters:
+        logger.info(f'Calculating photometric light curve for {filt} filter...')
+        mag_box = []
+        flux_box = []
+        for flux in integrated_stellar_spectrum:
+            flux = flux * unit['erg/s/cm**2/AA']
+            f = svo.get_pyphot_filter(filt)
+            band_flux = f.get_flux(wave, flux).value
+            mag = -2.5 * np.log10(band_flux)  # Vega zero point not applied
 
-    for i in range(len(ccf_box)):
-        ccf = ccf_box[i]
-        peaks, properties = find_peaks(ccf, prominence=0.1) 
+            flux_box.append(band_flux)
+            mag_box.append(mag)
 
-        if len(peaks) != 0:
-            prominences = properties["prominences"]
-            _loc = np.argmax(prominences)
-            new_rv = drvs[peaks][_loc]
+        # Compute relative magnitude and normalized flux for this filter
+        relative_mag = np.array(mag_box) - np.nanmean(mag_box)
+        normalized_flux = np.array(flux_box) / np.nanmean(flux_box)
+        lightcurve_flux_box.append(normalized_flux)
+        lightcurve_mag_box.append(relative_mag)
 
-            # Check if the peak is at the edge of the RV grid
-            if -np.abs(new_rv) == drvs[0]:
-                new_rv = np.nan
-                print(f'\n     >>>> CCF hit edge {new_rv}km/s at {band} phase {visible_phi[i]:1.3f}!')
-        else:
-            new_rv = np.nan
-            print(f'\n     >>>> CCF cannot find peaks at {band} phase {visible_phi[i]:1.3f}!')
-        
-        # Optionally: vis.plot_cc(drvs, ccf, new_rv, visible_phi[i], band, properties)
-        new_rv_box.append(new_rv)
+    return np.array(lightcurve_mag_box), np.array(lightcurve_flux_box)
 
-    return np.array(new_rv_box)
+
 
 def cal_ccf_rv(
         star_tot, Star, visible_phi, band, intORflux, model_type, rv_ccf_pars, prf_dir, 
@@ -1414,93 +967,3 @@ def cal_ccf_rv(
         ccf_rv_shift = ccf_rv_shift - np.nanmean(ccf_rv_shift)
 
     return ccf_rv_shift
-
-
-def get_photometric(
-        integrated_stellar_spectrum, Star, visible_phi, band, intORflux, model_type):
-    """
-    Calculate photometric light curves (magnitude and normalized flux) for each filter.
-
-    Args:
-        integrated_stellar_spectrum (np.ndarray): 2D array of integrated spectra for each phase.
-        Star (Star): Star object containing filter and band info.
-        visible_phi (np.ndarray): Array of phases.
-        band (str): Band name.
-        intORflux (str): 'intensity' (required for photometry).
-        model_type (str): Model type.
-
-    Returns:
-        tuple: (lightcurve_mag_box, lightcurve_flux_box)
-            lightcurve_mag_box (np.ndarray): Relative magnitude light curves for each filter.
-            lightcurve_flux_box (np.ndarray): Normalized flux light curves for each filter.
-    """
-    vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-
-    # Convert velocity grid back to wavelength grid (in Angstroms)
-    line_center = Star.bands2use[band][0]
-    delta_wave = Star.bands2use[band][1]
-    wvmin, wvmax = (line_center - delta_wave, line_center + delta_wave)
-    wvmin = int(wvmin)
-    wvmax = int(wvmax)
-
-    c_kms = 299792.458
-    w_center = (wvmin + wvmax) / 2
-    wave = vel * w_center / c_kms + w_center
-    wave = wave * unit['AA']
-
-    lightcurve_mag_box = []
-    lightcurve_flux_box = []
-    for filt in Star.filters:
-        logger.info(f'Calculating photometric light curve for {filt} filter...')
-        mag_box = []
-        flux_box = []
-        for flux in integrated_stellar_spectrum:
-            flux = flux * unit['erg/s/cm**2/AA']
-            f = svo.get_pyphot_filter(filt)
-            band_flux = f.get_flux(wave, flux).value
-            mag = -2.5 * np.log10(band_flux)  # Vega zero point not applied
-
-            flux_box.append(band_flux)
-            mag_box.append(mag)
-
-        # Compute relative magnitude and normalized flux for this filter
-        relative_mag = np.array(mag_box) - np.nanmean(mag_box)
-        normalized_flux = np.array(flux_box) / np.nanmean(flux_box)
-        lightcurve_flux_box.append(normalized_flux)
-        lightcurve_mag_box.append(relative_mag)
-
-    return np.array(lightcurve_mag_box), np.array(lightcurve_flux_box)
-
-def grid_resolution_check(grid):
-    """
-    Check the accuracy of the grid area approximation for the stellar disk.
-
-    The final spectra are approximated by summing all flux in each grid cell,
-    so a finer grid better conserves the flux scale. This function checks how
-    close the summed area of the grid cells inside the disk is to pi.
-
-    Args:
-        grid (int): Grid resolution (number of cells per axis).
-
-    Returns:
-        None. Prints a warning if the area is less than 99.9% of pi.
-    """
-    grid_side_length = 2. / grid  # Grid goes from -1 to 1, so total length is 2
-
-    # Scan each cell on the grid (y-z plane)
-    _area = 0.0
-    for iy in range(grid):
-        y = -1 + iy * grid_side_length  # y from -1 to 1
-        for iz in range(grid):
-            z = -1. + iz * grid_side_length  # z from -1 to 1
-            if (y * y + z * z) <= 1:
-                # If the cell is inside the disk, add its area
-                _area += grid_side_length ** 2
-    accuracy = _area / np.pi
-    if accuracy < 0.999:
-        logger.warning(
-            f'Grid resolution check WARNING.\n'
-            f'   Grid {grid}x{grid} has an area/pi={accuracy:1.2%} < 99.9%.\n'
-            '   Consider increasing the number of grid to improve accuracy.'
-        )
-

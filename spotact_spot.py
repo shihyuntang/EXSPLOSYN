@@ -5,6 +5,7 @@ from the SOAP2 software
 by Shih-Yun Tang 2022/09/04
 """
 from functools import partial
+import sys
 
 import numpy as np
 from numpy import cos, sin
@@ -14,6 +15,7 @@ from pqdm.processes import pqdm
 # import pysynphot as pysynphot
 
 import visualization as vis
+import spotact_utils as utils
 
 
 @njit
@@ -58,13 +60,13 @@ def spot_location_init(stellar_radius, longitude, latitude, inclination, nrho):
     #     # see Boisse+2012 fig. 1 for coord. setup
     #     xyz0[0][j] = np.sqrt(1 - s**2)   # x=sqrt(r^2-s^2), where r==1
     #     xyz0[1][j] = s*cos(rho[j]) # projection of the circumference on the y axis
-    #     xyz0[2][j] = s*sin(rho[j]) # projection of the circumference on the x axis
+    #     xyz0[2][j] = s*sin(rho[j]) # projection of the circumference on the z axis
 
     rho = np.linspace(-np.pi, np.pi, nrho) # rho goes from -pi to pi
     xyz0 = np.zeros((3, nrho), dtype=np.float64)
     xyz0[0, :] = np.sqrt(1 - stellar_radius**2)  # x=sqrt(r^2-s^2), where r==1
     xyz0[1, :] = stellar_radius * np.cos(rho) # projection of the circumference on the y axis
-    xyz0[2, :] = stellar_radius * np.sin(rho) # projection of the circumference on the x axis
+    xyz0[2, :] = stellar_radius * np.sin(rho) # projection of the circumference on the z axis
 
 
     # to account for the real projection of the spot, we rotate the star and look how the coordinates of the
@@ -668,12 +670,338 @@ def itot_int(vrot, incl, limba1, limba2, grid_size, vrad_spec, intensity_spec,
     
 #     return 2*h*c**2*1./lambda0**5*1./(np.exp((h*c)/(lambda0*k_b*Temp))-1)
 
+
 @njit
 def spot_scan_flux(
-    vrot, incl, limba1, limba2, grid_size, vrad_spec, intensity_spec_quiet, 
-    intensity_spec_active, v_interval_spec, n_v_spec, n_spec, 
-    spot_size, longitude, phase, latitude, 
-    idx_miny, idx_minz, idx_maxy, idx_maxz, active_2d_surface_flag):
+    vrot, incl, Tphoto, grid_size, Spec_dict, star_LD_coeff, 
+    vrad_spec, intensity_spec_quiet, 
+    v_interval_spec, n_v_spec, n_spec, 
+    active_2d_surface_temperature):
+    """
+    Scan of the yz-area where the spot is.
+    For each grid-point (y,z) we need to check whether it belongs to the spot
+    or not. Sadly, we do not know the projected geometry of the spot in its
+    actual position. Thus, we have to do an inverse rotation to replace the
+    grid point where it would be in the initial configuration. Indeed, in the
+    initial configuration, the spot has a well known geometry of a circle
+    centered on the x-axis.
+    """
+
+    _, ld_coeffs, ld_keys, ld_vals = star_LD_coeff
+    _, spec_spectrum, _, sp_keys, sp_vals = Spec_dict
+
+    # get active region grid locations
+    mask = (active_2d_surface_temperature != 0) & (active_2d_surface_temperature != Tphoto)
+    act_idxy, act_idxz = np.where(mask)
+
+    delta_grid = 2/grid_size
+    delta_v_spec = 2*v_interval_spec / (n_v_spec-1)
+
+    sinIncl = sin(incl * np.pi / 180.0)  # hoisted
+
+    intergrated_total_stellar_spectrum = np.zeros(n_v_spec, dtype=np.float64)
+    # track quiet flux under active grid to subtract it later
+    intergrated_total_quiet_spectrum = np.zeros(n_v_spec, dtype=np.float64)
+
+    active_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
+    quiet_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
+    
+    
+    iq = utils.lut_lookup_eq(Tphoto, ld_keys, ld_vals)
+    limba1_q, limba2_q = ld_coeffs[iq, 0], ld_coeffs[iq, 1]
+
+    for ii in range(act_idxy.shape[0]):
+        iy = int(act_idxy[ii]); iz = int(act_idxz[ii])
+
+        y = -1 + iy*delta_grid # y between -1 to 1
+        z = -1 + iz*delta_grid # z between -1 to 1
+        delta = y * vrot * sinIncl     # Give the velocity of the rotation for the given grid 
+                                # cell as a function of y. For y=-1 => Vrot min, 
+                                # for y=1 => Vrot max, and for y=0 => Vrot = 0.
+        active_temp = int(active_2d_surface_temperature[iy, iz])
+        
+        # intensity_spec_active = Spec[active_temp].intensity
+        # intensity_spec_active = spec_spectrum[spec_temps == active_temp][0]
+
+        # ia = np.searchsorted(spec_temps, active_temp)
+        # intensity_spec_active = spec_spectrum[ia]
+        js = utils.lut_lookup_eq(active_temp, sp_keys, sp_vals)
+        intensity_spec_active = spec_spectrum[js]      # (n_spec, n_mu)
+
+        # ja = np.searchsorted(ld_temps, active_temp)
+        # limba1_a, limba2_a = ld_coeffs[ja]
+        iq = utils.lut_lookup_eq(active_temp, ld_keys, ld_vals)
+        limba1_a, limba2_a = ld_coeffs[iq, 0], ld_coeffs[iq, 1]
+
+        # -------------
+        # cell_integrated_active_spectrum = np.zeros(
+        #     n_v_spec, dtype=np.float64)
+        # cell_integrated_quite_spectrum = np.zeros(
+        #     n_v_spec, dtype=np.float64) 
+            
+        # limb-darkening
+        r_cos = np.sqrt( 1-(y*y+z*z) ) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
+                                        # and 0 on the limb. This is often referred in the literature as cos(theta)            
+        # intensity due to limb-darkening 
+        limb_quiet = 1 - limba1_q*(1-r_cos) - limba2_q*(1-r_cos)**2 
+        limb_active = 1 - limba1_a*(1-r_cos) - limba2_a*(1-r_cos)**2
+        
+
+        ##### modify SOAP2 code from only cal CCF to also cal SPEC #####
+        # -------------------------- CCF ------------------------------
+        # n_v_shifted = delta/delta_v_ccf # by how much steps the CCF is shifted due to rotation
+        # n_v_shifted_quotient = rndup(n_v_shifted, 0) # integer number of steps
+        # n_v_shifted_remainder = (delta - n_v_shifted_quotient*delta_v_ccf)
+        # v_shift = n_v_shifted_remainder
+
+        # # shifting the CCF with the remainder of n_v_shifted, the quotient will be taken into account by 
+        # # shifting all the points of the spectrum
+        # intensity_ccf_shift = shifting_CCF(
+        #     vrad_ccf, intensity_ccf, v_shift, n_ccf
+        #     )
+        # intensity_ccf_spot_shift = shifting_CCF(
+        #     vrad_ccf, intensity_ccf_spot, v_shift, n_ccf
+        #     )
+        
+        # # difference in number of step between the CCF without any rotation and the one with rotation
+        # diff_CCF_non_v_and_v = (n_v_ccf - n_ccf) / 2.
+
+        # for j in range(int(diff_CCF_non_v_and_v+n_v_shifted_quotient)):
+        #     # extrapolation on the left of the CCF with the value of the left boundary, weighted by the 
+        #     # limb-darkening and the active region intensity. We also consider limb-darkening for spots 
+        #     # because we also observe them with different stellar depth depending on their position
+        #     # f_spot_flux[j]  += intensity_ccf_shift[0]*limb*(1 - intensity)  # only flux effect
+        #     # f_spot_bconv[j] += intensity_ccf_shift[0]*limb*(1 - 1);         # only convective blueshift effect. 
+        #     #                                                                 # The convective blueshift does not affect the boundaries of the CCF
+        #     f_spot_ccf_tot[j]   += intensity_ccf_shift[0]*limb*(1 - intensity)  # combined effect
+        # for j in range(
+        #     int(diff_CCF_non_v_and_v+n_v_shifted_quotient),
+        #     int(n_ccf+(diff_CCF_non_v_and_v+n_v_shifted_quotient))
+        #     ):
+        #     # value of the CCF, weighted by the limb-darkening and the active region intensity
+        #     # We also consider limb-darkening for spots because we also observe them with different stellar 
+        #     # depth depending on their position
+        #     # f_spot_flux[j] += \
+        #     #     intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb \
+        #     #         - intensity * (intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))])*limb
+        #     # f_spot_bconv[j] += \
+        #     #     intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb \
+        #     #         - (intensity_ccf_spot_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))])*limb
+        #     f_spot_ccf_tot[j] += \
+        #         intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb \
+        #             - intensity * (intensity_ccf_spot_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))])*limb
+
+        # for j in range(
+        #     int(n_ccf+(diff_CCF_non_v_and_v+n_v_shifted_quotient)),
+        #     n_v_ccf
+        #     ):
+        #     # extrapolation on the right of the CCF with the value of the right boundary, weighted by 
+        #     # the limb-darkening and the active region intensity. We also consider limb-darkening for spots 
+        #     # because we also observe them with different stellar depth depending on their position
+        #     # f_spot_flux[j]  += intensity_ccf_shift[n-1]*limb*(1 - intensity)
+        #     # f_spot_bconv[j] += intensity_ccf_shift[n-1]*limb*(1 - 1)        
+        #     f_spot_ccf_tot[j]   += intensity_ccf_shift[n_ccf-1]*limb * (1-intensity)
+
+        # -------------------------- SPEC -----------------------------
+        n_v_shifted            = delta / delta_v_spec
+        n_v_shifted_quotient   = rndup(n_v_shifted, 0)  # assume returns int
+        n_v_shifted_remainder  = delta - n_v_shifted_quotient * delta_v_spec
+        v_shift = n_v_shifted_remainder
+
+        intensity_spec_quiet_shift = shifting_spectrum(
+            vrad_spec, intensity_spec_quiet, v_shift, n_spec
+        )
+        intensity_spec_active_shift = shifting_spectrum(
+            vrad_spec, intensity_spec_active, v_shift, n_spec
+        )
+
+        # Left/middle/right regions
+        stop0 = int((n_v_spec - n_spec) / 2.0 + n_v_shifted_quotient)
+        start1 = stop0
+        stop1  = int(n_spec + stop0)
+
+        # Per-pixel scalar accumulators (replace per-pixel arrays)
+        active_sum = 0.0
+        quiet_sum  = 0.0
+
+        # To take into account the rotation, we increase the width of the spectrum. Because the original CCF is only defined between -20 and +20 km/s,
+        # we have to extrapolate on each side of the boundaries of the CCF. In this case, we calculate the "non contribution" to the CCF.
+        # For the region inside the active region, we calculate the contribution of the quiet photosphere and then suppress the contribution of the active region.
+        # It will then be easy to include the contribution of the active region by just subtracting the "non contribution" to the integrated contribution of the
+        # star without active region calculated with the "itot" function
+        # Left pad
+        val_a0 = intensity_spec_active_shift[0]
+        val_q0 = intensity_spec_quiet_shift[0]
+        for j in range(stop0):
+            intergrated_total_stellar_spectrum[j] += val_a0 * limb_active
+            intergrated_total_quiet_spectrum[j]   += val_q0 * limb_quiet
+            active_sum += val_a0 * limb_active
+            quiet_sum  += val_q0 * limb_quiet
+
+        # Middle block
+        for j in range(start1, stop1):
+            k = j - start1  # 0 .. n_spec-1
+            va = intensity_spec_active_shift[k]
+            vq = intensity_spec_quiet_shift[k]
+            intergrated_total_stellar_spectrum[j] += va * limb_active
+            intergrated_total_quiet_spectrum[j]   += vq * limb_quiet
+            active_sum += va * limb_active
+            quiet_sum  += vq * limb_quiet
+
+        # Right pad
+        val_aR = intensity_spec_active_shift[n_spec - 1]
+        val_qR = intensity_spec_quiet_shift[n_spec - 1]
+        for j in range(stop1, n_v_spec):
+            intergrated_total_stellar_spectrum[j] += val_aR * limb_active
+            intergrated_total_quiet_spectrum[j]   += val_qR * limb_quiet
+            active_sum += val_aR * limb_active
+            quiet_sum  += val_qR * limb_quiet
+
+        # Write per-pixel sums (row-major order helps cache)
+        active_2d_surface_flux_sum[iz, iy] = active_sum
+        quiet_2d_surface_flux_sum[iz,  iy] = quiet_sum
+
+            # ----
+        # active_2d_surface_flag[iz][iy] = 1 # mark the grid cell as active
+
+    return (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
+            active_2d_surface_flux_sum, quiet_2d_surface_flux_sum)
+
+@njit
+def spot_scan_int(
+    vrot, incl, Tphoto, grid_size, Spec_dict, star_LD_coeff, 
+    vrad_spec, intensity_spec_quiet, 
+    v_interval_spec, n_v_spec, n_spec, 
+    active_2d_surface_temperature
+    ):
+    """Scan of the yz-area where the spot is.
+    For each grid-point (y,z) we need to check whether it belongs to the spot
+    or not. Sadly, we do not know the projected geometry of the spot in its
+    actual position. Thus, we have to do an inverse rotation to replace the
+    grid point where it would be in the initial configuration. Indeed, in the
+    initial configuration, the spot has a well known geometry of a circle
+    centered on the x-axis.f
+    """
+
+    # ld_temps, ld_coeffs =  star_LD_coeff
+    _, spec_spectrum, mu_s, sp_keys, sp_vals = Spec_dict
+
+    # get active region grid locations
+    mask = (active_2d_surface_temperature != 0) & (active_2d_surface_temperature != Tphoto)
+    act_idxy, act_idxz = np.where(mask)
+
+    delta_grid = 2/grid_size
+    delta_v_spec = 2*v_interval_spec / (n_v_spec-1)
+
+    sinIncl = sin(incl * np.pi / 180.0)  # hoisted
+
+    intergrated_total_stellar_spectrum = np.zeros(n_v_spec, dtype=np.float64)
+    intergrated_total_quiet_spectrum = np.zeros(n_v_spec, dtype=np.float64)
+
+    active_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
+    quiet_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
+
+    # Scan of each cell on the grid
+    for ii in range(act_idxy.shape[0]):
+        iy = int(act_idxy[ii]); iz = int(act_idxz[ii])
+
+        y = -1 + iy*delta_grid # y between -1 to 1
+        z = -1 + iz*delta_grid # z between -1 to 1
+        delta = y * vrot * sinIncl     # Give the velocity of the rotation for the given grid 
+                                # cell as a function of y. For y=-1 => Vrot min, 
+                                # for y=1 => Vrot max, and for y=0 => Vrot = 0.
+
+        active_temp = int(active_2d_surface_temperature[iy, iz])
+        
+        js = utils.lut_lookup_eq(active_temp, sp_keys, sp_vals)
+        intensity_spec_active = spec_spectrum[js]      # (n_spec, n_mu)
+         
+        # cell_integrated_active_spectrum = np.zeros(
+        #     n_v_spec, dtype=np.float64)
+        # cell_integrated_quite_spectrum = np.zeros(
+        #     n_v_spec, dtype=np.float64)
+        
+        # limb-darkening
+        r_cos = np.sqrt( 1-(y*y+z*z) ) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
+                                        # and 0 on the limb. This is often referred in the literature as cos(theta)
+        
+        # -------------------------- SPEC ------------------------------
+        # mu_s = np.array([0.9636, 0.8864, 0.8018, 0.7071, 0.5976, 0.4629, 0.2673])
+
+        # f_loc = np.argmin(np.abs(mu_s - r_cos)) # index of the closest mu value to r_cos
+        f_loc = utils.nearest_mu_index(mu_s, r_cos)
+        intensity_spec_quiet_use = intensity_spec_quiet[:, f_loc]
+        intensity_spec_active_use = intensity_spec_active[:, f_loc]
+
+        # -------------------------- SPEC -----------------------------
+        # Doppler shift
+        n_v_shifted            = delta / delta_v_spec
+        n_v_shifted_quotient   = rndup(n_v_shifted, 0)  # assume returns int
+        n_v_shifted_remainder  = delta - n_v_shifted_quotient * delta_v_spec
+        v_shift = n_v_shifted_remainder
+
+        intensity_spec_quiet_shift = shifting_spectrum(
+            vrad_spec, intensity_spec_quiet_use, v_shift, n_spec
+        )
+        intensity_spec_active_shift = shifting_spectrum(
+            vrad_spec, intensity_spec_active_use, v_shift, n_spec
+        )
+
+        # Left/middle/right regions
+        stop0 = int((n_v_spec - n_spec) / 2.0 + n_v_shifted_quotient)
+        start1 = stop0
+        stop1  = int(n_spec + stop0)
+
+        # Per-pixel scalar accumulators (replace per-pixel arrays)
+        active_sum = 0.0
+        quiet_sum  = 0.0
+
+        # To take into account the rotation, we increase the width of the spectrum. Because the original CCF is only defined between -20 and +20 km/s,
+        # we have to extrapolate on each side of the boundaries of the CCF. In this case, we calculate the "non contribution" to the CCF.
+        # For the region inside the active region, we calculate the contribution of the quiet photosphere and then suppress the contribution of the active region.
+        # It will then be easy to include the contribution of the active region by just subtracting the "non contribution" to the integrated contribution of the
+        # star without active region calculated with the "itot" function
+        # Left pad
+        val_a0 = intensity_spec_active_shift[0]
+        val_q0 = intensity_spec_quiet_shift[0]
+        for j in range(stop0):
+            intergrated_total_stellar_spectrum[j] += val_a0
+            intergrated_total_quiet_spectrum[j]   += val_q0
+            active_sum += val_a0
+            quiet_sum  += val_q0
+
+        # Middle block
+        for j in range(start1, stop1):
+            k = j - start1  # 0 .. n_spec-1
+            va = intensity_spec_active_shift[k]
+            vq = intensity_spec_quiet_shift[k]
+            intergrated_total_stellar_spectrum[j] += va
+            intergrated_total_quiet_spectrum[j]   += vq
+            active_sum += va
+            quiet_sum  += vq
+
+        # Right pad
+        val_aR = intensity_spec_active_shift[n_spec - 1]
+        val_qR = intensity_spec_quiet_shift[n_spec - 1]
+        for j in range(stop1, n_v_spec):
+            intergrated_total_stellar_spectrum[j] += val_aR
+            intergrated_total_quiet_spectrum[j]   += val_qR
+            active_sum += val_aR
+            quiet_sum  += val_qR
+
+        # Write per-pixel sums (row-major order helps cache)
+        active_2d_surface_flux_sum[iz, iy] = active_sum
+        quiet_2d_surface_flux_sum[iz,  iy] = quiet_sum
+
+    return (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
+            active_2d_surface_flux_sum, quiet_2d_surface_flux_sum)
+
+@njit
+def spot_scan(
+    incl, grid_size, spot_size, longitude, latitude, phase,
+    idx_miny, idx_minz, idx_maxy, idx_maxz, active_temp,
+    active_2d_surface_temperature, Tphoto
+    ):
     """
     Scan of the yz-area where the spot is.
     For each grid-point (y,z) we need to check whether it belongs to the spot
@@ -685,24 +1013,12 @@ def spot_scan_flux(
     """
 
     delta_grid = 2/grid_size
-    delta_v_spec = 2*v_interval_spec / (n_v_spec-1)
-
     xyz_actual = np.ones(3, dtype=np.float64) # actual coordinates
     xyz_initial = np.ones(3, dtype=np.float64) # coordinates transformed back to the initial configuration
-
-    intergrated_total_stellar_spectrum = np.zeros(n_v_spec, dtype=np.float64)
-    # track quiet flux under active grid to subtract it later
-    intergrated_total_quiet_spectrum = np.zeros(n_v_spec, dtype=np.float64)
-
-    active_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
-    quiet_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
 
     # Scan of each cell on the grid
     for iy in range(idx_miny, idx_maxy):
         y = -1 + iy*delta_grid # y between -1 to 1
-        delta = y * vrot * sin(incl*np.pi/180)     # Give the velocity of the rotation for the given grid 
-                                   # cell as a function of y. For y=-1 => Vrot min, 
-                                   # for y=1 => Vrot max, and for y=0 => Vrot = 0.
         xyz_actual[1] = y
 
         for iz in range(idx_minz, idx_maxz):
@@ -726,320 +1042,57 @@ def spot_scan_flux(
                                                 # is the height (x) of the spot circumference.
                                                 # Therefore, if the grid's x_coord^2 >= 1-spot_size^2,
                                                 # it is inside the spot circumference.
-                    if active_2d_surface_flag[iz][iy] == 1:
-                        # The gird had been already checked for the spot
-                        continue
-
-                    cell_integrated_active_spectrum = np.zeros(
-                        n_v_spec, dtype=np.float64)
-                    cell_integrated_quite_spectrum = np.zeros(
-                        n_v_spec, dtype=np.float64) 
                     
-                    # limb-darkening
-                    r_cos = np.sqrt( 1-(y*y+z*z) ) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
-                                                  # and 0 on the limb. This is often referred in the literature as cos(theta)
-                                  
-                    # intensity due to limb-darkening 
-                    limb_quiet = 1 - limba1[0]*(1-r_cos) - limba2[0]*(1-r_cos)**2 
-                    limb_active = 1 - limba1[1]*(1-r_cos) - limba2[1]*(1-r_cos)**2
+                    if active_2d_surface_temperature[iy, iz] == Tphoto:
+                        # only if the gird is still at the photosphere temperature we update it
+                        active_2d_surface_temperature[iy, iz] = active_temp
                     
+    return active_2d_surface_temperature
 
-                    ##### modify SOAP2 code from only cal CCF to also cal SPEC #####
-                    # -------------------------- CCF ------------------------------
-                    # n_v_shifted = delta/delta_v_ccf # by how much steps the CCF is shifted due to rotation
-                    # n_v_shifted_quotient = rndup(n_v_shifted, 0) # integer number of steps
-                    # n_v_shifted_remainder = (delta - n_v_shifted_quotient*delta_v_ccf)
-                    # v_shift = n_v_shifted_remainder
-
-                    # # shifting the CCF with the remainder of n_v_shifted, the quotient will be taken into account by 
-                    # # shifting all the points of the spectrum
-                    # intensity_ccf_shift = shifting_CCF(
-                    #     vrad_ccf, intensity_ccf, v_shift, n_ccf
-                    #     )
-                    # intensity_ccf_spot_shift = shifting_CCF(
-                    #     vrad_ccf, intensity_ccf_spot, v_shift, n_ccf
-                    #     )
-                    
-                    # # difference in number of step between the CCF without any rotation and the one with rotation
-                    # diff_CCF_non_v_and_v = (n_v_ccf - n_ccf) / 2.
-
-                    # for j in range(int(diff_CCF_non_v_and_v+n_v_shifted_quotient)):
-                    #     # extrapolation on the left of the CCF with the value of the left boundary, weighted by the 
-                    #     # limb-darkening and the active region intensity. We also consider limb-darkening for spots 
-                    #     # because we also observe them with different stellar depth depending on their position
-                    #     # f_spot_flux[j]  += intensity_ccf_shift[0]*limb*(1 - intensity)  # only flux effect
-                    #     # f_spot_bconv[j] += intensity_ccf_shift[0]*limb*(1 - 1);         # only convective blueshift effect. 
-                    #     #                                                                 # The convective blueshift does not affect the boundaries of the CCF
-                    #     f_spot_ccf_tot[j]   += intensity_ccf_shift[0]*limb*(1 - intensity)  # combined effect
-                    # for j in range(
-                    #     int(diff_CCF_non_v_and_v+n_v_shifted_quotient),
-                    #     int(n_ccf+(diff_CCF_non_v_and_v+n_v_shifted_quotient))
-                    #     ):
-                    #     # value of the CCF, weighted by the limb-darkening and the active region intensity
-                    #     # We also consider limb-darkening for spots because we also observe them with different stellar 
-                    #     # depth depending on their position
-                    #     # f_spot_flux[j] += \
-                    #     #     intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb \
-                    #     #         - intensity * (intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))])*limb
-                    #     # f_spot_bconv[j] += \
-                    #     #     intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb \
-                    #     #         - (intensity_ccf_spot_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))])*limb
-                    #     f_spot_ccf_tot[j] += \
-                    #         intensity_ccf_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))]*limb \
-                    #             - intensity * (intensity_ccf_spot_shift[int(j-(diff_CCF_non_v_and_v+n_v_shifted_quotient))])*limb
- 
-                    # for j in range(
-                    #     int(n_ccf+(diff_CCF_non_v_and_v+n_v_shifted_quotient)),
-                    #     n_v_ccf
-                    #     ):
-                    #     # extrapolation on the right of the CCF with the value of the right boundary, weighted by 
-                    #     # the limb-darkening and the active region intensity. We also consider limb-darkening for spots 
-                    #     # because we also observe them with different stellar depth depending on their position
-                    #     # f_spot_flux[j]  += intensity_ccf_shift[n-1]*limb*(1 - intensity)
-                    #     # f_spot_bconv[j] += intensity_ccf_shift[n-1]*limb*(1 - 1)        
-                    #     f_spot_ccf_tot[j]   += intensity_ccf_shift[n_ccf-1]*limb * (1-intensity)
-
-                    # -------------------------- SPEC -----------------------------
-                    n_v_shifted = delta/delta_v_spec # by how much steps the CCF is shifted due to rotation
-                    n_v_shifted_quotient = rndup(n_v_shifted, 0) # integer number of steps
-                    n_v_shifted_remainder = (delta - n_v_shifted_quotient*delta_v_spec) # remainder of the division
-                                                                    # between delta and the integer number of steps
-                    
-                    # Shifting the spectrum with the remainder of n_v_shifted, 
-                    # the quotient will be taken into account by shifting all the points of the spectrum
-                    intensity_spec_quiet_shift = shifting_spectrum(
-                        vrad_spec, intensity_spec_quiet, n_v_shifted_remainder, n_spec
-                        )
-                    intensity_spec_active_shift = shifting_spectrum(
-                        vrad_spec, intensity_spec_active, n_v_shifted_remainder, n_spec
-                        )
-                    
-                    # Extra velocity steps when consider vrot. / 2 as there are positive and negative velocities
-                    vel_extra_steps = (n_v_spec - n_spec) / 2
-                    
-                    # To take into account the rotation, we increase the width of the spectrum. Because the original CCF is only defined between -20 and +20 km/s,
-                    # we have to extrapolate on each side of the boundaries of the CCF. In this case, we calculate the "non contribution" to the CCF.
-                    # For the region inside the active region, we calculate the contribution of the quiet photosphere and then suppress the contribution of the active region.
-                    # It will then be easy to include the contribution of the active region by just subtracting the "non contribution" to the integrated contribution of the
-                    # star without active region calculated with the "itot" function
-
-                    for j in range(int(vel_extra_steps+n_v_shifted_quotient)):
-                        intergrated_total_stellar_spectrum[j] += intensity_spec_active_shift[0] * limb_active
-                        cell_integrated_active_spectrum[j] += intensity_spec_active_shift[0] * limb_active
-                        
-                        intergrated_total_quiet_spectrum[j] += intensity_spec_quiet_shift[0]*limb_quiet * limb_quiet
-                        cell_integrated_quite_spectrum[j] += intensity_spec_quiet_shift[0] * limb_quiet
-               
-                    for j in range(
-                        int(vel_extra_steps+n_v_shifted_quotient),
-                        int(n_spec+(vel_extra_steps+n_v_shifted_quotient))
-                        ):                   
-                        intergrated_total_stellar_spectrum[j] += \
-                            (intensity_spec_active_shift[int(j-(vel_extra_steps+n_v_shifted_quotient))]) * limb_active
-                        cell_integrated_active_spectrum[j] += \
-                             (intensity_spec_active_shift[int(j-(vel_extra_steps+n_v_shifted_quotient))]) * limb_active
-                        
-                        intergrated_total_quiet_spectrum[j] += \
-                            intensity_spec_quiet_shift[int(j-(vel_extra_steps+n_v_shifted_quotient))] * limb_quiet  # combined effect
-                        cell_integrated_quite_spectrum[j] += \
-                            intensity_spec_quiet_shift[int(j-(vel_extra_steps+n_v_shifted_quotient))] * limb_quiet  # combined effect
-
-                    for j in range(
-                        int(n_spec+(vel_extra_steps+n_v_shifted_quotient)),
-                        n_v_spec
-                        ):      
-                        intergrated_total_stellar_spectrum[j] += intensity_spec_active_shift[n_spec-1] * limb_active
-                        cell_integrated_active_spectrum[j] += intensity_spec_active_shift[n_spec-1] * limb_active
-
-                        intergrated_total_quiet_spectrum[j] += intensity_spec_quiet_shift[n_spec-1] * limb_quiet
-                        cell_integrated_quite_spectrum[j] += intensity_spec_quiet_shift[n_spec-1] * limb_quiet
-                                                                
-                    active_2d_surface_flux_sum[iz][iy] = np.sum(cell_integrated_active_spectrum)
-                    quiet_2d_surface_flux_sum[iz][iy] = np.sum(cell_integrated_quite_spectrum)
-
-                     # ----
-                    active_2d_surface_flag[iz][iy] = 1 # mark the grid cell as active
-
-    return (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
-            active_2d_surface_flux_sum, quiet_2d_surface_flux_sum, active_2d_surface_flag)
-
-@njit
-def spot_scan_int(
-    vrot, incl, limba1, limba2, grid_size, vrad_spec, intensity_spec_quiet, 
-    intensity_spec_active, v_interval_spec, n_v_spec, n_spec, 
-    spot_size, longitude, phase, latitude, 
-    idx_miny, idx_minz, idx_maxy, idx_maxz, active_2d_surface_flag, mu_s
-    ):
-    """Scan of the yz-area where the spot is.
-    For each grid-point (y,z) we need to check whether it belongs to the spot
-    or not. Sadly, we do not know the projected geometry of the spot in its
-    actual position. Thus, we have to do an inverse rotation to replace the
-    grid point where it would be in the initial configuration. Indeed, in the
-    initial configuration, the spot has a well known geometry of a circle
-    centered on the x-axis.f
-    """
-
-    delta_grid = 2/grid_size
-    delta_v_spec = 2*v_interval_spec / (n_v_spec-1)
-
-    xyz_actual = np.ones(3, dtype=np.float64) # actual coordinates
-    xyz_initial = np.ones(3, dtype=np.float64) # coordinates transformed back to the initial configuration
-
-    intergrated_total_stellar_spectrum = np.zeros(n_v_spec, dtype=np.float64)
-    intergrated_total_quiet_spectrum = np.zeros(n_v_spec, dtype=np.float64)
-
-    active_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
-    quiet_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
-
-    # Scan of each cell on the grid
-    for iy in range(idx_miny, idx_maxy):
-        y = -1 + iy*delta_grid # y between -1 to 1
-        delta = y * vrot * sin(incl*np.pi/180)     # Give the velocity of the rotation for the given grid 
-                                   # cell as a function of y. For y=-1 => Vrot min, 
-                                   # for y=1 => Vrot max, and for y=0 => Vrot = 0.
-        xyz_actual[1] = y
-
-        for iz in range(idx_minz, idx_maxz):
-            z = -1 + iz*delta_grid # z between -1 to 1
-            
-            if (y*y + z*z)<1: 
-                xyz_actual[0] = np.sqrt(1-(y*y+z*z)) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
-                                                  # and 0 on the limb. This is often referred in the literature as cos(theta)
-                xyz_actual[2] = z
                 
-                # xayaza --> xiyizi: Rotate the star so that the spot is on the disc center
-                xyz_initial = spot_inverse_rotation(
-                    xyz_actual, longitude, latitude, incl, phase)    
-
-                # if (xyz_actual[1] <-0.1) and (xyz_actual[1] >-0.114) \
-                #     and (xyz_actual[2] <-0.3) and (xyz_actual[2] >-0.324):
-                #         print("Spot actuall: ", xyz_actual[0], xyz_actual[1], xyz_actual[2])
-                #         print("Spot initial: ", xyz_initial[0], xyz_initial[1], xyz_initial[2])
-                #         print("Spot X height: ", xyz_initial[0]**2, (1-spot_size**2))
-                #         print('\n')
-                # print("Spot initial: ", xyz_initial[0], xyz_initial[1], xyz_initial[2])
-                # if inside the active region when scanning the grid
-                if (xyz_initial[0]**2 >= (1-spot_size**2)) and (xyz_initial[0]>0):
-                    
-                    if active_2d_surface_flag[iz][iy] == 1:
-                        # The gird had been already checked for the spot
-                        continue
-
-                    cell_integrated_active_spectrum = np.zeros(
-                        n_v_spec, dtype=np.float64)
-                    cell_integrated_quite_spectrum = np.zeros(
-                        n_v_spec, dtype=np.float64)
-                    
-                    # limb-darkening
-                    r_cos = np.sqrt( 1-(y*y+z*z) ) # sqrt(r^2-(y^2+z^2)) where r=1. This is equal to 1 at the disc center, 
-                                                  # and 0 on the limb. This is often referred in the literature as cos(theta)
-                    
-                    # -------------------------- SPEC ------------------------------
-                    # mu_s = np.array([0.9636, 0.8864, 0.8018, 0.7071, 0.5976, 0.4629, 0.2673])
-
-                    f_loc = np.argmin(np.abs(mu_s - r_cos)) # index of the closest mu value to r_cos
-                    intensity_spec_quiet_use = intensity_spec_quiet[:, f_loc]
-                    intensity_spec_active_use = intensity_spec_active[:, f_loc]
-
-                    # -------------------------- SPEC -----------------------------
-                    n_v_shifted = delta/delta_v_spec # by how much steps the CCF is shifted due to rotation
-                    n_v_shifted_quotient = rndup(n_v_shifted, 0) # integer number of steps
-                    n_v_shifted_remainder = (delta - n_v_shifted_quotient*delta_v_spec)
-                    v_shift = n_v_shifted_remainder
-
-                    intensity_spec_quiet_shift = shifting_spectrum(
-                        vrad_spec, intensity_spec_quiet_use, v_shift, n_spec
-                        )
-                    intensity_spec_active_shift = shifting_spectrum(
-                        vrad_spec, intensity_spec_active_use, v_shift, n_spec
-                        )
-                    
-                    # difference in number of step between the CCF without any rotation and the one with rotation
-                    vel_extra_steps = (n_v_spec - n_spec) / 2.
-
-                    for j in range(int(vel_extra_steps+n_v_shifted_quotient)):
-                        intergrated_total_stellar_spectrum[j] += intensity_spec_active_shift[0]
-                        cell_integrated_active_spectrum[j] += intensity_spec_active_shift[0]
-                        
-                        intergrated_total_quiet_spectrum[j] += intensity_spec_quiet_shift[0]
-                        cell_integrated_quite_spectrum[j] += intensity_spec_quiet_shift[0]
-               
-                    for j in range(
-                        int(vel_extra_steps+n_v_shifted_quotient),
-                        int(n_spec+(vel_extra_steps+n_v_shifted_quotient))
-                        ):                   
-                        intergrated_total_stellar_spectrum[j] += \
-                            (intensity_spec_active_shift[int(j-(vel_extra_steps+n_v_shifted_quotient))])
-                        cell_integrated_active_spectrum[j] += \
-                             (intensity_spec_active_shift[int(j-(vel_extra_steps+n_v_shifted_quotient))])
-                        
-                        intergrated_total_quiet_spectrum[j] += \
-                            intensity_spec_quiet_shift[int(j-(vel_extra_steps+n_v_shifted_quotient))]
-                        cell_integrated_quite_spectrum[j] += \
-                            intensity_spec_quiet_shift[int(j-(vel_extra_steps+n_v_shifted_quotient))]
-
-                    for j in range(
-                        int(n_spec+(vel_extra_steps+n_v_shifted_quotient)),
-                        n_v_spec
-                        ):      
-                        intergrated_total_stellar_spectrum[j] += intensity_spec_active_shift[n_spec-1]
-                        cell_integrated_active_spectrum[j] += intensity_spec_active_shift[n_spec-1]
-
-                        intergrated_total_quiet_spectrum[j] += intensity_spec_quiet_shift[n_spec-1]
-                        cell_integrated_quite_spectrum[j] += intensity_spec_quiet_shift[n_spec-1]
-                                                                
-                    active_2d_surface_flux_sum[iz][iy] = np.sum(cell_integrated_active_spectrum)
-                    quiet_2d_surface_flux_sum[iz][iy] = np.sum(cell_integrated_quite_spectrum)
-
-                     # ----
-                    active_2d_surface_flag[iz][iy] = 1 # mark the grid cell as active
-
-    return (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
-            active_2d_surface_flux_sum, quiet_2d_surface_flux_sum, active_2d_surface_flag)
 
 def spot_scan_npsi_pal(
-    xyz, inclination, nrho, psi, grid_size, vrot, limba1, limba2, 
-    vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, 
-    n_v_spec, n_spec, mu_s, spot_size, longitude, latitude, fluxORint, 
-    active_2d_surface_flag_psi, ipsi
+    xyz, inclination, Tphoto, nrho, psi, grid_size, Spec_dict, star_LD_coeff,
+    vrot, 
+    vrad_spec, intensity_spec, v_interval_spec, 
+    n_v_spec, n_spec, spot_size, longitude, latitude, fluxORint, 
+    active_2d_surface_temperature_psi, ipsi
     ):
 
-    xyz_psi = get_spot_phase_coord(xyz, inclination, nrho, psi[ipsi])
-    visibility_flag, idx_miny, idx_minz, idx_maxy, idx_maxz = spot_area(
-        xyz_psi, nrho, grid_size)
+    # xyz_psi = get_spot_phase_coord(xyz, inclination, nrho, psi[ipsi])
+    # visibility_flag, idx_miny, idx_minz, idx_maxy, idx_maxz = spot_area(
+    #     xyz_psi, nrho, grid_size)
 
-    active_2d_surface_flag = active_2d_surface_flag_psi[ipsi, :, :]
+    active_2d_surface_temperature = active_2d_surface_temperature_psi[ipsi, :, :]
     
-    if visibility_flag == 1:
-        if fluxORint == 'flux':
-            (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
-            active_2d_surface_flux_sum, quiet_2d_surface_flux_sum, 
-            active_2d_surface_flag) =\
-                spot_scan_flux(
-                    vrot, inclination, limba1, limba2, grid_size, 
-                    vrad_spec, intensity_spec, intensity_spec_spot, 
-                    v_interval_spec, n_v_spec, n_spec,  
-                    spot_size, longitude, psi[ipsi], latitude, 
-                    idx_miny, idx_minz, idx_maxy, idx_maxz, active_2d_surface_flag
-                    )
-        if fluxORint == 'intensity':
-            (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
-             active_2d_surface_flux_sum, quiet_2d_surface_flux_sum, 
-             active_2d_surface_flag) =\
-                spot_scan_int(
-                    vrot, inclination, None, None, grid_size, 
-                    vrad_spec, intensity_spec, intensity_spec_spot, 
-                    v_interval_spec, n_v_spec, n_spec,  
-                    spot_size, longitude, psi[ipsi], latitude, 
-                    idx_miny, idx_minz, idx_maxy, idx_maxz, active_2d_surface_flag, mu_s)
-    else:       
-        intergrated_total_stellar_spectrum = np.zeros(n_v_spec, dtype=np.float64)
-        intergrated_total_quiet_spectrum = np.zeros(n_v_spec, dtype=np.float64)
-        active_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
-        quiet_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
+    # if visibility_flag == 1:
+    if fluxORint == 'flux':
+        (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
+        active_2d_surface_flux_sum, quiet_2d_surface_flux_sum) =\
+            spot_scan_flux(
+                vrot, inclination, Tphoto, grid_size, Spec_dict, star_LD_coeff,
+                vrad_spec, intensity_spec, 
+                v_interval_spec, n_v_spec, n_spec,  
+                # spot_size, longitude, psi[ipsi], latitude, 
+                active_2d_surface_temperature
+                )
+    if fluxORint == 'intensity':
+        (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
+            active_2d_surface_flux_sum, quiet_2d_surface_flux_sum) =\
+            spot_scan_int(
+                vrot, inclination, Tphoto, grid_size, Spec_dict, star_LD_coeff,
+                vrad_spec, intensity_spec, 
+                v_interval_spec, n_v_spec, n_spec,  
+                # spot_size, longitude, psi[ipsi], latitude, 
+                active_2d_surface_temperature)
+    # else:       
+    #     intergrated_total_stellar_spectrum = np.zeros(n_v_spec, dtype=np.float64)
+    #     intergrated_total_quiet_spectrum = np.zeros(n_v_spec, dtype=np.float64)
+    #     active_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
+    #     quiet_2d_surface_flux_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
 
     return (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, psi[ipsi], 
-            active_2d_surface_flux_sum, quiet_2d_surface_flux_sum, active_2d_surface_flag)
+            active_2d_surface_flux_sum, quiet_2d_surface_flux_sum)
 
 # def _get_intensity_ratio(T_star, T_diff_spot):
 #     # IGRINS H band OH line center 15631.3246 A
@@ -1073,10 +1126,11 @@ def spot_scan_npsi_pal(
 
 
 def spot_scan_npsi(
-    xyz, nrho, psi, npsi, vrot, inclination, limba1, limba2, grid_size, 
-    vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, n_v_spec, 
-    n_spec, mu_s, spot_size, longitude, latitude, cpu_use, fluxORint, 
-    active_2d_surface_flag_psi, silence_pbar
+    xyz, nrho, psi, npsi, vrot, inclination, Tphoto, grid_size, Spec_dict,
+    star_LD_coeff,
+    vrad_spec, intensity_spec, v_interval_spec, n_v_spec, 
+    n_spec, spot_size, longitude, latitude, cpu_use, fluxORint, 
+    active_2d_surface_temperature_psi, silence_pbar
     ):
     """Scans the yz-area where the spot is for different phases (psi) and        
     returns the spot's "non-contribution" to the total flux and its           
@@ -1089,25 +1143,27 @@ def spot_scan_npsi(
     visible_phi_box = []
     active_2d_surface_flux_sum_box = []
     quiet_2d_surface_flux_sum_box = []
-    active_2d_surface_flag_psi_box = []
+    # active_2d_surface_flag_psi_box = []
 
     # intensity = _get_intensity_ratio(T_star, T_diff_spot)
 
     func = partial(
         spot_scan_npsi_pal, 
-        xyz, inclination, nrho, psi, grid_size, vrot, limba1, limba2, 
-        vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, 
-        n_v_spec, n_spec, mu_s, spot_size, longitude, latitude, fluxORint,
-        active_2d_surface_flag_psi
+        xyz, inclination, Tphoto, nrho, psi, grid_size, Spec_dict, star_LD_coeff,
+        vrot, 
+        vrad_spec, intensity_spec, v_interval_spec, 
+        n_v_spec, n_spec, spot_size, longitude, latitude, fluxORint,
+        active_2d_surface_temperature_psi
         )
     
     # for i in range(npsi):
     #     print(f'Scanning phase {i+1}/{npsi} ({psi[i]})')
     #     spot_scan_npsi_pal(
-    #     xyz, inclination, nrho, psi, grid_size, vrot, limba1, limba2, 
-    #     vrad_spec, intensity_spec, intensity_spec_spot, v_interval_spec, 
-    #     n_v_spec, n_spec, mu_s, spot_size, longitude, latitude, fluxORint,
-    #     active_2d_surface_flag_psi, i
+    #     xyz, inclination, Tphoto, nrho, psi, grid_size, Spec_dict, star_LD_coeff,
+    #     vrot, 
+    #     vrad_spec, intensity_spec, v_interval_spec, 
+    #     n_v_spec, n_spec, spot_size, longitude, latitude, fluxORint,
+    #     active_2d_surface_temperature_psi, i
     #     )
 
     outs = pqdm(np.arange(npsi), func, n_jobs=cpu_use, disable=silence_pbar)
@@ -1120,13 +1176,13 @@ def spot_scan_npsi(
         visible_phi_box.append(outsbox[2])
         active_2d_surface_flux_sum_box.append(outsbox[3])
         quiet_2d_surface_flux_sum_box.append(outsbox[4])
-        active_2d_surface_flag_psi_box.append(outsbox[5])
+        # active_2d_surface_flag_psi_box.append(outsbox[5])
     
-    active_2d_surface_flag_psi = np.array(active_2d_surface_flag_psi_box, dtype=int)
+    # active_2d_surface_flag_psi = np.array(active_2d_surface_flag_psi_box, dtype=int)
 
     return (intergrated_total_stellar_spectrum_box, intergrated_total_quiet_spectrum_box, 
             visible_phi_box, active_2d_surface_flux_sum_box, 
-            quiet_2d_surface_flux_sum_box, active_2d_surface_flag_psi)
+            quiet_2d_surface_flux_sum_box)
 
 
     

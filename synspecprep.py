@@ -12,7 +12,6 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
-import bz2
 import pandas as pd
 import configparser
 from astropy.io import fits
@@ -22,9 +21,6 @@ from specutils import Spectrum1D
 import h5py
 
 from rds3v import rds3v
-# from specutils.manipulation import FluxConservingResampler
-# from specutils.analysis import gaussian_sigma_width, gaussian_fwhm, fwhm, fwzi
-# from specutils import Spectrum1D, SpectralRegion
 
 config = configparser.ConfigParser()
 
