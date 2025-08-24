@@ -22,9 +22,6 @@ from astropy.table import Table
 import spotact_core, spotact_utils
 import spotact_spot as stsp
 import visualization as vis
-# from pyphot import astropy as pyphot
-from pyphot import svo
-from spotact_core import flatten_model_spec
 
 
 # CONFIG_FILE = 'config_LkCa4base_SizeDelT_study.cfg'
@@ -68,209 +65,209 @@ def setup_logging(debug: bool = False) -> logging.Logger:
 def init_setup_cfg(
     logger: logging.Logger,
     config_file: str,
-    post_fix: str = None
+    post_fix: str = None,
+    *,
+    host_override: str | None = None,  # optional convenience for testing
 ):
     """
     Initialize and parse configuration, set up directories, and prepare simulation parameters.
 
-    Args:
-        logger (logging.Logger): Logger for status and warnings.
-        config_file (str): Path to the configuration file.
-        post_fix (str, optional): Suffix for output directory naming.
-
     Returns:
-        tuple: (STAR, bands, SAVE_DIR, nrho, grid_size, instrument_res, cpu_use, plot_flag,
-                save_spec_flag, sim_spec_window_size, syn_model_path, rv_ccf_pars, PSI,
-                active_regions_number, active_region_box, sim_spec_line_centers, filters)
+        (STAR, bands, SAVE_DIR, nrho, grid_size, instrument_res, cpu_use, plot_flag,
+         save_spec_flag, sim_spec_window_size, syn_model_path, rv_ccf_pars, PSI,
+         active_regions_number, active_region_box, sim_spec_line_centers, filters)
     """
     # --- Read config ---
-    config = configparser.ConfigParser(inline_comment_prefixes=';')
-    config.read(config_file)
-    save_folder_name = config.get('output', 'save_folder_name', fallback='').strip()
-    hostname = socket.gethostname().split('.')[0].split('-')[0]
+    cfg = configparser.ConfigParser(inline_comment_prefixes=';')
+    read_ok = cfg.read(config_file)
+    if not read_ok:
+        raise FileNotFoundError(f"Config file not found or unreadable: {config_file}")
+
+    # --- Host & save dir ---
+    hostname = (host_override or socket.gethostname()).split('.')[0].split('-')[0]
+    save_folder_name = cfg.get('output', 'save_folder_name', fallback='').strip()
     SAVE_DIR = f"{save_folder_name}_{post_fix}_{hostname}" if post_fix else f"{save_folder_name}_{hostname}"
 
-    # --- Spectroscopic Parameters ---
-    wv_start = int(config.get('spectroscopic', 'wavelength_start'))
-    wv_end = int(config.get('spectroscopic', 'wavelength_end'))
-    wv_step = int(config.get('spectroscopic', 'wavelength_step'))
-    sim_spec_window_size = float(config.get('spectroscopic', 'simulate_spectra_window'))
+    # --- Spectroscopic parameters ---
+    wv_start = cfg.getint('spectroscopic', 'wavelength_start')
+    wv_end   = cfg.getint('spectroscopic', 'wavelength_end')
+    wv_step  = cfg.getint('spectroscopic', 'wavelength_step')
+    sim_spec_window_size = cfg.getfloat('spectroscopic', 'simulate_spectra_window')
 
-    # --- Photometric Parameters ---
-    filters = config.get('photometry', 'filters').split(',')
+    sim_spec_line_centers = np.arange(wv_start, wv_end + 1, wv_step, dtype=np.float32)
+
+    # --- Photometry parameters ---
+    filters_raw = cfg.get('photometry', 'filters', fallback='').strip()
+    filters = [f.strip() for f in filters_raw.split(',')] if filters_raw else []
+    has_filters = len(filters) > 0 and filters[0].lower() not in ('', 'none')
 
     # --- Bands setup ---
-    sim_spec_line_centers = np.arange(wv_start, wv_end + 1, wv_step)
     bands = {
-        f"w{wave_center // 100}": [
-            float(wave_center),
-            sim_spec_window_size,
-            'rv',
-            'flux',
-            'phx'
-        ]
-        for wave_center in sim_spec_line_centers
+        f"w{int(w)//100}": [float(w), sim_spec_window_size, 'rv', 'flux', 'phx']
+        for w in sim_spec_line_centers
     }
-    
     bands = {}
-    # Add Equivalent Width Ratio (EWR) band
-    bands['ewr_FeOH'] = [15557, 90, 'rv', 'intensity', 'synmast']
+    bands['ewr_FeOH'] = [15557.0, 90.0, 'rv', 'intensity', 'synmast']
 
-    # --- Photometry band setup ---
-    if (len(filters) == 1 and 'None' in filters[0]) or (len(filters) == 1 and filters[0] == ''):
-        logger.info('No filters specified. Will not generate photometry.')
+    if has_filters:
+        logger.info(f'\nDetect filters. Will generate photometry for {filters}.')
+        try:
+            from pyphot import svo  # import here so unit tests without pyphot still pass init for spec-only runs
+            profiles = [svo.get_pyphot_filter(filt) for filt in filters]
+            # nm -> Å
+            fwv = np.concatenate([p.wavelength for p in profiles]).astype(np.float32) * 10.0
+            wmin, wmax = float(np.min(fwv)), float(np.max(fwv))
+            if wmin < 500 or wmax > 50000:
+                logger.warning(f'Filter wavelength range {wmin:.1f}–{wmax:.1f} Å is outside 500–50000 Å.')
+            photo_center = int((wmax + wmin) * 0.5)
+            photo_width  = int((wmax - wmin) * 0.5)
+            bands['photo'] = [float(photo_center), float(photo_width), 'photo', 'intensity', 'phx']
+        except Exception as e:
+            logger.warning(f'Photometry filters could not be loaded ({e}). Photometry will be skipped.')
+            has_filters = False
     else:
-        logger.info(f'Detect filters. Will generate photometry for {filters}.')
-        filter_profiles = [svo.get_pyphot_filter(filt) for filt in filters]
-        filter_wavelengths = np.concatenate([f.wavelength for f in filter_profiles]) * 10  # nm to AA
-        filter_wv_min, filter_wv_max = np.min(filter_wavelengths), np.max(filter_wavelengths)
-        if filter_wv_min < 500 or filter_wv_max > 50000:
-            logger.warning(
-                f'Filter wavelength range {filter_wv_min:.1f} - {filter_wv_max:.1f} AA is not in the range of 500 - 50000 AA.'
-            )
-        photo_center = int((filter_wv_max + filter_wv_min) / 2)
-        photo_width = int((filter_wv_max - filter_wv_min) / 2)
-        bands['photo'] = [photo_center, photo_width, 'photo', 'intensity', 'phx']
+        logger.info('No filters specified. Will not generate photometry.')
 
-    # --- Path setup ---
+    # --- Paths ---
     path_sub = 1 if hostname == 'Swing' else 2
-    RASSINE_PATH = config.get('path', f'rassine_path{path_sub}')
-    SYNmast_PATH = config.get('path', f'synmast_prf{path_sub}')
+    RASSINE_PATH = cfg.get('path', f'rassine_path{path_sub}')
+    SYNmast_PATH = cfg.get('path', f'synmast_prf{path_sub}')
+    phx_path     = cfg.get('path', 'PHOENIX_path')
     syn_model_path = {'phx': RASSINE_PATH, 'synmast': SYNmast_PATH}
-    phx_path = config.get('path', 'PHOENIX_path')
 
-    # --- Output and model parameters ---
-    plot_flag = int(config.get('output', 'plot'))
-    save_spec_flag = int(config.get('output', 'save_spec'))
-    grid_size = int(config.get('main', 'grid'))
-    nrho = int(config.get('main', 'nrho'))
-    instrument_res = int(config.get('main', 'instrument_reso'))
-    cpu_use = 6 if hostname == 'Swing' else 30
+    # --- Output & model params ---
+    plot_flag      = cfg.getint('output', 'plot')
+    save_spec_flag = cfg.getint('output', 'save_spec')
+    grid_size      = cfg.getint('main', 'grid')
+    nrho           = cfg.getint('main', 'nrho')
+    instrument_res = cfg.getint('main', 'instrument_reso')
 
-    # --- Stellar parameters ---
-    stellar_radius = float(config.get('star', 'radius')) * SOLAR_RADIUS
-    rotation_period = float(config.get('star', 'prot'))
-    incl = float(config.get('star', 'I'))
-    psi = float(config.get('star', 'psi'))
-    Temp = int(config.get('star', 'Tstar'))
-    logg = float(config.get('star', 'logg'))
-    FeH = float(config.get('star', 'FeH'))
+    # Keep it simple: Swing=6, else use system cpu_count (reasonable cap)
+    default_cpus = 6 if hostname == 'Swing' else (os.cpu_count() or 8)
+    cpu_use = min(max(default_cpus, 1), 64)
 
-    # --- Active region parameters ---
-    cool_active_regions_number = int(config.get('cool_active_regions', 'spot_number'))
-    hot_active_regions_number = int(config.get('hot_active_regions', 'spot_number'))
-    active_regions_number = cool_active_regions_number + hot_active_regions_number
+    # --- Stellar params ---
+    stellar_radius  = cfg.getfloat('star', 'radius') * SOLAR_RADIUS
+    rotation_period = cfg.getfloat('star', 'prot')
+    incl            = cfg.getfloat('star', 'I')
+    psi             = cfg.getfloat('star', 'psi')
+    Temp            = cfg.getint('star', 'Tstar')
+    logg            = cfg.getfloat('star', 'logg')
+    FeH             = cfg.getfloat('star', 'FeH')
 
-    logger.info(
-        f"Found {cool_active_regions_number} cool region(s), "
-        f"and {hot_active_regions_number} hot region(s)."
-    )
+    # --- Active region counts ---
+    cool_n = cfg.getint('cool_active_regions', 'spot_number')
+    hot_n  = cfg.getint('hot_active_regions',  'spot_number')
+    active_regions_number = cool_n + hot_n
+    logger.info(f"Found {cool_n} cool region(s), and {hot_n} hot region(s).")
 
-    def parse_region(key, region_type):
-        return np.array([
-            float(val) for val in re.split(r'[,\s]+', config.get(region_type, key).strip()) if val
-        ])
+    # --- Fast parsers for lists ---
+    def parse_region(section: str, key: str, dtype):
+        raw = cfg.get(section, key).strip()
+        cleaned = re.sub(r'[,\s]+', ' ', raw).strip()
+        if not cleaned:
+            return np.array([], dtype=dtype)
+        return np.fromstring(cleaned, sep=' ', dtype=dtype)
 
-    cool_active_region_longs = parse_region('longitudes', 'cool_active_regions')
-    cool_active_region_lats = parse_region('latitudes', 'cool_active_regions')
-    cool_active_region_sizes = parse_region('sizes', 'cool_active_regions')
-    cool_active_region_dTemp = np.array([
-        int(val) for val in re.split(r'[,\s]+', config.get('cool_active_regions', 'Tcool_spots').strip()) if val
-    ])
+    # Cool regions
+    cool_longs = parse_region('cool_active_regions', 'longitudes', np.float32)
+    cool_lats  = parse_region('cool_active_regions', 'latitudes',  np.float32)
+    cool_sizes = parse_region('cool_active_regions', 'sizes',      np.float32)
+    cool_dT    = parse_region('cool_active_regions', 'Tcool_spots', np.int16)
 
-    # Sort cool spots by dTemp descending
-    sort_idx = np.argsort(cool_active_region_dTemp)[::-1]
-    cool_active_region_longs = cool_active_region_longs[sort_idx]
-    cool_active_region_lats = cool_active_region_lats[sort_idx]
-    cool_active_region_sizes = cool_active_region_sizes[sort_idx]
-    cool_active_region_dTemp = cool_active_region_dTemp[sort_idx]
-    cool_active_region_Temp = Temp - cool_active_region_dTemp
+    if cool_dT.size:
+        idx = np.argsort(cool_dT)[::-1]  # largest |ΔT| first
+        cool_longs, cool_lats, cool_sizes, cool_dT = cool_longs[idx], cool_lats[idx], cool_sizes[idx], cool_dT[idx]
+    cool_T = np.int32(Temp) - cool_dT.astype(np.int32)
 
-    hot_active_region_longs = parse_region('longitudes', 'hot_active_regions')
-    hot_active_region_lats = parse_region('latitudes', 'hot_active_regions')
-    hot_active_region_sizes = parse_region('sizes', 'hot_active_regions')
-    hot_active_region_dTemp = np.array([
-        int(val) for val in re.split(r'[,\s]+', config.get('hot_active_regions', 'Thot_faculae').strip()) if val
-    ])
-    sort_idx = np.argsort(hot_active_region_dTemp)[::-1]
-    hot_active_region_longs = hot_active_region_longs[sort_idx]
-    hot_active_region_lats = hot_active_region_lats[sort_idx]
-    hot_active_region_sizes = hot_active_region_sizes[sort_idx]
-    hot_active_region_dTemp = hot_active_region_dTemp[sort_idx]
-    hot_active_region_Temp = Temp + hot_active_region_dTemp
+    # Hot regions
+    hot_longs = parse_region('hot_active_regions', 'longitudes', np.float32)
+    hot_lats  = parse_region('hot_active_regions', 'latitudes',  np.float32)
+    hot_sizes = parse_region('hot_active_regions', 'sizes',      np.float32)
+    hot_dT    = parse_region('hot_active_regions', 'Thot_faculae', np.int16)
 
-    # Convert area % to spot radius
-    cool_active_region_sizes_percent = cool_active_region_sizes.copy()
-    cool_active_region_sizes = np.sqrt(cool_active_region_sizes / 100)
-    hot_active_region_sizes_percent = hot_active_region_sizes.copy()
-    hot_active_region_sizes = np.sqrt(hot_active_region_sizes / 100)
+    if hot_dT.size:
+        idx = np.argsort(hot_dT)[::-1]
+        hot_longs, hot_lats, hot_sizes, hot_dT = hot_longs[idx], hot_lats[idx], hot_sizes[idx], hot_dT[idx]
+    hot_T = np.int32(Temp) + hot_dT.astype(np.int32)
 
-    # Concatenate all active regions
-    active_region_longs = np.concatenate([cool_active_region_longs, hot_active_region_longs])
-    active_region_lats = np.concatenate([cool_active_region_lats, hot_active_region_lats])
-    active_region_Temp = np.concatenate([cool_active_region_Temp, hot_active_region_Temp])
-    active_region_sizes = np.concatenate([cool_active_region_sizes, hot_active_region_sizes])
-    active_region_box = [active_region_longs, active_region_lats, active_region_sizes, active_region_Temp]
+    # Convert % area -> radius fraction (sqrt of fractional area)
+    cool_sizes = np.sqrt(cool_sizes / 100.0, dtype=np.float32)
+    hot_sizes  = np.sqrt(hot_sizes  / 100.0, dtype=np.float32)
+
+    # Concatenate all regions
+    active_region_longs = np.concatenate([cool_longs, hot_longs]).astype(np.float32, copy=False)
+    active_region_lats  = np.concatenate([cool_lats,  hot_lats ]).astype(np.float32, copy=False)
+    active_region_sizes = np.concatenate([cool_sizes, hot_sizes]).astype(np.float32, copy=False)
+    active_region_Temp  = np.concatenate([cool_T,     hot_T   ]).astype(np.int32,   copy=False)
+    active_region_box   = [active_region_longs, active_region_lats, active_region_sizes, active_region_Temp]
 
     # --- Star object ---
     STAR = spotact_core.Star(
         prot=rotation_period,
-        vrot=(2 * np.pi * stellar_radius) / (rotation_period * 86400),
+        vrot=(2.0 * np.pi * stellar_radius) / (rotation_period * 86400.0),
         incl=incl,
         psi=psi,
         rad_sun=SOLAR_RADIUS,
         rad=stellar_radius,
-        Temp=Temp,
-        Tspot=cool_active_region_Temp,
-        Tfaculae=hot_active_region_Temp,
+        Temp=int(Temp),
+        Tspot=cool_T,        # already int32
+        Tfaculae=hot_T,      # already int32
         logg=logg,
         FeH=FeH,
         bands2use=bands,
     )
-    STAR.vsini = STAR.vrot * np.sin(np.deg2rad(STAR.incl))
-    if 'photo' in bands.keys():
+    STAR.vsini = float(STAR.vrot * np.sin(np.deg2rad(STAR.incl)))
+    if 'photo' in bands:
         STAR.filters = filters
     STAR.inst_res = instrument_res
 
     # --- Output directories ---
-    dirs_to_create = [
-        "syn_spec", "syn_spec/RASSINE_PHX", "syn_spec/SimUse", "syn_spec/Photometry_use_Spec",
-        f"outputs/{SAVE_DIR}", f"outputs/{SAVE_DIR}/normal_spec", f"outputs/{SAVE_DIR}/spec",
-        f"outputs/{SAVE_DIR}/ccf_template", "outputs/CCF",
-    ]
-    for path in dirs_to_create:
-        os.makedirs(path, exist_ok=True)
+    out_base = Path("outputs") / SAVE_DIR
+    for p in [
+        Path("syn_spec"),
+        Path("syn_spec/RASSINE_PHX"),
+        Path("syn_spec/SimUse"),
+        Path("syn_spec/Photometry_use_Spec"),
+        out_base,
+        out_base / "normal_spec",
+        out_base / "spec",
+        out_base / "ccf_template",
+        Path("outputs/CCF"),
+    ]:
+        p.mkdir(parents=True, exist_ok=True)
 
     # --- RV CCF template parameters ---
-    rv_ccf_pars = np.zeros(5) + 99999
+    rv_ccf_pars = np.zeros(5, dtype=np.float32) + 99999.0
 
     # --- Phase setup ---
-    phase_step = float(config.get('output', 'ph_step'))
-    phase_in = config.get('output', 'ph_in', fallback='').strip()
+    phase_step = cfg.getfloat('output', 'ph_step')
+    phase_in   = cfg.get('output', 'ph_in', fallback='').strip()
+
     if phase_in and phase_in.lower() != 'none':
-        with open(phase_in) as f:
-            PSI = np.array([float(l.split()[0]) for l in f.readlines()])
+        with open(phase_in, 'r') as f:
+            PSI = np.fromiter((float(line.split()[0]) for line in f), dtype=np.float32)
     elif phase_step > 0:
-        # PSI = np.arange(0, 1.0, phase_step)
-        PSI = np.arange(-0.75, 0.751, phase_step)
+        PSI = np.arange(-0.75, 0.751, phase_step, dtype=np.float32)
     else:
         logger.warning("Put a positive phase step ('ph_step') or provide a phase file ('ph_in').")
+        PSI = np.array([], dtype=np.float32)
 
-    # --- PHOENIX mode path ---
-    STAR.phx_path = Path(f'{phx_path}/PHOENIX-ACES-AGSS-COND-2011').expanduser()
-    os.makedirs(STAR.phx_path, exist_ok=True)
-    os.makedirs(STAR.phx_path / 'SpecInt', exist_ok=True)
-    os.makedirs(STAR.phx_path / 'SpecFlux', exist_ok=True)
+    # --- PHOENIX paths ---
+    phx_root = Path(phx_path).expanduser() / 'PHOENIX-ACES-AGSS-COND-2011'
+    STAR.phx_path = phx_root
+    (phx_root / 'SpecInt').mkdir(parents=True, exist_ok=True)
+    (phx_root / 'SpecFlux').mkdir(parents=True, exist_ok=True)
 
     # --- Grid check and flatten synthetic spectra ---
     spotact_utils.grid_resolution_check(grid_size)
 
-    STAR.ccf_template_photosphereORnot = float(config.get('ccf', 'Use_photosphere_teff'))
-    if STAR.ccf_template_photosphereORnot == 1:
+    STAR.ccf_template_photosphereORnot = float(cfg.get('ccf', 'Use_photosphere_teff'))
+    if STAR.ccf_template_photosphereORnot == 1.0:
         STAR.ccf_temp = STAR.Temp
         fit_temp = None
     else:
-        STAR.ccf_temp = float(config.get('ccf', 'Teff'))
+        STAR.ccf_temp = float(cfg.get('ccf', 'Teff'))
         fit_temp = STAR.ccf_temp
 
     STAR.find_fluxspec_flatten(SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path, fit_temp)
@@ -279,51 +276,59 @@ def init_setup_cfg(
         STAR, bands, SAVE_DIR, nrho, grid_size, instrument_res, cpu_use, plot_flag,
         save_spec_flag, sim_spec_window_size, syn_model_path, rv_ccf_pars, PSI,
         active_regions_number, active_region_box, sim_spec_line_centers, filters
-    )
+        )
 
 def setup_activate_spectra(bands, STAR, plot_flag, syn_model_path):
     """
     Prepare synthetic spectra for all bands and temperatures for the spotted star simulation.
 
     Args:
-        bands (dict): Band definitions with wavelength, width, mode, etc.
-        STAR (Star): The star object with physical and spectral properties.
-        plot_flag (int): If True, enable plotting during spectrum generation.
-        syn_model_path (dict): Paths to synthetic model spectra.
+        bands (dict): {band_name: [center, width, mode, 'intensity'|'flux'|'photo', 'phx'|'synmast']}
+        STAR (Star): Star object with physical/spectral props already set up.
+        plot_flag (int): 0/1 toggles plotting inside STAR methods.
+        syn_model_path (dict): paths for synthetic model spectra.
 
     Returns:
-        list: List of dictionaries mapping temperature to Spec objects for each band.
+        list[dict[int, spotact_core.Spec]]: same ordering as bands.keys()
     """
-    # Determine which intensity modes are needed
-    intensity_modes = np.unique(np.vstack(list(bands.values()))[:, 3])
-    temp_list = np.concatenate([[STAR.Temp], STAR.Tspot, STAR.Tfaculae])
+    # Which intensity modes do we need overall?
+    # (Set avoids duplicates; also robust if someone adds more bands later.)
+    intensity_modes = {params[3] for params in bands.values()}
 
-    # Generate limb darkening and spectra as needed
-    line_centers = [band[0] for band in bands.values()]
-    line_widths = [band[1] for band in bands.values()]
+    # Unique temperature list (int32) to avoid duplicate Spec objects
+    # Keep photosphere + all spot/facula temps
+    temp_list = np.unique(
+        np.concatenate(([np.int32(STAR.Temp)], STAR.Tspot.astype(np.int32), STAR.Tfaculae.astype(np.int32)))
+    )
 
+    # Vectorize band centers/widths once, cast to float32 to save RAM
+    line_centers = np.array([params[0] for params in bands.values()], dtype=np.float32)
+    line_widths  = np.array([params[1] for params in bands.values()], dtype=np.float32)
+
+    # Limb darkening only needs to be computed once for the temp×band grid
+    # (Both flux and intensity paths rely on LD.)
+    STAR.get_quadratic_limbdarken(temp_list, line_centers, line_widths)
+
+    # Build synthetic spectra “banks” only for the modes we actually need
     if 'flux' in intensity_modes:
-        STAR.get_quadratic_limbdarken(temp_list, line_centers, line_widths)
         STAR.find_fluxspec(SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path)
-
-    if 'intensity' in intensity_modes:
-        STAR.get_quadratic_limbdarken(temp_list, line_centers, line_widths)
+    if 'intensity' in intensity_modes or 'photo' in intensity_modes:
         STAR.find_intensityspec(SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path)
 
-    # Build Spec objects for each band and temperature
+    # Build per-band Spec dictionaries (temp -> Spec)
+    # Keep the same order as bands.keys(), so SPEC_box[i] matches enumerate(bands.keys()) in main_model
     SPEC_box = []
-    for band_name, band_params in bands.items():
-        int_or_flux = band_params[3]
-        model_type = band_params[4]
+    for band_name in bands.keys():
+        center, width, mode, int_or_flux, model_type = bands[band_name]
         spec_dict = {
-            int(temp): spotact_core.Spec(
+            int(t): spotact_core.Spec(
                 star=STAR,
                 band=band_name,
-                temperature=temp,
+                temperature=int(t),
                 intORflux=int_or_flux,
-                model_type=model_type
+                model_type=model_type,
             )
-            for temp in temp_list
+            for t in temp_list
         }
         SPEC_box.append(spec_dict)
 
@@ -430,194 +435,186 @@ def main_model(
     instrument_res, cpu_use, SAVE_DIR, save_spec_flag, plot_flag, silence_pbar
 ):
     """
-    Run the main simulation for all bands and output results.
+    Run the per-band spotted-star simulations and write outputs.
 
     Args:
-        logger (logging.Logger): Logger for status and warnings.
-        bands (dict): Band definitions.
+        logger (logging.Logger): Logger for status and timing.
+        bands (dict): Mapping band_name -> [center, width, mode, intORflux, model_type].
         nrho (int): Circumference resolution.
-        grid_size (int): Grid resolution.
-        STAR (Star): Star object.
-        PSI (array): Phases.
-        SPEC_box (list): List of Spec dictionaries for each band.
-        filters (list): List of filter names.
+        grid_size (int): Surface grid resolution (N x N).
+        STAR (spotact_core.Star): Initialized star object with spectra prepared.
+        PSI (array[float32]): Phase array.
+        SPEC_box (list[dict[int, spotact_core.Spec]]): Per-band dict: temperature -> Spec object.
+        filters (list[str]): Photometry filters from SVO (if 'photo' band used).
         active_regions_number (int): Number of active regions.
-        active_region_box (list): Active region properties.
-        rv_ccf_pars (array): RV CCF template parameters.
-        syn_model_path (dict): Paths to synthetic model spectra.
+        active_region_box (tuple[np.ndarray]): (longitudes, latitudes, sizes_rfrac, temperatures).
+        rv_ccf_pars (np.ndarray): RV CCF template parameters.
+        syn_model_path (dict): Model paths {'phx': ..., 'synmast': ...}.
         instrument_res (int): Instrumental resolution.
-        cpu_use (int): Number of CPUs used.
-        SAVE_DIR (str): Output directory.
-        save_spec_flag (int): If True, save spectra.
-        plot_flag (int): If True, plot results.
-        silence_pbar (bool): If True, silence progress bars.
+        cpu_use (int): # of logical CPUs to use downstream.
+        SAVE_DIR (str): Output directory name under ./outputs/.
+        save_spec_flag (int): If 1, save flattened spectra arrays.
+        plot_flag (int): If 1, produce plots via visualization helpers.
+        silence_pbar (bool): Silence progress bars in inner routines.
 
     Returns:
-        str: Output directory used for saving results.
+        str: The final output folder path string (same base for each band; band suffix varies).
     """
-    # sort active regions by temperature so do coolest first for cool spots, and 
-    # hottest first for hot spots
-    (active_region_longs, active_region_lats, active_region_sizes, 
-        active_region_Temp) = active_region_box
-    active_region_org_idx = np.arange(len(active_region_longs))
 
-    temp_cool_idx = active_region_Temp - STAR.Temp < 0
-    temp_hot_idx = active_region_Temp - STAR.Temp > 0
+    # ---- Normalize active-region order ONCE (coolest cools first, hottest hots first) ----
+    (active_region_longs, active_region_lats,
+     active_region_sizes, active_region_Temp) = active_region_box
 
-    sort_idx = np.argsort(STAR.Tspot)
-    # Apply the same order to all arrays
-    cool_active_region_longs = active_region_longs[temp_cool_idx][sort_idx]
-    cool_active_region_lats = active_region_lats[temp_cool_idx][sort_idx]
-    cool_active_region_sizes = active_region_sizes[temp_cool_idx][sort_idx]
-    cool_active_region_Temp = active_region_Temp[temp_cool_idx][sort_idx]
-    cool_active_region_org_idx = active_region_org_idx[temp_cool_idx][sort_idx]
+    n_regions = len(active_region_longs)
+    active_region_org_idx = np.arange(n_regions)
 
-    sort_idx = np.argsort(STAR.Tfaculae)[::-1]  # ascending; use [::-1] for descending
-    # Apply the same order to all arrays
-    hot_active_region_longs = active_region_longs[temp_hot_idx][sort_idx]
-    hot_active_region_lats = active_region_lats[temp_hot_idx][sort_idx]
-    hot_active_region_sizes = active_region_sizes[temp_hot_idx][sort_idx]
-    hot_active_region_Temp = active_region_Temp[temp_hot_idx][sort_idx]
-    hot_active_region_org_idx = active_region_org_idx[temp_hot_idx][sort_idx]
+    cool_mask = (active_region_Temp - STAR.Temp) < 0
+    hot_mask  = (active_region_Temp - STAR.Temp) > 0
 
-    active_region_longs = np.concatenate(
-        [cool_active_region_longs, hot_active_region_longs])
-    active_region_lats = np.concatenate(
-        [cool_active_region_lats, hot_active_region_lats])
-    active_region_sizes = np.concatenate(
-        [cool_active_region_sizes, hot_active_region_sizes])
-    active_region_Temp = np.concatenate(
-        [cool_active_region_Temp, hot_active_region_Temp])
-    active_region_org_idx = np.concatenate(
-        [cool_active_region_org_idx, hot_active_region_org_idx])
-    # -------------
+    cool_sort = np.argsort(STAR.Tspot)            # cool temps low->high
+    hot_sort  = np.argsort(STAR.Tfaculae)[::-1]   # hot temps high->low
+
+    cool_idx = np.flatnonzero(cool_mask)[cool_sort]
+    hot_idx  = np.flatnonzero(hot_mask)[hot_sort]
+    seq_idx  = np.concatenate([cool_idx, hot_idx]) if (cool_idx.size + hot_idx.size) else np.arange(n_regions)
+
+    # Reorder + compact dtypes
+    active_region_longs = np.asarray(active_region_longs, dtype=np.float32)[seq_idx]
+    active_region_lats  = np.asarray(active_region_lats,  dtype=np.float32)[seq_idx]
+    active_region_sizes = np.asarray(active_region_sizes, dtype=np.float32)[seq_idx]
+    active_region_Temp  = np.asarray(active_region_Temp,  dtype=np.int32)[seq_idx]
+    active_region_org_idx = active_region_org_idx[seq_idx]
 
     active_region_box = (
-        active_region_longs, active_region_lats, active_region_sizes, 
-        active_region_Temp)
+        active_region_longs, active_region_lats, active_region_sizes, active_region_Temp
+    )
 
-    for i, band in enumerate(bands.keys()):
+    # ---- Build outdir base (independent of band) ----
+    sizes_percent = (active_region_sizes ** 2) * 100.0
+    def _fmt_arr(a):
+        return np.array2string(a, separator='-', formatter={'float_kind': lambda x: f'{int(x):d}'})\
+                 .strip('[]').replace(' ', '')
+
+    temp_str      = _fmt_arr(active_region_Temp)
+    temp_str_uniq = _fmt_arr(np.unique(active_region_Temp))
+    long_str      = _fmt_arr(active_region_longs)
+    lat_str       = _fmt_arr(active_region_lats)
+    size_str      = _fmt_arr(sizes_percent)
+
+    if active_regions_number < 4:
+        outdir_base = "./outputs/{}/{}_P={:.1f}_i={:.1f}_Tp={:1.0f}_logg={:1.1f}_Ta={}_lon={}_lat={}_size={}".format(
+            SAVE_DIR, 'MODEL', STAR.prot, STAR.incl, STAR.Temp, STAR.logg,
+            temp_str, long_str, lat_str, size_str)
+    else:
+        outdir_base = "./outputs/{}/{}_P={:.1f}_i={:.1f}_Tp={:1.0f}_logg={:1.1f}_SpotNum={:1.0f}_Ta={}".format(
+            SAVE_DIR, 'MODEL', STAR.prot, STAR.incl, STAR.Temp, STAR.logg,
+            active_regions_number, temp_str_uniq)
+
+    # ---- Main loop over bands ----
+    band_names = list(bands.keys())  # freeze order to align with SPEC_box
+    for i, band in enumerate(band_names):
         start_time = time()
-        intORflux = bands[band][3]
-        model_type = bands[band][4]
+
+        center, width, mode, intORflux, model_type = bands[band]
         logger.info(f'\n\nNow calculating the activity signal for the band: {band}')
         SPEC = SPEC_box[i]
 
-        # --- Main simulation ---
-        (visible_phi, integrated_stellar_spectrum, _, final_2d_surface_flux_sum) = spotact_core.calculate_activity_signal_spec(
+        outdir = outdir_base.replace('/MODEL_', f'/{model_type}_')
+
+        # Core simulation
+        visible_phi, integrated_stellar_spectrum, _, final_2d_surface_flux_sum = spotact_core.calculate_activity_signal_spec(
             nrho, grid_size, STAR, PSI, SPEC, active_regions_number, active_region_box,
             instrument_res, cpu_use, SAVE_DIR, band, save_spec_flag, intORflux.lower(), silence_pbar
         )
+        visible_phi = np.asarray(visible_phi, dtype=np.float32)
 
-        # --- Flatten spectra ---
-        if band != 'photo':
-            integrated_stellar_spectrum = flatten_model_spec(
-                STAR, integrated_stellar_spectrum, visible_phi, band,
-                intORflux, model_type, SAVE_DIR, plot_flag
-            )
-            if save_spec_flag == 1:
-                np.save(
-                    f'./outputs/{SAVE_DIR}/spec/{band}_flat_final_spec.npy',
-                    integrated_stellar_spectrum
-                )
-
-        # --- Equivalent Width Ratio (EWR) or placeholder ---
-        if band == 'ewr_FeOH':
-            ohfe_ratio = spotact_utils.get_equivalent_width(
-                STAR, integrated_stellar_spectrum, visible_phi, band, intORflux, model_type
-            )
-        else:
-            ohfe_ratio = np.zeros_like(visible_phi) + np.nan
-
-        # --- Calculate CCF RV ---
-        if band != 'photo':
-            logger.info('\nCalculating the RV with CCF...\n')
-            ccf_rv_shift = spotact_core.cal_ccf_rv(
-                integrated_stellar_spectrum, STAR, visible_phi, band, intORflux, model_type,
-                rv_ccf_pars, syn_model_path['synmast'], cpu_use, SAVE_DIR, SIMSPEC_VEL_BIN_SIZE,
-                plot_flag, silence_pbar, save_spec_flag
-            )
-        else:
-            ccf_rv_shift = np.zeros_like(visible_phi) + np.nan
-
-        # --- Calculate relative photometric variation ---
         if band == 'photo':
+            # Photometry only
             lightcurves_mag, lightcurves_flux = spotact_core.get_photometric(
                 integrated_stellar_spectrum, STAR, visible_phi, band, intORflux, model_type
             )
-        else:
-            lightcurves_mag, lightcurves_flux = [None, None]
+            ccf_rv_shift = np.full_like(visible_phi, np.nan, dtype=np.float32)
+            ohfe_ratio   = np.full_like(visible_phi, np.nan, dtype=np.float32)
 
-        # --- Prepare output folder names ---
-        (active_region_longs, active_region_lats, active_region_sizes, active_region_Temp) = active_region_box
-        active_region_sizes_percent = np.array(active_region_sizes) ** 2 * 100
+            # Save (Astropy Table)
+            tab = Table([visible_phi], names=['Phase'])
+            for j, filt in enumerate(filters):
+                fname = filt.split('/')[1]
+                tab[f'{fname}_mag']  = np.asarray(lightcurves_mag[j],  dtype=np.float32)
+                tab[f'{fname}_flux'] = np.asarray(lightcurves_flux[j], dtype=np.float32)
+                tab[f'{fname}_mag'].format  = '%.6f'
+                tab[f'{fname}_flux'].format = '%.6f'
+            tab['Phase'].format = '%.3f'
+            tab.write(f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv',
+                      format='csv', overwrite=True)
 
-        temp_str = np.array2string(active_region_Temp, separator='-', formatter={'float_kind': lambda x: f'{int(x):d}'})
-        temp_str_uniq = np.array2string(np.unique(active_region_Temp), separator='-', formatter={'float_kind': lambda x: f'{int(x):d}'})
-        long_str = np.array2string(active_region_longs, separator='-', formatter={'float_kind': lambda x: f'{int(x):d}'})
-        lat_str = np.array2string(active_region_lats, separator='-', formatter={'float_kind': lambda x: f'{int(x):d}'})
-        size_str = np.array2string(active_region_sizes_percent, separator='-', formatter={'float_kind': lambda x: f'{int(x):d}'})
+            if plot_flag == 1:
+                simulation_plot(
+                    grid_size, nrho, instrument_res, STAR, model_type, SAVE_DIR,
+                    active_regions_number, active_region_box, visible_phi, integrated_stellar_spectrum,
+                    ccf_rv_shift, final_2d_surface_flux_sum, outdir, cpu_use, ohfe_ratio,
+                    band, intORflux, filters, lightcurves_mag, lightcurves_flux
+                )
 
-        # Remove square brackets and spaces
-        temp_str = temp_str.strip('[]').replace(' ', '')
-        temp_str_uniq = temp_str_uniq.strip('[]').replace(' ', '')
-        long_str = long_str.strip('[]').replace(' ', '')
-        lat_str = lat_str.strip('[]').replace(' ', '')
-        size_str = size_str.strip('[]').replace(' ', '')
+            # Free big arrays
+            del integrated_stellar_spectrum, final_2d_surface_flux_sum, lightcurves_mag, lightcurves_flux
+            logger.warning(f'\n--> {band} run time: {(time()-start_time)/60:1.2f} min')
+            continue
 
-        if active_regions_number < 4:
-            outdir = "./outputs/{}/{}_P={:.1f}_i={:.1f}_Tp={:1.0f}_logg={:1.1f}_Ta={}_lon={}_lat={}_size={}".format(
-                SAVE_DIR, model_type, STAR.prot, STAR.incl, STAR.Temp, STAR.logg,
-                temp_str, long_str, lat_str, size_str)
-        else:
-            outdir = "./outputs/{}/{}_P={:.1f}_i={:.1f}_Tp={:1.0f}_logg={:1.1f}_SpotNum={:1.0f}_Ta={}".format(
-                SAVE_DIR, model_type, STAR.prot, STAR.incl, STAR.Temp, STAR.logg,
-                active_regions_number, temp_str_uniq)
-
-        # --- Save output table ---
-        if band != 'photo':
-            tab_save = Table(
-                data=(visible_phi, ccf_rv_shift, ohfe_ratio),
-                names=('Phase', 'RV', 'EWR')
-            )
-            tab_save['Phase'].format = '%.3f'
-            tab_save['RV'].format = '%.4f'
-            tab_save['EWR'].format = '%.5f'
-        else:
-            tab_save = Table([visible_phi], names=['Phase'])
-            for i, filt in enumerate(filters):
-                filter_name = filt.split('/')[1]
-                tab_save[f'{filter_name}_mag'] = lightcurves_mag[i]
-                tab_save[f'{filter_name}_mag'].format = '%.6f'
-                tab_save[f'{filter_name}_flux'] = lightcurves_flux[i]
-                tab_save[f'{filter_name}_flux'].format = '%.6f'
-            tab_save['Phase'].format = '%.3f'
-
-        tab_save.write(
-            f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv',
-            format='csv', overwrite=True
+        # Spectroscopy branch
+        integrated_stellar_spectrum = spotact_core.flatten_model_spec(
+            STAR, integrated_stellar_spectrum, visible_phi, band,
+            intORflux, model_type, SAVE_DIR, plot_flag
         )
+        if save_spec_flag == 1:
+            np.save(f'./outputs/{SAVE_DIR}/spec/{band}_flat_final_spec.npy',
+                    integrated_stellar_spectrum)
 
-        # --- Plotting ---
+        if band == 'ewr_FeOH':
+            ohfe_ratio = spotact_utils.get_equivalent_width(
+                STAR, integrated_stellar_spectrum, visible_phi, band, intORflux, model_type
+            ).astype(np.float32, copy=False)
+        else:
+            ohfe_ratio = np.full_like(visible_phi, np.nan, dtype=np.float32)
+
+        logger.info('\nCalculating the RV with CCF...\n')
+        ccf_rv_shift = spotact_core.cal_ccf_rv(
+            integrated_stellar_spectrum, STAR, visible_phi, band, intORflux, model_type,
+            rv_ccf_pars, syn_model_path['synmast'], cpu_use, SAVE_DIR, SIMSPEC_VEL_BIN_SIZE,
+            plot_flag, silence_pbar, save_spec_flag
+        )
+        ccf_rv_shift = np.asarray(ccf_rv_shift, dtype=np.float32)
+
+        # Save (Astropy Table)
+        tab = Table(data=(visible_phi, ccf_rv_shift, ohfe_ratio),
+                    names=('Phase', 'RV', 'EWR'))
+        tab['Phase'].format = '%.3f'
+        tab['RV'].format    = '%.4f'
+        tab['EWR'].format   = '%.5f'
+        tab.write(f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv',
+                  format='csv', overwrite=True)
+
+        # Plot
         if plot_flag == 1:
             simulation_plot(
                 grid_size, nrho, instrument_res, STAR, model_type, SAVE_DIR,
                 active_regions_number, active_region_box, visible_phi, integrated_stellar_spectrum,
                 ccf_rv_shift, final_2d_surface_flux_sum, outdir, cpu_use, ohfe_ratio,
-                band, intORflux, filters, lightcurves_mag, lightcurves_flux
+                band, intORflux, filters, lightcurves_mag=[None, None], lightcurves_flux=[None, None]
             )
 
-        end_time = time()
-        logger.warning(f'\n--> {band} run time: {(end_time-start_time)/60:1.2f} min')
+        # Free big arrays
+        del integrated_stellar_spectrum, final_2d_surface_flux_sum, ccf_rv_shift, ohfe_ratio
+        logger.warning(f'\n--> {band} run time: {(time()-start_time)/60:1.2f} min')
 
-    # order active region back to original order
-    org_idx = np.argsort(active_region_org_idx)
-    active_region_longs = active_region_longs[org_idx]
-    active_region_lats = active_region_lats[org_idx]
-    active_region_sizes = active_region_sizes[org_idx]
-    active_region_Temp = active_region_Temp[org_idx]
-    active_region_box = (active_region_longs, active_region_lats, 
-                         active_region_sizes, active_region_Temp)
+    # Restore original order for downstream
+    restore = np.argsort(active_region_org_idx)
+    active_region_longs = active_region_longs[restore]
+    active_region_lats  = active_region_lats[restore]
+    active_region_sizes = active_region_sizes[restore]
+    active_region_Temp  = active_region_Temp[restore]
+    active_region_box = (active_region_longs, active_region_lats, active_region_sizes, active_region_Temp)
+
     return outdir
         
 

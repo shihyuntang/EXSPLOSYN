@@ -1,6 +1,7 @@
-import sys, os, logging
+import sys, os, logging, time
 logger = logging.getLogger()
 from functools import partial
+from datetime import timedelta
 
 import numpy as np
 # from numpy import cos, sin
@@ -15,6 +16,7 @@ from pqdm.processes import pqdm
 
 
 from ldtk import LDPSetCreator, BoxcarFilter
+from ldtk.ldtk import LDPSet
 from pyphot import svo, unit
 
 from basic_spec import rotint
@@ -27,6 +29,10 @@ import synspecprep as ssp
 import spotact_utils as utils
 from spotact_rv import *
 
+# ---- For ldtk, avoid mu=0 in resampling ----
+def _resample_linear_mu_safe(self, nmu=50, eps=1e-6):
+    self.resample(mu=np.linspace(eps, 1.0, nmu))
+LDPSet.resample_linear_mu = _resample_linear_mu_safe
 
 class Star:
     def __init__(
@@ -72,42 +78,51 @@ class Star:
             line_centers (array): Central wavelengths (AA).
             l_widths (array): Band widths (AA).
         """
+        # Normalize inputs once
+        line_centers = np.atleast_1d(np.array(line_centers, dtype=float))
+        l_widths     = np.atleast_1d(np.array(l_widths, dtype=float))
+
+        # Convert Å -> nm for ldtk
+        lc_nm   = line_centers / 10.0
+        wid_nm  = l_widths / 10.0
+
+        # Cache filters (BoxcarFilter expects nm)
+        filters = [
+            BoxcarFilter(f"lc{int(lc_nm[i]//1000)}", lc_nm[i]-wid_nm[i], lc_nm[i]+wid_nm[i])
+            for i in range(len(lc_nm))
+        ]
+
         LD_teff_wv_coeff = {}
-        for tt in temperature:
-            # Ensure arrays for line centers and widths
-            if len(line_centers) == 1:
-                line_centers = np.array([line_centers])
-                l_widths = np.array([l_widths])
-            elif len(line_centers) > 1:
-                line_centers = np.array(line_centers)
-                l_widths = np.array(l_widths)
+        # small sampling is fine if you just want a single estimate, not a posterior
+        nsamples = 12
 
-            # Convert AA to nm for ldtk
-            lc_s = line_centers / 10
-            _width = l_widths / 10
-
-            # Create boxcar filters for each band
-            filters = [
-                BoxcarFilter(
-                    f'lc{lc_s[i]//1000}', lc_s[i]-_width[i], lc_s[i]+_width[i]
-                ) for i in range(len(lc_s))
-            ]
-            # ldtk needs a small std for Bayesian sampling
+        for tt in np.atleast_1d(temperature).astype(float):
+            # tiny stds are still needed for LDPSetCreator's sampling
             sc = LDPSetCreator(
-                teff=(tt, 1), logg=(self.logg, 0.01), z=(self.FeH, 0.01),
-                filters=filters, dataset='visir-lowres'
+                teff=(tt, 1.0),
+                logg=(self.logg, 0.01),
+                z=(self.FeH, 0.01),
+                filters=filters,
+                dataset='visir-lowres'
             )
-            ps = sc.create_profiles(nsamples=10)
-            qc, _ = ps.coeffs_qd()
-            LD_wv_coeff = {
-                f"w{int(line_centers[i] // 100)}_{int(tt)}": qc[i]
-                for i in range(len(line_centers))
-            }
-            # Special handling for FeOH line center
-            if 15631.35 in line_centers:
-                _loc = np.where(line_centers == 15631.35)[0][0]
-                LD_wv_coeff[f'ewr_FeOH_{int(tt)}'] = qc[_loc]
-            LD_teff_wv_coeff.update(LD_wv_coeff)
+
+            # Create profiles; our monkeypatch prevents μ=0 crash
+            ps = sc.create_profiles(nsamples=nsamples)
+
+            # Get quadratic coefficients: returns (means, covariance)
+            qc, _ = ps.coeffs_qd()  # shape: (n_filters, 2) for (u1, u2)
+
+            # Package results
+            for i in range(len(line_centers)):
+                key = f"w{int(line_centers[i] // 100)}_{int(tt)}"
+                LD_teff_wv_coeff[key] = qc[i]
+
+            # Robust FeOH aliasing (use tolerance instead of exact float compare)
+            FeOH = 15631.35  # Å
+            locs = np.where(np.isclose(line_centers, FeOH, atol=1e-3))[0]
+            if locs.size:
+                LD_teff_wv_coeff[f"ewr_FeOH_{int(tt)}"] = qc[locs[0]]
+
         self.LD_coeff = LD_teff_wv_coeff
 
     def find_fluxspec(self, Vel_bin_size, plot, syn_model_path=None):
@@ -120,23 +135,18 @@ class Star:
             syn_model_path (dict): Paths to synthetic models.
         """
         # Build temperature list for all components (star, spot, plage)
-        temp_list = np.concatenate([[self.Temp], self.Tspot, self.Tfaculae])
-        temp_list = np.unique(temp_list)
+        temp_list = np.unique(
+            np.concatenate([[self.Temp], self.Tspot, self.Tfaculae]).astype(np.int32))
         self.flux_spec = {}
 
-        wv_regions = list(self.bands2use.keys())
-        for band in wv_regions:
-            line_cen = self.bands2use[band][0]
-            delta_wv = self.bands2use[band][1]
-            intORflux = self.bands2use[band][3]
-            model_type = self.bands2use[band][4]
-
+        for band, (line_cen, delta_wv, rvORphoto, intORflux, model_type) in self.bands2use.items():
             # Only process bands that require flux spectra
             if intORflux != 'flux':
                 continue
 
             # Define wavelength window for this band
-            wvmin, wvmax = int(line_cen - delta_wv), int(line_cen + delta_wv)
+            wvmin = int(line_cen - delta_wv)
+            wvmax = int(line_cen + delta_wv)
 
             for tt in temp_list:
                 # --- Read PHX SYN Spectra ---
@@ -166,10 +176,13 @@ class Star:
                     continue
 
                 # Store velocity and flux arrays for this band/temp/model
+                v_arr = final_spec['v'].values.astype(np.float32, copy=False)
+                f_arr = final_spec['f'].values.astype(np.float64, copy=False)
                 spec = {
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': final_spec['v'].to_numpy(),
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': final_spec['f'].to_numpy()
-                }
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': v_arr,
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': f_arr
+                    }
+                
                 self.flux_spec.update(spec)
 
     def find_fluxspec_flatten(self, Vel_bin_size, plot, syn_model_path=None, fit_temp=None):
@@ -186,48 +199,44 @@ class Star:
 
         # Build temperature list for all components
         if fit_temp is None:
-            temp_list_org = np.concatenate([[self.Temp], self.Tspot, self.Tfaculae])
+            temp_list_all = np.unique(
+                np.concatenate([[self.Temp], self.Tspot, self.Tfaculae]).astype(np.int32))
         else:
-            # fitting_photo_T = np.arange(fit_temp_range[0], fit_temp_range[1]+1, 100)
-            temp_list_org = np.concatenate([[self.Temp], self.Tspot, self.Tfaculae, [fit_temp]])
-        temp_list_org = np.unique(temp_list_org)
+            temp_list_all = np.unique(
+                np.concatenate([[self.Temp], self.Tspot, self.Tfaculae, [fit_temp]]).astype(np.int32))
 
-        logger.info(f'\nChecking model spectra for temperatures {temp_list_org} K')
-        self.dw_phx_flux(temp_list_org, alpha=0)
+        logger.info(f'\nChecking model spectra for temperatures {temp_list_all} K')
+        self.dw_phx_flux(temp_list_all, alpha=0)
+
         self.spec_flatten = {}
 
-        wv_regions = list(self.bands2use.keys())
-        for band in wv_regions:
-            line_cen = self.bands2use[band][0]
-            delta_wv = self.bands2use[band][1]
-            rvORphoto = self.bands2use[band][2]
-            intORflux = self.bands2use[band][3]
-            model_type = self.bands2use[band][4]
-
-            # Build temperature list for this band
-            if fit_temp is None:
-                if intORflux == 'intensity':
-                    temp_list = np.array([self.Temp])
-                elif intORflux == 'flux':
-                    temp_list = temp_list_org.copy()
-            else:
-                if intORflux == 'intensity':
-                    temp_list = np.concatenate([[self.Temp], [fit_temp]])
-                elif intORflux == 'flux':
-                    temp_list = np.concatenate([temp_list_org.copy(), [fit_temp]])
-
-            # Only process RV bands
+        for band, (line_cen, delta_wv, rvORphoto, intORflux, model_type) in self.bands2use.items():
+            # Only process RV bands            
             if rvORphoto != 'rv':
                 continue
 
-            wvmin, wvmax = int(line_cen - delta_wv), int(line_cen + delta_wv)
+            # Build temperature list for this band
+            wvmin = int(line_cen - delta_wv)
+            wvmax = int(line_cen + delta_wv)
+
+            # band-specific temperature set
+            if fit_temp is None:
+                # temp_list = np.array([self.Temp], dtype=np.int32) if intORflux == 'intensity' else temp_list_all
+                temp_list = np.array([self.Temp], dtype=np.int32)
+            else:
+                temp_list = np.array([fit_temp], dtype=np.int32)
+                # if intORflux == 'intensity':
+                #     temp_list = np.unique(np.array([self.Temp, fit_temp], dtype=np.int32))
+                # else:
+                #     temp_list = np.unique(np.concatenate([temp_list_all, [fit_temp]]).astype(np.int32))
 
             for tt in temp_list:
-                # --- Read PHX SYN Spectra ---
+                # --- Read PHX model Spectra ---
                 if model_type.lower() == 'phx':
                     # 1. Flatten PHX spectra at a large wavelength range (3000 - 30000 AA)
-                    flat_spec_dir = ssp.flatten_spec(
+                    flat_spec_dir = ssp.flatten_phx_with_rassine(
                         syn_model_path[model_type], self.out_path, self.phx_flux_file[tt])
+                    
                     sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
                     # 2. Cut and convert to velocity space
@@ -235,10 +244,12 @@ class Star:
                         model_type, flat_spec_dir, sim_spec_path, wvmin, wvmax,
                         Vel_bin_size, plot, flatten=True)
                     flatten_spec = pd.read_hdf(sim_spec_path)
-                # --- Read Synmast Spectra (flattened using PHX as template) ---
+
+                # --- Read Synmast Spectra >>(All RV ccf use PHX as template, thus here for synmast we also have PHX flattened) ---
                 elif model_type.lower() == 'synmast':
-                    flat_spec_dir = ssp.flatten_spec(
+                    flat_spec_dir = ssp.flatten_phx_with_rassine(
                         syn_model_path['phx'], self.out_path, self.phx_flux_file[tt])
+                    
                     sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
                     ssp.final_flux_spec(
@@ -250,10 +261,12 @@ class Star:
                     continue
 
                 # Store velocity and flux arrays for this band/temp/model
+                v_arr = flatten_spec['v'].values.astype(np.float32, copy=False)
+                f_arr = flatten_spec['f'].values.astype(np.float64, copy=False)
                 spec = {
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': flatten_spec['v'].to_numpy(),
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': flatten_spec['f'].to_numpy()
-                }
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': v_arr,
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': f_arr
+                    }
                 self.spec_flatten.update(spec)
 
     def find_intensityspec(self, Vel_bin_size, plot, syn_model_path=None):
@@ -266,22 +279,18 @@ class Star:
             syn_model_path (dict): Paths to synthetic models.
         """
         # Build temperature list for all components (star, spot, plage)
-        temp_list = np.concatenate([[self.Temp], self.Tspot, self.Tfaculae])
-        temp_list = np.unique(temp_list)
+        temp_list = np.unique(
+                np.concatenate([[self.Temp], self.Tspot, self.Tfaculae]).astype(np.int32))
         self.int_spec = {}
 
-        wv_regions = list(self.bands2use.keys())
-        for band in wv_regions:
-            line_cen = self.bands2use[band][0]
-            delta_wv = self.bands2use[band][1]
-            intORflux = self.bands2use[band][3]
-            model_type = self.bands2use[band][4]
-
+        for band, (line_cen, delta_wv, rvORphoto, intORflux, model_type) in self.bands2use.items():
             # Only process bands that require intensity spectra
             if intORflux != 'intensity':
                 continue
 
-            wvmin, wvmax = int(line_cen - delta_wv), int(line_cen + delta_wv)
+            # Build temperature list for this band
+            wvmin = int(line_cen - delta_wv)
+            wvmax = int(line_cen + delta_wv)
 
             for tt in temp_list:
                 # --- Read PHX SYN Intensity Spectra ---
@@ -312,17 +321,21 @@ class Star:
                     continue
 
                 # Extract mu grid and intensity columns
-                mu_s = [float(col.split('_')[1]) for col in final_spec.columns if col.startswith("mu_")]
                 mu_cols = [col for col in final_spec.columns if col.startswith("mu_")]
                 df_mu = final_spec[mu_cols]
+                
+                v_arr = final_spec['v'].to_numpy(dtype=np.float32, copy=False)    # (n_v,)
+                f_arr = df_mu.to_numpy(dtype=np.float64, copy=False)  # (n_v, n_mu)
+
                 spec = {
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': final_spec['v'].to_numpy(),
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': df_mu.to_numpy(),
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': v_arr,
+                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': f_arr,
                 }
                 self.int_spec.update(spec)
-
+            
             # Store mu grid for this model type
-            self.int_spec[f'mu_{model_type}'] = np.array(mu_s, dtype=float)
+            mu_s = [float(col.split('_')[1]) for col in final_spec.columns if col.startswith("mu_")]
+            self.int_spec[f'mu_{model_type}'] = np.array(mu_s, dtype=np.float32)
 
     def dw_phx_flux(self, temp_list, alpha=0):
         """
@@ -399,7 +412,7 @@ class Active_region:
         # Check if the active region is visible at phase psi
         # and return the min and max y and z values for the circumference
         (self.visible, self.iminy, self.iminz, self.imaxy, self.imaxz) =\
-            stsp.spot_area(xyz2, nrho, grid) 
+            stsp.spot_area(xyz2, grid) 
 
 
 class Spec:
@@ -488,43 +501,80 @@ def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir, plot):
     return np.array(fluxp_flat)
 
 def flatten_model_spec(
-        Star, flux_phi, visible_phi, band, intORflux, model_type, 
-        RVandEWR_dir, plot):
+    Star,
+    flux_phi: np.ndarray,
+    visible_phi: np.ndarray,
+    band: str,
+    intORflux: str,
+    model_type: str,
+    RVandEWR_dir: str,
+    plot: bool
+) -> np.ndarray:
     """
-    Flatten a set of model spectra for all phases.
+    Flatten a set of model spectra for all phases by dividing by a spline-
+    estimated continuum (found via peak picking), then rescale to the 99th
+    percentile. Plots are optional.
 
-    Args:
-        Star (Star): Star object.
-        flux_phi (array): 2D array of flux for each phase.
-        visible_phi (array): Array of phases.
-        band (str): Band name.
-        intORflux (str): 'flux' or 'intensity'.
-        model_type (str): Model type.
-        RVandEWR_dir (str): Output directory for plots.
-        plot (bool): If True, save plots for each phase.
+    Parameters
+    ----------
+    Star : Star
+    flux_phi : (n_phase, n_vel) array
+    visible_phi : (n_phase,) array
+    band, intORflux, model_type : str
+    RVandEWR_dir : str
+    plot : bool (1/0 or True/False)
 
-    Returns:
-        np.ndarray: Array of flattened spectra for all phases.
+    Returns
+    -------
+    flat : (n_phase, n_vel) float64 array
     """
+    # --- velocity grid for this band/type ---
     if intORflux == 'flux':
         vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-    elif intORflux == 'intensity':
+    else:  # 'intensity'
         vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
 
-    nomral_spec_box = []
-    for i in range(len(visible_phi)):
-        flux = flux_phi[i]
-        _mpd = int(len(vel) * 0.04)
-        cont, peaks = utils.a0cont(flux, plot=False, poly_order=2, spline_k=2, mpd=_mpd)
-        fluxp_flat = flux / cont
-        fluxp_flat = fluxp_flat / np.nanpercentile(fluxp_flat, 99)
+    visible_phi = np.asarray(visible_phi)
+    n_phase = flux_phi.shape[0]
+    n_vel   = vel.shape[0]
 
-        if plot == 1:
+    # Precompute mpd once per band (same grid length each phase)
+    mpd = int(n_vel * 0.04) if n_vel > 0 else 1
+
+    # Preallocate output
+    flat = np.empty((n_phase, n_vel), dtype=np.float64)
+
+    # Plotting helper (so we don’t recreate styles endlessly)
+    do_plot = (plot == 1) or (plot is True)
+
+    # Main loop over phases
+    for i in range(n_phase):
+        flux = np.asarray(flux_phi[i], dtype=np.float64, order='C')
+        # continuum via your utils method (peak → spline)
+        cont, peaks = utils.a0cont(flux, plot=False, poly_order=2, spline_k=2, mpd=mpd)
+
+        # guard against zeros in continuum
+        # (rare, but better than infs if spline dips locally)
+        cont = np.where(cont <= 0.0, np.nan, cont)
+
+        spec_flat = flux / cont
+        # robust scale to ~continuum=1; clip tiny negatives from numerical noise
+        p99 = np.nanpercentile(spec_flat, 99.0)
+        if not np.isfinite(p99) or p99 <= 0.0:
+            p99 = 1.0
+        spec_flat = spec_flat / p99
+
+        # Write into preallocated array
+        flat[i, :] = spec_flat
+
+        # optional plot
+        if do_plot:
             fig, ax = plt.subplots(1, 1, figsize=(7, 3), facecolor='white', dpi=250)
             ax.plot(vel, flux, '-k', lw=1, label='Org. model spec', alpha=0.6)
-            ax.plot(vel, fluxp_flat, '-', c='tab:red', lw=0.8, label='Flatten model spec')
-            ax.plot(vel[peaks], flux[peaks], 'o', c='tab:blue', ms=4, zorder=5, label='peaks')
-            ax.plot(vel, cont, '-', c='tab:orange', lw=1.)
+            ax.plot(vel, spec_flat, '-', lw=0.8, label='Flatten model spec')
+            if peaks.size:
+                ax.plot(vel[peaks], flux[peaks], 'o', ms=4, zorder=5, label='peaks')
+            ax.plot(vel, cont, '-', lw=1., label='continuum')
             ax.axhline(1, ls='-', lw=0.5, color='k', alpha=0.3)
             ax.xaxis.set_minor_locator(AutoMinorLocator(5))
             ax.yaxis.set_minor_locator(AutoMinorLocator(2))
@@ -533,11 +583,12 @@ def flatten_model_spec(
             ax.set_ylabel('Flux')
             ax.set_ylim(0.4, 1.05)
             fig.savefig(
-                f'./outputs/{RVandEWR_dir}/normal_spec/flatten_{band}_{visible_phi[i]:1.2f}.png', bbox_inches='tight'
+                f'./outputs/{RVandEWR_dir}/normal_spec/flatten_{band}_{visible_phi[i]:1.2f}.png',
+                bbox_inches='tight'
             )
             plt.close(fig)
-        nomral_spec_box.append(fluxp_flat)
-    return np.array(nomral_spec_box)
+
+    return flat
 
 
 def calculate_activity_signal_spec(
@@ -545,265 +596,231 @@ def calculate_activity_signal_spec(
     Spec,
     active_regions_number, active_region_box,
     instrumental_resolution, cpu_use, save_dir, band, 
-    save_spec_flag, fluxORint, silence_pbar
-    ):
+    save_spec_flag, fluxORint, silence_pbar,
+    *, map_debug_plots: bool = False
+):
     """
     Calculate the integrated spectrum and surface flux for a star with active regions
     (spots/plages) over a grid of phases.
 
-    Args:
-        nrho (int): Resolution for the spot's circumference.
-        grid_size (int): Model grid resolution NxN.
-        star (Star): Star object with parameters and spectra.
-        psi (array): Array of rotational phases to simulate.
-        Spec (dict): Dictionary of Spec objects for each temperature.
-        active_regions_number (int): Number of active regions.
-        active_region_box (list): List of arrays: [longitudes, latitudes, sizes, temperatures].
-        instrumental_resolution (float): Instrumental resolution (R).
-        cpu_use (int): Number of CPUs to use for multiprocessing.
-        save_dir (str): Output directory for saving intermediate results.
-        band (str): Band name.
-        save_spec_flag (int): If True, save intermediate spectra.
-        fluxORint (str): 'flux' or 'intensity'.
-        silence_pbar (bool): If True, silence progress bars.
-
     Returns:
         tuple:
-            visible_phi (np.array): Array of visible phases.
-            integrated_stellar_spectrum (np.array): 2D array of integrated spectra for each phase.
-            quite_2d_surface_flux_sum (np.array): 2D array of quiet surface flux.
-            final_2d_surface_flux_sum (np.array): 2D array of final surface flux (with active regions).
+            visible_phi (np.ndarray): Array of visible phases.
+            integrated_stellar_spectrum (np.ndarray): 2D array of integrated spectra for each phase.
+            quite_2d_surface_flux_sum (np.ndarray): 2D array of quiet surface flux.
+            final_2d_surface_flux_sum (np.ndarray): 2D array of final surface flux (with active regions).
     """
-
-    # --- Step 1: Compute the quiet photosphere spectrum and surface flux ---
+    # --- Step 1: Quiet photosphere baseline (spectrum + surface flux map) ---
     Spec_photosphere = Spec[int(star.Temp)]
     if fluxORint == 'flux':
-        # Get limb-darkening coefficients for the quiet photosphere
-        limba1_q = star.LD_coeff[f"{band}_{int(star.Temp)}"][0]
-        limba2_q = star.LD_coeff[f"{band}_{int(star.Temp)}"][1]
-        # Integrate the quiet photosphere spectrum over the visible disk
+        u1, u2 = star.LD_coeff[f"{band}_{int(star.Temp)}"]
         integrated_stellar_spectrum, quite_2d_surface_flux_sum = stsp.itot_flux(
-            star.vrot, star.incl, limba1_q, limba2_q, grid_size, 
+            star.vrot, star.incl, u1, u2, grid_size, 
             Spec_photosphere.rv, Spec_photosphere.intensity, Spec_photosphere.v_interval, 
             Spec_photosphere.n_v, Spec_photosphere.n
         )
-    elif fluxORint == 'intensity':    
-        # For intensity, limb darkening is handled via the intensity grid (mu)
+    else:  # 'intensity'
         integrated_stellar_spectrum, quite_2d_surface_flux_sum = stsp.itot_int(
             star.vrot, star.incl, None, None, grid_size, 
             Spec_photosphere.rv, Spec_photosphere.intensity, Spec_photosphere.v_interval, 
             Spec_photosphere.n_v, Spec_photosphere.n, Spec_photosphere.mu
         )
 
-    # Copy the quiet surface flux for later modification
     final_2d_surface_flux_sum = quite_2d_surface_flux_sum.copy()
 
     # Unpack active region properties
     (active_region_longs, active_region_lats, 
-        active_region_sizes, active_region_Temp) = active_region_box
+     active_region_sizes, active_region_Temp) = active_region_box
 
-    # -------------------------------------------------------------------------
-    # --- Step 2-1: Loop over all active regions and phases to make spot map ---
-    logger.info('\nCalculate Activate Regions...')
+    # --- Step 2-1: Build temperature cube over phases (int16; sentinel=0 off-disk) ---
+    nphi = len(psi)
+    temp_quiet = int(star.Temp)
 
-    # Make a cube to store each grid's temperautre at different phases
-    # For example, 200x200x45 for 200x200 grid and 45 phases
-    active_2d_surface_temperature_psi = np.zeros(
-        (len(psi), grid_size, grid_size), dtype=np.int16)   
-    
-    # assign the temperature of the quiet photosphere to all phases
-    # check grid within radius of 1
     y = np.linspace(-1.0, 1.0, grid_size, dtype=np.float32)
     z = np.linspace(-1.0, 1.0, grid_size, dtype=np.float32)
-    Y, Z = np.meshgrid(y, z, indexing="ij")   # Y.shape = Z.shape = (grid_size, grid_size)
+    Y, Z = np.meshgrid(y, z, indexing="ij")
+    disk_mask = (Y * Y + Z * Z) <= 1.0
 
-    # 2) Inside-disk mask (unit circle): y^2 + z^2 <= 1
-    disk_mask = (Y * Y + Z * Z) <= 1.0        # shape (grid_size, grid_size), bool
+    single_layer = np.where(disk_mask, temp_quiet, 0).astype(np.int16)
 
-    # 3) Prepare a single-layer template with photosphere temp on-disk, sentinel off-disk
-    #    Cast to int16; clip just in case
-    single_layer = np.where(
-        disk_mask, int(star.Temp), 0).astype(np.int16)  # (grid_size, grid_size)
-
-    # 4) Broadcast to all phase-layers
+    active_2d_surface_temperature_psi = np.empty((nphi, grid_size, grid_size), dtype=np.int16)
     active_2d_surface_temperature_psi[...] = single_layer[None, ...]
-    
-    # >>>> Could use numba <<<<<
-    for rr in range(active_regions_number):
-        # logger.info(f'\nCalculate Active Region {rr+1}')
 
-        # Calculate the circumference position of the spot/plage 
+    logger.info('\nCalculate Active Regions...')
+    for rr in range(active_regions_number):
         xyz = stsp.spot_location_init(
             active_region_sizes[rr], active_region_longs[rr], active_region_lats[rr], 
             star.incl, nrho
         )
-        
-        # spot changes location at difference phases, loop over all phases
-        for ipsi in np.arange(len(psi)):
+        for ipsi in range(nphi):
             xyz_psi = stsp.get_spot_phase_coord(xyz, star.incl, nrho, psi[ipsi])
-            
-            # narrow down the area of the spot/plage to speed up calculations
-            _, idx_miny, idx_minz, idx_maxy, idx_maxz = stsp.spot_area(
-                xyz_psi, nrho, grid_size)
-            
-            active_2d_surface_temperature = stsp.spot_scan(
+            _, idx_miny, idx_minz, idx_maxy, idx_maxz = stsp.spot_area(xyz_psi, grid_size)
+            active_2d_surface_temperature_psi[ipsi] = stsp.spot_scan(
                 star.incl, grid_size, active_region_sizes[rr], active_region_longs[rr], 
                 active_region_lats[rr], psi[ipsi],
                 idx_miny, idx_minz, idx_maxy, idx_maxz, int(active_region_Temp[rr]),
-                active_2d_surface_temperature_psi[ipsi], int(star.Temp))
-            
-            active_2d_surface_temperature_psi[ipsi] = active_2d_surface_temperature
-            
-
-    # --- plot for checking the active region temperature map ---
-    utils.save_phase_pngs(
-        active_2d_surface_temperature_psi,
-        y, z,
-        outdir="phase_maps",
-        sentinel_offdisk=0,
-        cmap="inferno",
-        add_colorbar=True,
-        phase_values=psi,  # optional; remove if you don’t want it in titles
-        )
-
-    Teff = utils.teff_obs_rotavg(active_2d_surface_temperature_psi, y, z, sentinel_offdisk=0, scale=1.0)
-    logger.info(f'\nAverage Teff of the active regions: {Teff:.1f} K')
-
-    fspot, fspot_phi = utils.fspot_global_from_cube(
-        active_2d_surface_temperature_psi, y, z, star.Temp, sentinel_offdisk=0, scale=1.0, mu_min=0.05)
-    logger.info(f'\nTotal spot coverage: {fspot:.3%} of the visible hemisphere')
-     
-    # -------------------------------------------------------------------------
-    # --- Step 2-2: run the simulation based on the temperature map ---
-    
-    if fluxORint == 'flux':
-        star_LD_coeff = utils.LD_dict2array(star.LD_coeff, band) # returns temps_tab, coeffs_tab
-        Spec_dict = utils.Spec_intensity_dict2array(Spec, fluxORint='flux') # returns temps_tab, spectrum_tab, mu_s_tab
-    elif fluxORint == 'intensity':   
-        star_LD_coeff = (None, None)
-        Spec_dict = utils.Spec_intensity_dict2array(Spec, fluxORint='intensity')
-
-    # For each phase, scan the grid and compute the "non-contribution" of the active region
-    # (i.e., the flux/intensity that is blocked or replaced by the spot/plage)
-    # This is subtracted from the quiet spectrum and replaced with the active region's spectrum.
-
-    (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum, 
-        visible_phi, active_2d_surface_flux_sum, quiet_2d_surface_flux_sum) =\
-            stsp.spot_scan_npsi(
-                xyz, nrho, psi, len(psi), star.vrot, star.incl, star.Temp,
-                grid_size, Spec_dict, star_LD_coeff,
-                Spec_photosphere.rv, Spec_photosphere.intensity, 
-                Spec_photosphere.v_interval, Spec_photosphere.n_v, Spec_photosphere.n,
-                active_region_sizes[rr], active_region_longs[rr], 
-                active_region_lats[rr], cpu_use, fluxORint, active_2d_surface_temperature_psi,
-                silence_pbar
+                active_2d_surface_temperature_psi[ipsi], temp_quiet
             )
 
-    # --- Step 2a: Optionally save the intermediate spectra for this region ---
+    # Optional diagnostics (plots/coverage) — off by default
+    if map_debug_plots:
+        utils.save_phase_pngs(
+            active_2d_surface_temperature_psi,
+            y, z,
+            outdir="phase_maps",
+            sentinel_offdisk=0,
+            cmap="inferno",
+            add_colorbar=True,
+            phase_values=psi,
+        )
+        Teff = utils.teff_obs_rotavg(active_2d_surface_temperature_psi, y, z, sentinel_offdisk=0, scale=1.0)
+        logger.info(f'\nAverage Teff of the active regions: {Teff:.1f} K')
+        fspot, fspot_phi = utils.fspot_global_from_cube(
+            active_2d_surface_temperature_psi, y, z, star.Temp, sentinel_offdisk=0, scale=1.0, mu_min=0.05)
+        logger.info(f'\nTotal spot coverage: {fspot:.3%} of the visible hemisphere')
+
+    # --- Step 2-2: Integrate spectra over phases using the temperature cube ---
+    if fluxORint == 'flux':
+        star_LD_coeff = utils.LD_dict2array(star.LD_coeff, band)        # (temps_tab, coeffs_tab)
+        Spec_dict     = utils.Spec_intensity_dict2array(Spec, 'flux')   # (temps_tab, spectrum_tab, _)
+    else:
+        star_LD_coeff = (None, None)
+        Spec_dict     = utils.Spec_intensity_dict2array(Spec, 'intensity')
+
+    (intergrated_total_stellar_spectrum, intergrated_total_quiet_spectrum,
+        visible_phi, active_2d_surface_flux_sum, quiet_2d_surface_flux_sum
+        ) = stsp.spot_scan_npsi(
+            psi, nphi, star.vrot, star.incl, star.Temp,
+            grid_size, Spec_dict, star_LD_coeff,
+            Spec_photosphere.rv, Spec_photosphere.intensity, 
+            Spec_photosphere.v_interval, Spec_photosphere.n_v, Spec_photosphere.n,
+            cpu_use, fluxORint, active_2d_surface_temperature_psi,
+            silence_pbar
+            )
+
+    # --- Step 2a: Optional save of intermediate spectra (quiet vs active) ---
     if save_spec_flag:
-        istart = (Spec_photosphere.n_v-len(Spec_photosphere.rv))//2         
-        iend   = istart+len(Spec_photosphere.rv)
+        istart = (Spec_photosphere.n_v - len(Spec_photosphere.rv)) // 2
+        iend   = istart + len(Spec_photosphere.rv)
+
         spec_qs = integrated_stellar_spectrum[istart:iend]
+        spec_qs_duplicated = np.asarray(intergrated_total_quiet_spectrum)[:, istart:iend]
+        spec_ss = np.asarray(intergrated_total_stellar_spectrum)[:, istart:iend]
+        vel = np.asarray(Spec_photosphere.rv)
 
-        spec_qs_duplicated = np.array(intergrated_total_quiet_spectrum)
-        spec_qs_duplicated = spec_qs_duplicated[:,istart:iend]
+        np.save(f'./outputs/{save_dir}/spec/{band}_qs_1.npy',     spec_qs)
+        np.save(f'./outputs/{save_dir}/spec/{band}_ss_1.npy',     spec_ss)
+        np.save(f'./outputs/{save_dir}/spec/{band}_qsdup_1.npy',  spec_qs_duplicated)
+        np.save(f'./outputs/{save_dir}/spec/{band}_vel_1.npy',    vel)
 
-        spec_ss = np.array(intergrated_total_stellar_spectrum)
-        spec_ss = spec_ss[:,istart:iend]
+    # --- Step 2b: Combine quiet baseline with active-region contributions ---
+    integrated_stellar_spectrum = (
+        integrated_stellar_spectrum
+        - np.asarray(intergrated_total_quiet_spectrum)
+        + np.asarray(intergrated_total_stellar_spectrum)
+    )
+    final_2d_surface_flux_sum = (
+        final_2d_surface_flux_sum
+        - np.asarray(quiet_2d_surface_flux_sum)
+        + np.asarray(active_2d_surface_flux_sum)
+    )
 
-        # Save to .npy files for later analysis
-        np.save(f'./outputs/{save_dir}/spec/{band}_qs_{rr+1}.npy', spec_qs)
-        np.save(f'./outputs/{save_dir}/spec/{band}_ss_{rr+1}.npy', spec_ss)
-        np.save(f'./outputs/{save_dir}/spec/{band}_qsdup_{rr+1}.npy', spec_qs_duplicated)
-        vel = np.array(Spec_photosphere.rv)
-        np.save(f'./outputs/{save_dir}/spec/{band}_vel_{rr+1}.npy', vel)
-    
-    # --- Step 2b: Update the integrated spectrum and surface flux ---
-    # Subtract the quiet region's contribution and add the active region's contribution
-    integrated_stellar_spectrum  = integrated_stellar_spectrum \
-        - np.array(intergrated_total_quiet_spectrum) \
-        + np.array(intergrated_total_stellar_spectrum)  
-    final_2d_surface_flux_sum = final_2d_surface_flux_sum \
-        - np.array(quiet_2d_surface_flux_sum) \
-        + np.array(active_2d_surface_flux_sum)
-
-    # --- Step 3: Truncate the extrapolated spectrum to match the original velocity grid ---
-    # The CCF is extrapolated to cover rotation broadening; here we cut it back to the original range.
-    istart = (Spec_photosphere.n_v-len(Spec_photosphere.rv))//2
-    iend   = istart+len(Spec_photosphere.rv)
+    # --- Step 3: Truncate extrapolated spectrum back to original grid ---
+    istart = (Spec_photosphere.n_v - len(Spec_photosphere.rv)) // 2
+    iend   = istart + len(Spec_photosphere.rv)
     integrated_stellar_spectrum = integrated_stellar_spectrum[:, istart:iend]
 
-    # --- Step 4: Normalize the spectra for each phase (except for photometry bands) ---
+    # --- Step 4: Normalize per-phase (non-photo bands) ---
     if band != 'photo': 
         integrated_stellar_spectrum = np.array(
-            [f/np.percentile(f,99) for f in integrated_stellar_spectrum], 
+            [f / np.percentile(f, 99) for f in integrated_stellar_spectrum],
             dtype=np.float64
         )
-    
-    # --- Step 5: Convolve with the instrumental profile if needed ---
-    # This simulates the effect of finite spectrograph resolution.
+
+    # --- Step 5: Instrumental broadening ---
     if (instrumental_resolution != 0) and (band != 'photo'):
         integrated_stellar_spectrum = utils._apply_instrumental_broadening(
-            instrumental_resolution, Spec_photosphere.rv, integrated_stellar_spectrum)
+            instrumental_resolution, Spec_photosphere.rv, integrated_stellar_spectrum
+        )
 
-    return (visible_phi, integrated_stellar_spectrum, quite_2d_surface_flux_sum, 
-            final_2d_surface_flux_sum)
+    return (
+        visible_phi,
+        integrated_stellar_spectrum,
+        quite_2d_surface_flux_sum,
+        final_2d_surface_flux_sum
+    )
 
 
 def get_photometric(
-        integrated_stellar_spectrum, Star, visible_phi, band, intORflux, model_type):
+    integrated_stellar_spectrum: np.ndarray,
+    Star,
+    visible_phi: np.ndarray,
+    band: str,
+    intORflux: str,
+    model_type: str
+):
     """
-    Calculate photometric light curves (magnitude and normalized flux) for each filter.
+    Compute relative magnitudes and normalized fluxes per filter.
 
-    Args:
-        integrated_stellar_spectrum (np.ndarray): 2D array of integrated spectra for each phase.
-        Star (Star): Star object containing filter and band info.
-        visible_phi (np.ndarray): Array of phases.
-        band (str): Band name.
-        intORflux (str): 'intensity' (required for photometry).
-        model_type (str): Model type.
-
-    Returns:
-        tuple: (lightcurve_mag_box, lightcurve_flux_box)
-            lightcurve_mag_box (np.ndarray): Relative magnitude light curves for each filter.
-            lightcurve_flux_box (np.ndarray): Normalized flux light curves for each filter.
+    Notes
+    -----
+    - Assumes `integrated_stellar_spectrum` are INTENSITY spectra integrated
+      over the disc for each phase on a UNIFORM velocity grid corresponding
+      to `band` (your pipeline ensures that).
+    - Vega zeropoint is NOT applied (relative mags only, as before).
     """
-    vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
 
-    # Convert velocity grid back to wavelength grid (in Angstroms)
-    line_center = Star.bands2use[band][0]
-    delta_wave = Star.bands2use[band][1]
-    wvmin, wvmax = (line_center - delta_wave, line_center + delta_wave)
-    wvmin = int(wvmin)
-    wvmax = int(wvmax)
+    # ---- grid: velocity -> wavelength (Å) ----
+    vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']  # (n_v,)
+    line_center, delta_wave = Star.bands2use[band][0], Star.bands2use[band][1]
+    wvmin = int(line_center - delta_wave)
+    wvmax = int(line_center + delta_wave)
 
-    c_kms = 299792.458
-    w_center = (wvmin + wvmax) / 2
-    wave = vel * w_center / c_kms + w_center
-    wave = wave * unit['AA']
+    c_kms = 299_792.458
+    w_center = (wvmin + wvmax) * 0.5  # Å (float64)
+    wave = (vel * w_center / c_kms + w_center) * unit['AA']  # Quantity (n_v,)
 
-    lightcurve_mag_box = []
-    lightcurve_flux_box = []
-    for filt in Star.filters:
-        logger.info(f'Calculating photometric light curve for {filt} filter...')
-        mag_box = []
-        flux_box = []
-        for flux in integrated_stellar_spectrum:
-            flux = flux * unit['erg/s/cm**2/AA']
-            f = svo.get_pyphot_filter(filt)
-            band_flux = f.get_flux(wave, flux).value
-            mag = -2.5 * np.log10(band_flux)  # Vega zero point not applied
+    # ---- preload filters once ----
+    # Optional tiny cache on the Star object so repeated calls are cheap
+    if getattr(Star, "_pyphot_filters", None) is None:
+        Star._pyphot_filters = {f: svo.get_pyphot_filter(f) for f in Star.filters}
+    filters_resolved = [Star._pyphot_filters[f] for f in Star.filters]
 
-            flux_box.append(band_flux)
-            mag_box.append(mag)
+    # ---- pre-allocate outputs ----
+    n_phases = integrated_stellar_spectrum.shape[0]
+    n_filts  = len(filters_resolved)
+    lightcurve_mag_box  = np.empty((n_filts, n_phases), dtype=np.float64)
+    lightcurve_flux_box = np.empty((n_filts, n_phases), dtype=np.float64)
 
-        # Compute relative magnitude and normalized flux for this filter
-        relative_mag = np.array(mag_box) - np.nanmean(mag_box)
-        normalized_flux = np.array(flux_box) / np.nanmean(flux_box)
-        lightcurve_flux_box.append(normalized_flux)
-        lightcurve_mag_box.append(relative_mag)
+    # ---- constant for units ----
+    erg_s_cm2_AA = unit['erg/s/cm**2/AA']
 
-    return np.array(lightcurve_mag_box), np.array(lightcurve_flux_box)
+    # ---- per filter, loop phases ----
+    for i, (filt_name, filt_obj) in enumerate(zip(Star.filters, filters_resolved)):
+        logger.info(f'Calculating photometric light curve for {filt_name}...')
+
+        # temporary buffers per filter
+        mag_buf  = np.empty(n_phases, dtype=np.float64)
+        flux_buf = np.empty(n_phases, dtype=np.float64)
+
+        for p in range(n_phases):
+            # attach units only once per phase spectrum
+            flux_q = integrated_stellar_spectrum[p].astype(np.float64, copy=False) * erg_s_cm2_AA
+            band_flux = filt_obj.get_flux(wave, flux_q).value  # scalar float64
+
+            # safe log10 just in case (avoid -inf)
+            band_flux = float(band_flux)
+            flux_buf[p] = band_flux
+            mag_buf[p]  = -2.5 * np.log10(np.clip(band_flux, 1e-300, None))
+
+        # relative mag and normalized flux
+        mag_mean  = np.nanmean(mag_buf)
+        flux_mean = np.nanmean(flux_buf)
+
+        lightcurve_mag_box[i, :]  = mag_buf  - mag_mean
+        lightcurve_flux_box[i, :] = flux_buf / flux_mean
+
+    return lightcurve_mag_box, lightcurve_flux_box
 
 
 

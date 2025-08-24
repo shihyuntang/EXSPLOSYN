@@ -7,6 +7,8 @@ from scipy import signal,interpolate
 from specutils import Spectrum1D
 from specutils.analysis import equivalent_width
 import astropy.units as u
+import matplotlib.pyplot as plt
+
 
 def _apply_instrumental_broadening(inst_reso, vel_grid, spec_flux):
     """
@@ -38,152 +40,187 @@ def _apply_instrumental_broadening(inst_reso, vel_grid, spec_flux):
 
     return broadened_spec
 
-def get_equivalent_width(
-        Star, flux_phi, visible_phi, band, intORflux, model_type):
+
+import numpy as np
+
+def get_equivalent_width(Star, flux_phi, visible_phi, band, intORflux, model_type):
     """
-    Calculate the equivalent width ratio (OH/Fe) for a given band and all phases.
+    Fast EW(OH)/EW(Fe) for all phases using pure NumPy.
 
-    Args:
-        Star (Star): Star object.
-        flux_phi (array): 2D array of flux for each phase.
-        visible_phi (array): Array of phases.
-        band (str): Band name.
-        intORflux (str): 'flux' or 'intensity'.
-        model_type (str): Model type.
+    Equivalent width is computed as:
+        EW = ∫ (1 - F_norm) dλ
+    with F_norm = F / continuum, where the continuum level is the 95th percentile
+    within 1.561–1.565 µm for each phase.
 
-    Returns:
-        np.ndarray: Array of OH/Fe equivalent width ratios for all phases.
+    Returns
+    -------
+    np.ndarray, shape (n_phase,)
+        OH/Fe equivalent-width ratio per phase.
     """
-    ew_fe1 = []
-    ew_fe2 = []
-    ew_oh0 = []
+    # --- Resolve velocity grid for this band at the photosphere temp ---
+    key_v = f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'
+    if intORflux == 'flux':
+        vel = Star.flux_spec[key_v]
+    else:
+        vel = Star.int_spec[key_v]
+    vel = np.asarray(vel, dtype=np.float64, order='C')
 
-    ew_cal_regions = [
-        [1.56230, 1.56290], 
-        [1.56290, 1.56335], 
-        [1.56335, 1.56395]
+    # --- Build wavelength array (µm), centered on band center like your code ---
+    band_center_wv = float(Star.bands2use[band][0])  # in Angstrom
+    c_kms = 299_792.458
+    wave_A = band_center_wv + vel * (band_center_wv / c_kms)   # Å
+    wave_um = wave_A / 1e4                                     # µm
+    wave_um = np.asarray(wave_um, dtype=np.float64, order='C')
+
+    # --- Masks: normalization region and EW sub-ranges (in µm) ---
+    norm_mask = (wave_um > 1.5610) & (wave_um < 1.5650)
+
+    # Fe, OH, Fe windows (µm)
+    ew_windows = [
+        (1.56230, 1.56290),  # Fe 1
+        (1.56290, 1.56335),  # OH
+        (1.56335, 1.56395),  # Fe 2
     ]
+    masks = [(wave_um >= a) & (wave_um <= b) for (a, b) in ew_windows]
 
-    band_center_wv = Star.bands2use[band][0]
+    # Pre-extract x arrays for integration (saves boolean indexing in the loop)
+    x_fe1 = wave_um[masks[0]]
+    x_oh  = wave_um[masks[1]]
+    x_fe2 = wave_um[masks[2]]
+    x_norm = wave_um[norm_mask]
 
-    if intORflux == 'flux':
-        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-    elif intORflux == 'intensity':
-        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+    # --- Loop phases (need per-phase percentile) ---
+    nphi = len(visible_phi)
+    ew_fe1 = np.empty(nphi, dtype=np.float64)
+    ew_fe2 = np.empty(nphi, dtype=np.float64)
+    ew_oh  = np.empty(nphi, dtype=np.float64)
 
-    c_kms = 299792.458
-    del_wv = vel * band_center_wv / c_kms
-    wave = (band_center_wv + del_wv) / 1e4  # Convert to microns
-    nor_region = np.where((wave > 1.5610) & (wave < 1.5650))[0]
-    
-    for i in range(len(visible_phi)):
-        flux = flux_phi[i]
-        nor_level = np.percentile(flux[nor_region], 95)
-        flux = flux / nor_level
-        # --- EW ---
-        for r_udx, rr in enumerate(ew_cal_regions):
-            use_r = (wave >= rr[0]) & (wave <= rr[1])
-            spec = Spectrum1D(
-                spectral_axis=wave[use_r] * u.um, 
-                flux=flux[use_r] * u.Unit('erg cm-2 s-1 AA-1')
-            )
-            ew = equivalent_width(spec)
-            if r_udx == 0:
-                ew_fe1.append(ew.value)
-            elif r_udx == 1:
-                ew_oh0.append(ew.value)
-            elif r_udx == 2:
-                ew_fe2.append(ew.value)
+    for i in range(nphi):
+        # ensure contiguous float64
+        flux = np.asarray(flux_phi[i], dtype=np.float64, order='C')
 
-    oh_line = np.array(ew_oh0)
-    fe_line = (np.array(ew_fe1) + np.array(ew_fe2)) / 2
-    line_ratio = oh_line / fe_line
-
-    return line_ratio
-
-def get_line_depth(
-        Star, CCFstar_tot, visible_phi, band, intORflux, model_type):
-    """
-    Measure the depth and velocity location of Fe and OH lines in the CCF for all phases.
-
-    Args:
-        Star (Star): Star object.
-        CCFstar_tot (array): 2D array of CCFs for each phase.
-        visible_phi (array): Array of phases.
-        band (str): Band name.
-        intORflux (str): 'flux' or 'intensity'.
-        model_type (str): Model type.
-
-    Returns:
-        tuple: (depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0)
-            Each is a list of depths or velocities for Fe1, Fe2, and OH0 lines.
-    """
-    depth_d_fe1 = []
-    depth_d_fe2 = []
-    depth_d_oh0 = []
-    depth_l_fe1 = []
-    depth_l_fe2 = []
-    depth_l_oh0 = []
-
-    if intORflux == 'flux':
-        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-    elif intORflux == 'intensity':
-        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-
-    for i in range(len(visible_phi)):
-        CCFstar_tot_flip = 1 + -1 * CCFstar_tot[i]
-
-        fe_1 = (vel > -150) & (vel < -50)
-        oh_0 = (vel > -50) & (vel < 50)
-        fe_2 = (vel > 50) & (vel < 250)
-
-        fe_1_loc = np.argmax(CCFstar_tot_flip[fe_1])
-        oh_0_loc = np.argmax(CCFstar_tot_flip[oh_0])
-        fe_2_loc = np.argmax(CCFstar_tot_flip[fe_2])
-
-        depth_d_fe1.append(CCFstar_tot_flip[fe_1][fe_1_loc])
-        depth_d_fe2.append(CCFstar_tot_flip[fe_2][fe_2_loc])
-        depth_d_oh0.append(CCFstar_tot_flip[oh_0][oh_0_loc])
+        # Continuum estimate (95th percentile) in the normalization region
+        # guard against empty or NaN-only slice
+        y_norm = flux[norm_mask]
+        nor_level = np.nanpercentile(y_norm, 95.0)
         
-        depth_l_fe1.append(vel[fe_1][fe_1_loc])
-        depth_l_fe2.append(vel[fe_2][fe_2_loc])
-        depth_l_oh0.append(vel[oh_0][oh_0_loc])
+        if not np.isfinite(nor_level) or nor_level <= 0:
+            # hopeless phase → set EWs to NaN
+            ew_fe1[i] = ew_fe2[i] = ew_oh[i] = np.nan
+            continue
 
-    return depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0
+        f_norm = flux / nor_level
+
+        # 1 - normalized flux in each window
+        y_fe1 = 1.0 - f_norm[masks[0]]
+        y_oh  = 1.0 - f_norm[masks[1]]
+        y_fe2 = 1.0 - f_norm[masks[2]]
+
+        # Integrate with trapezoid in µm (units cancel in the ratio)
+        # If a mask is empty (shouldn’t be), return NaN for that EW.
+        ew_fe1[i] = np.trapz(y_fe1, x_fe1) if y_fe1.size else np.nan
+        ew_oh[i]  = np.trapz(y_oh,  x_oh)  if y_oh.size  else np.nan
+        ew_fe2[i] = np.trapz(y_fe2, x_fe2) if y_fe2.size else np.nan
+
+    # Average the two Fe EWs, then ratio
+    fe_mean = 0.5 * (ew_fe1 + ew_fe2)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        ratio = ew_oh / fe_mean
+    # Avoid infinities from ~zero Fe mean
+    ratio[~np.isfinite(ratio)] = np.nan
+    return ratio
+
+# def get_line_depth(
+#         Star, CCFstar_tot, visible_phi, band, intORflux, model_type):
+#     """
+#     Measure the depth and velocity location of Fe and OH lines in the CCF for all phases.
+
+#     Args:
+#         Star (Star): Star object.
+#         CCFstar_tot (array): 2D array of CCFs for each phase.
+#         visible_phi (array): Array of phases.
+#         band (str): Band name.
+#         intORflux (str): 'flux' or 'intensity'.
+#         model_type (str): Model type.
+
+#     Returns:
+#         tuple: (depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0)
+#             Each is a list of depths or velocities for Fe1, Fe2, and OH0 lines.
+#     """
+#     depth_d_fe1 = []
+#     depth_d_fe2 = []
+#     depth_d_oh0 = []
+#     depth_l_fe1 = []
+#     depth_l_fe2 = []
+#     depth_l_oh0 = []
+
+#     if intORflux == 'flux':
+#         vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+#     elif intORflux == 'intensity':
+#         vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+
+#     for i in range(len(visible_phi)):
+#         CCFstar_tot_flip = 1 + -1 * CCFstar_tot[i]
+
+#         fe_1 = (vel > -150) & (vel < -50)
+#         oh_0 = (vel > -50) & (vel < 50)
+#         fe_2 = (vel > 50) & (vel < 250)
+
+#         fe_1_loc = np.argmax(CCFstar_tot_flip[fe_1])
+#         oh_0_loc = np.argmax(CCFstar_tot_flip[oh_0])
+#         fe_2_loc = np.argmax(CCFstar_tot_flip[fe_2])
+
+#         depth_d_fe1.append(CCFstar_tot_flip[fe_1][fe_1_loc])
+#         depth_d_fe2.append(CCFstar_tot_flip[fe_2][fe_2_loc])
+#         depth_d_oh0.append(CCFstar_tot_flip[oh_0][oh_0_loc])
+        
+#         depth_l_fe1.append(vel[fe_1][fe_1_loc])
+#         depth_l_fe2.append(vel[fe_2][fe_2_loc])
+#         depth_l_oh0.append(vel[oh_0][oh_0_loc])
+
+#     return depth_d_fe1, depth_d_fe2, depth_d_oh0, depth_l_fe1, depth_l_fe2, depth_l_oh0
 
 
-def grid_resolution_check(grid):
+
+
+def grid_resolution_check(grid: int, warn_threshold: float = 0.999) -> float:
     """
-    Check the accuracy of the grid area approximation for the stellar disk.
-
-    The final spectra are approximated by summing all flux in each grid cell,
-    so a finer grid better conserves the flux scale. This function checks how
-    close the summed area of the grid cells inside the disk is to pi.
+    Estimate how well a grid of size (grid x grid) approximates the area of a unit disk
+    when summing cell areas for cells whose *centers* lie inside the disk.
 
     Args:
-        grid (int): Grid resolution (number of cells per axis).
+        grid          : number of cells along each axis (grid x grid total).
+        warn_threshold: fraction of π below which we log a warning (default 99.9%).
 
     Returns:
-        None. Prints a warning if the area is less than 99.9% of pi.
+        accuracy (float): (estimated area) / π
     """
-    grid_side_length = 2. / grid  # Grid goes from -1 to 1, so total length is 2
+    # Each axis spans [-1, 1] → total length = 2. Each cell has width = step.
+    step = 2.0 / grid
 
-    # Scan each cell on the grid (y-z plane)
-    _area = 0.0
-    for iy in range(grid):
-        y = -1 + iy * grid_side_length  # y from -1 to 1
-        for iz in range(grid):
-            z = -1. + iz * grid_side_length  # z from -1 to 1
-            if (y * y + z * z) <= 1:
-                # If the cell is inside the disk, add its area
-                _area += grid_side_length ** 2
-    accuracy = _area / np.pi
-    if accuracy < 0.999:
+    # Build 1D coordinates of **cell centers** along y and z:
+    #   centers at: -1 + (i + 0.5) * step   for i=0..grid-1
+    centers = -1.0 + (np.arange(grid, dtype=np.float32) + 0.5) * step
+
+    # Make a 2D grid of centers. indexing="ij" → Y varies with the first index (rows),
+    # Z with the second (columns). Shapes: (grid, grid) each.
+    Y, Z = np.meshgrid(centers, centers, indexing="ij")
+
+    # Boolean mask: True where the cell center is inside the unit circle (y^2 + z^2 <= 1)
+    inside = (Y * Y + Z * Z) <= 1.0
+    approx_area = inside.sum(dtype=np.int64) * (step * step)
+
+    # Compare to the analytic area π (unit radius)
+    accuracy = approx_area / np.pi
+
+    # Warn if we’re below the requested accuracy threshold
+    if accuracy < warn_threshold:
         logger.warning(
-            f'Grid resolution check WARNING.\n'
-            f'   Grid {grid}x{grid} has an area/pi={accuracy:1.2%} < 99.9%.\n'
-            '   Consider increasing the number of grid to improve accuracy.'
+            "Grid resolution check WARNING.\n"
+            f"   Grid {grid}x{grid} has area/π = {accuracy:1.2%} < {warn_threshold*100:.1f}%.\n"
+            "   Consider increasing the grid size to improve conservation."
         )
+
 
 
 def detect_peaks(
@@ -206,62 +243,105 @@ def detect_peaks(
     Returns:
         ind (np.ndarray): Indices of detected peaks.
     """
-    x = np.atleast_1d(x).astype('float64')
-    if x.size < 3:
-        return np.array([], dtype=int)
-    if valley:
-        x = -x
-    # Find indices of all peaks
-    dx = x[1:] - x[:-1]
-    # Handle NaN's
-    indnan = np.where(np.isnan(x))[0]
-    if indnan.size:
-        x[indnan] = np.inf
-        dx[np.where(np.isnan(dx))[0]] = np.inf
-    ine, ire, ife = np.array([[], [], []], dtype=int)
-    if not edge:
-        ine = np.where((np.hstack((dx, 0)) < 0) & (np.hstack((0, dx)) > 0))[0]
-    else:
-        if edge.lower() in ['rising', 'both']:
-            ire = np.where((np.hstack((dx, 0)) <= 0) & (np.hstack((0, dx)) > 0))[0]
-        if edge.lower() in ['falling', 'both']:
-            ife = np.where((np.hstack((dx, 0)) < 0) & (np.hstack((0, dx)) >= 0))[0]
-    ind = np.unique(np.hstack((ine, ire, ife)))
-    # Remove peaks near NaNs
-    if ind.size and indnan.size:
-        ind = ind[np.in1d(ind, np.unique(np.hstack((indnan, indnan-1, indnan+1))), invert=True)]
-    # First and last values cannot be peaks
-    if ind.size and ind[0] == 0:
-        ind = ind[1:]
-    if ind.size and ind[-1] == x.size-1:
-        ind = ind[:-1]
-    # Remove peaks below minimum peak height
-    if ind.size and mph is not None:
-        ind = ind[x[ind] >= mph]
-    # Remove peaks with neighbors too close in height
-    if ind.size and threshold > 0:
-        dx = np.min(np.vstack([x[ind]-x[ind-1], x[ind]-x[ind+1]]), axis=0)
-        ind = np.delete(ind, np.where(dx < threshold)[0])
-    # Remove small peaks closer than minimum peak distance
-    if ind.size and mpd > 1:
-        ind = ind[np.argsort(x[ind])][::-1]  # sort by peak height
-        idel = np.zeros(ind.size, dtype=bool)
-        for i in range(ind.size):
-            if not idel[i]:
-                # Keep peaks with the same height if kpsh is True
-                idel = idel | (ind >= ind[i] - mpd) & (ind <= ind[i] + mpd) \
-                    & (x[ind[i]] > x[ind] if kpsh else True)
-                idel[i] = 0  # Keep current peak
-        # Remove the small peaks and sort back the indices by their occurrence
-        ind = np.sort(ind[~idel])
+    y = np.asarray(x, dtype=np.float64)
+    n = y.size
+    if n < 3:
+        return np.empty(0, dtype=int)
 
-    if show:
-        if indnan.size:
-            x[indnan] = np.nan
-        if valley:
-            x = -x
-        # _plot(x, mph, mpd, threshold, edge, valley, ax, ind)
-    return ind
+    if valley:
+        y = -y
+
+    # Finite mask & convenient view that ignores NaNs
+    finite = np.isfinite(y)
+    if not finite.all():
+        # Replace NaNs with -inf so they cannot be peaks,
+        # and we can compute differences without special-casing
+        y = y.copy()
+        y[~finite] = -np.inf
+
+    # First/last cannot be peaks
+    dy = y[1:] - y[:-1]
+
+    # Candidate edges
+    # Rising edge: dy switches + or 0 right before, and - after
+    # Falling edge: dy switches - before, and + or 0 after
+    # (We emulate your <= / >= conventions)
+    left = np.hstack((dy, 0.0))
+    right = np.hstack((0.0, dy))
+
+    cand = np.empty(0, dtype=int)
+    if edge is None:
+        # strictly interior local maxima
+        cand = np.flatnonzero((left < 0.0) & (right > 0.0))
+    else:
+        e = edge.lower()
+        idx = []
+        if e in ('rising', 'both'):
+            idx.append(np.flatnonzero((left <= 0.0) & (right > 0.0)))
+        if e in ('falling', 'both'):
+            idx.append(np.flatnonzero((left < 0.0) & (right >= 0.0)))
+        if idx:
+            cand = np.unique(np.concatenate(idx))  # sorted union
+
+    if cand.size == 0:
+        return cand
+
+    # Remove boundary points (already implied by construction, but keep explicit)
+    cand = cand[(cand > 0) & (cand < n - 1)]
+
+    # Drop anything touching NaN neighbors
+    if not finite.all():
+        bad = ~(finite[cand] & finite[cand-1] & finite[cand+1])
+        if bad.any():
+            cand = cand[~bad]
+            if cand.size == 0:
+                return cand
+
+    # Minimum peak height
+    if mph is not None:
+        cand = cand[y[cand] >= mph]
+        if cand.size == 0:
+            return cand
+
+    # Threshold vs neighbors
+    if threshold > 0.0:
+        left_diff = y[cand] - y[cand - 1]
+        right_diff = y[cand] - y[cand + 1]
+        mindiff = np.minimum(left_diff, right_diff)
+        cand = cand[mindiff >= threshold]
+        if cand.size == 0:
+            return cand
+
+    # Minimum peak distance (greedy keep largest first)
+    if mpd > 1:
+        order = np.argsort(y[cand])[::-1]  # tallest → shortest
+        cand_sorted = cand[order]
+        keep = np.ones(cand_sorted.size, dtype=bool)
+
+        # O(k^2) worst-case, but k << n typically; simple & robust
+        for i in range(cand_sorted.size):
+            if not keep[i]:
+                continue
+            lo = cand_sorted[i] - mpd
+            hi = cand_sorted[i] + mpd
+            # If kpsh=False, remove all within window.
+            # If kpsh=True, keep equal-height ties.
+            too_close = (cand_sorted >= lo) & (cand_sorted <= hi)
+            if kpsh:
+                # do not delete those with the exact same height
+                same_height = (y[cand_sorted] == y[cand_sorted[i]])
+                too_close &= ~same_height
+            keep |= False  # no-op to keep type checker calm
+            keep[too_close] = False
+            keep[i] = True  # keep the current best
+
+        cand = np.sort(cand_sorted[keep])
+
+    # Optional plotting hook preserved (no-op here)
+    if show and ax is not None:
+        pass
+    return cand
+
 
 def a0cont(a0vcut, plot=False, poly_order=1, spline_k=1, mpd=100):
     """
@@ -278,55 +358,59 @@ def a0cont(a0vcut, plot=False, poly_order=1, spline_k=1, mpd=100):
         continuum (np.ndarray): Best fit blaze model.
         peaks (np.ndarray): Indices of detected peaks.
     """
-    x = np.arange(len(a0vcut))
-
-    # Detect peaks that are at least separated by minimum peak distance
+    x = np.arange(a0vcut.size)
+    # initial peak pick with min peak distance
     peaks = detect_peaks(a0vcut, mpd=mpd)
-    xtimes = 1
 
-    for _ in range(xtimes):
-        mask = np.ones(len(peaks), dtype=bool)
-
-        # Fit a polynomial to the detected peaks
+    # robust prune peaks against poly fit
+    if peaks.size >= (poly_order + 1):
         f = np.polyfit(x[peaks], a0vcut[peaks], poly_order)
         q = np.poly1d(f)
-        residual = a0vcut[peaks] - q(x[peaks])
-        MAD = np.median(np.abs(residual - np.median(residual)))
+        resid = a0vcut[peaks] - q(x[peaks])
+        MAD = np.median(np.abs(resid - np.median(resid)))
 
-        # Mask out outliers and low points
-        mask[(a0vcut[peaks]/np.nanmedian(a0vcut) < .1)] = False
-        mask[(a0vcut[peaks] < q(x[peaks])-2*MAD)] = False
-        mask[(a0vcut[peaks] > q(x[peaks])+6*MAD)] = False
+        mask = np.ones(peaks.size, dtype=bool)
+        # low S/N or deep lines
+        mask &= (a0vcut[peaks] / np.nanmedian(a0vcut) >= 0.1)
+        # reject strong devs from the poly trend
+        mask &= (a0vcut[peaks] >= q(x[peaks]) - 2 * MAD)
+        mask &= (a0vcut[peaks] <= q(x[peaks]) + 6 * MAD)
         peaks = peaks[mask]
 
-    c = 0
-    for smoothing in np.arange(1e6, 1e8, 1e6):
-        # Fit a spline to the filtered peaks
-        f = interpolate.UnivariateSpline(
-            x[peaks], a0vcut[peaks], k=spline_k, s=smoothing)
-        continuum = f(x)
-        peaks2 = detect_peaks(continuum)
-        if len(peaks2) == 1:
-            c += 1
-        if c == 2:
-            break
+    # Fallback: if we lost too many peaks, repopulate with coarse Mpd
+    if peaks.size < max(3, spline_k + 1):
+        peaks = detect_peaks(a0vcut, mpd=max(1, mpd // 2))
+        if peaks.size < max(3, spline_k + 1):
+            # last resort: take a coarse uniform subset to avoid spline crash
+            idx = np.linspace(0, a0vcut.size - 1, num=max(3, spline_k + 1)).astype(int)
+            peaks = idx
 
-    # If not converged, try larger smoothing
-    if smoothing == 99000000.0:
-        for smoothing in np.arange(1e8, 1e10, 1e8):
-            f = interpolate.UnivariateSpline(
-                x[peaks], a0vcut[peaks], k=spline_k, s=smoothing)
-            continuum = f(x)
-            peaks2 = detect_peaks(continuum)
-            if len(peaks2) == 1:
-                c += 1
-            if c == 2:
+    # Grow smoothing geometrically; stop once the spline envelope yields ~one broad bump twice
+    s = 1e6
+    hits = 0
+    continuum = None
+    for _ in range(10):  # at most 10 spline fits per tier
+        f = interpolate.UnivariateSpline(x[peaks], a0vcut[peaks], k=spline_k, s=s)
+        continuum = f(x)
+        # count envelopes' peaks
+        pk2 = detect_peaks(continuum)
+        if pk2.size <= 1:
+            hits += 1
+            if hits >= 2:
                 break
+        else:
+            hits = 0
+        s *= 10.0  # geometric growth
+
+    # If somehow didn't converge, ensure continuum is at least smooth-ish
+    if continuum is None:
+        f = interpolate.UnivariateSpline(x[peaks], a0vcut[peaks], k=spline_k, s=1e8)
+        continuum = f(x)
 
     return continuum, peaks
 
 
-import matplotlib.pyplot as plt
+
 
 def save_phase_pngs(
     cube, y, z, outdir="phase_maps",
