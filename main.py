@@ -27,7 +27,7 @@ import visualization as vis
 # CONFIG_FILE = 'config_LkCa4base_SizeDelT_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_2SPOTS_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_study.cfg'
-CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_9spots.cfg'
+CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_11spots-1.cfg'
 # CONFIG_FILE = 'config_teff_study.cfg'
 # SAVE_DIR = f'RVandEWR_SizeDelT_width100'
 
@@ -142,9 +142,8 @@ def init_setup_cfg(
     nrho           = cfg.getint('main', 'nrho')
     instrument_res = cfg.getint('main', 'instrument_reso')
 
-    # Keep it simple: Swing=6, else use system cpu_count (reasonable cap)
-    default_cpus = 6 if hostname == 'Swing' else (os.cpu_count() or 8)
-    cpu_use = min(max(default_cpus, 1), 64)
+    cpu_use = 6 if hostname == 'Swing' else (int(os.cpu_count()*0.9) or 8)
+    # cpu_use = 6 if hostname == 'Swing' else 30
 
     # --- Stellar params ---
     stellar_radius  = cfg.getfloat('star', 'radius') * SOLAR_RADIUS
@@ -381,13 +380,13 @@ def simulation_plot(grid_size, nrho, instrument_res, STAR,
 
     text2 = '{} active regions:\n'.format(active_regions_number) + \
             '  lon [deg]= {}\n'.format(np.array2string(
-                active_region_longs, separator=',', formatter={'float_kind': lambda x: f'{int(x):4d}'})) + \
+                active_region_longs, separator=',', formatter={'float_kind': lambda x: f'{int(x):5d}'})) + \
             '  lat [deg]= {}\n'.format(np.array2string(
-                active_region_lats, separator=',', formatter={'float_kind': lambda x: f'{int(x):4d}'})) + \
+                active_region_lats, separator=',', formatter={'float_kind': lambda x: f'{int(x):5d}'})) + \
             '   size [%]= {}\n'.format(np.array2string(
-                active_region_sizes_percent, separator=',', formatter={'float_kind': lambda x: f'{int(x):4d}'})) + \
+                active_region_sizes_percent, separator=',', formatter={'float_kind': lambda x: f'{float(x):5.1f}'})) + \
             '   Temp [K]= {}\n'.format(np.array2string(
-                active_region_dTemp, separator=',', formatter={'float_kind': lambda x: fr'${int(x):+5d}$'}))
+                active_region_dTemp, separator=',', formatter={'float_kind': lambda x: fr'${int(x):+7d}$'}))
     
     if band != 'photo':
         vis.spot_view(
@@ -432,7 +431,8 @@ def simulation_plot(grid_size, nrho, instrument_res, STAR,
 def main_model(
     logger, bands, nrho, grid_size, STAR, PSI, SPEC_box, filters,
     active_regions_number, active_region_box, rv_ccf_pars, syn_model_path,
-    instrument_res, cpu_use, SAVE_DIR, save_spec_flag, plot_flag, silence_pbar
+    instrument_res, cpu_use, SAVE_DIR, save_spec_flag, plot_flag, silence_pbar,
+    in_memory: bool = False, write_csv: bool = True,
 ):
     """
     Run the per-band spotted-star simulations and write outputs.
@@ -458,7 +458,16 @@ def main_model(
         silence_pbar (bool): Silence progress bars in inner routines.
 
     Returns:
-        str: The final output folder path string (same base for each band; band suffix varies).
+        if in_memory == False: str (final output folder path, as before)
+        if in_memory == True : (str outdir, dict results_by_band)
+            where results_by_band[band] is a dict with keys:
+              - 'phase' : (N,) float32
+              - 'rv'    : (N,) float32 or NaN (for photo-only band)
+              - 'ewr'   : (N,) float32 or NaN (for non-EWR bands)
+              - 'photo': dict only for 'photo' band with:
+                    'mag': {<filter short name>: (N,) float32}
+                    'flux': {<filter short name>: (N,) float32}
+              - 'flattened_spec': (N, M) float32 if you want to keep them (optional; here we don’t store to save RAM)
     """
 
     # ---- Normalize active-region order ONCE (coolest cools first, hottest hots first) ----
@@ -511,6 +520,8 @@ def main_model(
             active_regions_number, temp_str_uniq)
 
     # ---- Main loop over bands ----
+    results_by_band = {}  # only filled if in_memory=True
+
     band_names = list(bands.keys())  # freeze order to align with SPEC_box
     for i, band in enumerate(band_names):
         start_time = time()
@@ -536,17 +547,34 @@ def main_model(
             ccf_rv_shift = np.full_like(visible_phi, np.nan, dtype=np.float32)
             ohfe_ratio   = np.full_like(visible_phi, np.nan, dtype=np.float32)
 
-            # Save (Astropy Table)
-            tab = Table([visible_phi], names=['Phase'])
-            for j, filt in enumerate(filters):
-                fname = filt.split('/')[1]
-                tab[f'{fname}_mag']  = np.asarray(lightcurves_mag[j],  dtype=np.float32)
-                tab[f'{fname}_flux'] = np.asarray(lightcurves_flux[j], dtype=np.float32)
-                tab[f'{fname}_mag'].format  = '%.6f'
-                tab[f'{fname}_flux'].format = '%.6f'
-            tab['Phase'].format = '%.3f'
-            tab.write(f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv',
-                      format='csv', overwrite=True)
+            if in_memory:
+                # pack photometry into dicts keyed by short filter name
+                mag_dict  = {}
+                flux_dict = {}
+                for j, filt in enumerate(filters):
+                    fname = filt.split('/')[1]
+                    mag_dict[fname]  = np.asarray(lightcurves_mag[j],  dtype=np.float32)
+                    flux_dict[fname] = np.asarray(lightcurves_flux[j], dtype=np.float32)
+                results_by_band[band] = {
+                    'phase': visible_phi,
+                    'rv':    ccf_rv_shift,
+                    'ewr':   ohfe_ratio,
+                    'photo': {'mag': mag_dict, 'flux': flux_dict},
+                }
+            else:
+                # write CSV (as before)
+                from astropy.table import Table
+                tab = Table([visible_phi], names=['Phase'])
+                for j, filt in enumerate(filters):
+                    fname = filt.split('/')[1]
+                    tab[f'{fname}_mag']  = np.asarray(lightcurves_mag[j],  dtype=np.float32)
+                    tab[f'{fname}_flux'] = np.asarray(lightcurves_flux[j], dtype=np.float32)
+                    tab[f'{fname}_mag'].format  = '%.6f'
+                    tab[f'{fname}_flux'].format = '%.6f'
+                tab['Phase'].format = '%.3f'
+                if write_csv:
+                    tab.write(f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv',
+                              format='csv', overwrite=True)
 
             if plot_flag == 1:
                 simulation_plot(
@@ -558,7 +586,7 @@ def main_model(
 
             # Free big arrays
             del integrated_stellar_spectrum, final_2d_surface_flux_sum, lightcurves_mag, lightcurves_flux
-            logger.warning(f'\n--> {band} run time: {(time()-start_time)/60:1.2f} min')
+            logger.info(f'\n--> {band} run time: {(time()-start_time)/60:1.2f} min')
             continue
 
         # Spectroscopy branch
@@ -566,7 +594,7 @@ def main_model(
             STAR, integrated_stellar_spectrum, visible_phi, band,
             intORflux, model_type, SAVE_DIR, plot_flag
         )
-        if save_spec_flag == 1:
+        if save_spec_flag == 1 and not in_memory and write_csv:
             np.save(f'./outputs/{SAVE_DIR}/spec/{band}_flat_final_spec.npy',
                     integrated_stellar_spectrum)
 
@@ -585,27 +613,35 @@ def main_model(
         )
         ccf_rv_shift = np.asarray(ccf_rv_shift, dtype=np.float32)
 
-        # Save (Astropy Table)
-        tab = Table(data=(visible_phi, ccf_rv_shift, ohfe_ratio),
-                    names=('Phase', 'RV', 'EWR'))
-        tab['Phase'].format = '%.3f'
-        tab['RV'].format    = '%.4f'
-        tab['EWR'].format   = '%.5f'
-        tab.write(f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv',
-                  format='csv', overwrite=True)
+        if in_memory:
+            results_by_band[band] = {
+                'phase': visible_phi,
+                'rv':    ccf_rv_shift,
+                'ewr':   ohfe_ratio,
+            }
+        else:
+            # write CSV (as before)
+            from astropy.table import Table
+            tab = Table(data=(visible_phi, ccf_rv_shift, ohfe_ratio),
+                        names=('Phase', 'RV', 'EWR'))
+            tab['Phase'].format = '%.3f'
+            tab['RV'].format    = '%.4f'
+            tab['EWR'].format   = '%.5f'
+            if write_csv:
+                tab.write(f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv',
+                          format='csv', overwrite=True)
 
-        # Plot
-        if plot_flag == 1:
-            simulation_plot(
-                grid_size, nrho, instrument_res, STAR, model_type, SAVE_DIR,
-                active_regions_number, active_region_box, visible_phi, integrated_stellar_spectrum,
-                ccf_rv_shift, final_2d_surface_flux_sum, outdir, cpu_use, ohfe_ratio,
-                band, intORflux, filters, lightcurves_mag=[None, None], lightcurves_flux=[None, None]
-            )
+            if plot_flag == 1:
+                simulation_plot(
+                    grid_size, nrho, instrument_res, STAR, model_type, SAVE_DIR,
+                    active_regions_number, active_region_box, visible_phi, integrated_stellar_spectrum,
+                    ccf_rv_shift, final_2d_surface_flux_sum, outdir, cpu_use, ohfe_ratio,
+                    band, intORflux, filters, lightcurves_mag=[None, None], lightcurves_flux=[None, None]
+                )
 
         # Free big arrays
         del integrated_stellar_spectrum, final_2d_surface_flux_sum, ccf_rv_shift, ohfe_ratio
-        logger.warning(f'\n--> {band} run time: {(time()-start_time)/60:1.2f} min')
+        logger.info(f'\n--> {band} run time: {(time()-start_time)/60:1.2f} min')
 
     # Restore original order for downstream
     restore = np.argsort(active_region_org_idx)
@@ -615,6 +651,8 @@ def main_model(
     active_region_Temp  = active_region_Temp[restore]
     active_region_box = (active_region_longs, active_region_lats, active_region_sizes, active_region_Temp)
 
+    if in_memory:
+        return outdir, results_by_band
     return outdir
         
 
@@ -654,6 +692,10 @@ if __name__ == '__main__':
     parser.add_argument(
         '-out', dest="out", action="store", help="Out dur name.",
         type=str, default=None)
+    
+    # silence progress bars setting, default False
+    parser.add_argument(
+        '-silence', action="store", type=bool, default=False)
     # parser.add_argument(
     #     '-plot', dest="plot", action="store", help="If make gif.",
     #     type=str, default=None)
@@ -667,7 +709,8 @@ if __name__ == '__main__':
     logger = setup_logging(args.debug)
 
     ################################################################################################
-    
+    logger.info("\nStarting SPOTACT-TTS simulation...")
+    logger.info("Initital setup...")
     # read in cfg, and setup classes
     (STAR, bands, SAVE_DIR, nrho, grid_size, instrument_res, cpu_use,
         plot_flag, save_spec_flag, sim_spec_window_size, syn_model_path,
@@ -682,12 +725,13 @@ if __name__ == '__main__':
     SPEC_box = setup_activate_spectra(bands, STAR, plot_flag, syn_model_path)
 
     ################################################################################################
+    
     # run the simulation
     main_model(
         logger, bands, nrho, grid_size, STAR, PSI, SPEC_box, filters,
         active_regions_number, active_region_box, 
         rv_ccf_pars, syn_model_path, instrument_res, 
-        cpu_use, SAVE_DIR, save_spec_flag, plot_flag, silence_pbar=False)
+        cpu_use, SAVE_DIR, save_spec_flag, plot_flag, silence_pbar=args.silence)
     
     
     # ######################################################################

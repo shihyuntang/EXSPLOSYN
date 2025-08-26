@@ -292,7 +292,7 @@ def spot_view_pel(
         0.05, -0.18, text1, family='monospace', size=5, 
         transform=ax1.transAxes, ha='left', va='top')
     ax1.text(
-        0.05, -0.38, text2, family='monospace', size=4.5, 
+        0.01, -0.38, text2, family='monospace', size=4, 
         transform=ax1.transAxes, ha='left', va='top')
 
     out_dir_pre = f'./outputs/{outdir.split("/")[2]}'

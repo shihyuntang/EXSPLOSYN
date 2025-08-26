@@ -544,6 +544,13 @@ def teff_obs_rotavg(
     Returns
     -------
     Teff_obs : scalar (K)
+
+    Notes
+    -----
+    The equation is:
+        Teff_obs = [ < ∫ I(μ) T^4 dA > / ∫ I(μ) dA ]^(1/4)
+    where <...> is the rotation average, and I(μ) is the
+    limb-darkening law (I(μ)=μ for no limb darkening).
     """
     cube = cube.astype(np.float64) / scale
     Y, Z = np.meshgrid(y, z, indexing='ij')
@@ -553,7 +560,7 @@ def teff_obs_rotavg(
 
     # Weights for flux integration
     if limb_darkening is None:
-        W = mu  # foreshortening only
+        W = mu  # projected area only
     else:
         W = limb_darkening(mu)
 

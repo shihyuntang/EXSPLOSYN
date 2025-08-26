@@ -800,7 +800,7 @@ def final_intensity_spec(
 
     # ---------- Wavelength → velocity ----------
     # Center v at the midpoint of the wavelength window.
-    c_kms = 299_792.458
+    c_kms = 299792.458
     w_center = 0.5 * (wvmin + wvmax)
     v = c_kms * (w - w_center) / w_center    # (n_cut,)
 

@@ -23,8 +23,8 @@ from basic_spec import rotint
 from macbro_dynamic import macbro_dyn
 import spotact_spot as stsp
 # import visualization as vis
-import synspecprep as ssp
-# from rebin_jv import rebin_jv
+import syn_specprep as ssp
+from rebin_jv import rebin_jv
 # from spotact_utils import _apply_instrumental_broadening, a0cont, save_phase_pngs, coverage_and_teff
 import spotact_utils as utils
 from spotact_rv import *
@@ -823,6 +823,29 @@ def get_photometric(
     return lightcurve_mag_box, lightcurve_flux_box
 
 
+def _pick_trials(visible_phi, n_keep=6):
+    """Pick trial indices for the 1st-pass CCF.
+    1) Prefer canonical phases; 2) fall back to evenly spaced PHASE targets.
+    """
+    phi = np.asarray(visible_phi, dtype=np.float64)
+    n = phi.size
+    n_keep = min(n_keep, n)
+
+    # 1) preferred anchors (clip to actual phi span in case it’s not [0,1] exactly)
+    anchors = np.array([0.00, 0.15, 0.20, 0.25, 0.30, 0.50], dtype=np.float64)
+    anchors = anchors[(anchors >= phi.min()) & (anchors <= phi.max())]
+    idx = [int(np.argmin(np.abs(phi - t))) for t in anchors]
+    idx = np.unique(np.asarray(idx, dtype=int))
+
+    # 2) fallback: evenly spaced *phase* targets, then map to nearest indices
+    if idx.size < n_keep:
+        targets = np.linspace(phi.min(), phi.max(), n_keep)
+        extra = [int(np.argmin(np.abs(phi - t))) for t in targets]
+        idx = np.unique(np.concatenate([idx, extra]))
+
+    # Keep at most n_keep, sorted
+    return np.sort(idx[:n_keep])
+
 
 def cal_ccf_rv(
         star_tot, Star, visible_phi, band, intORflux, model_type, rv_ccf_pars, prf_dir, 
@@ -849,138 +872,136 @@ def cal_ccf_rv(
     Returns:
         np.ndarray: Array of RV shifts (one per phase).
     """
-    visible_phi = np.array(visible_phi)
-    if Star.ccf_template_photosphereORnot == 1:
-        ccf_tempalate_temp = int(np.round(Star.Temp, -2))
-    else:
-        ccf_tempalate_temp = Star.ccf_temp
+    visible_phi = np.asarray(visible_phi, dtype=np.float64)
+    nphi = visible_phi.size
 
-    # Get velocity grid for the spectra
+    # --- Obs velocity grid on which star_tot lives ---
     if intORflux == 'flux':
         vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-    elif intORflux == 'intensity':
-        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
-    vel = np.array([stsp.rndup(i, 4) for i in vel])
-
-    # --- Get CCF template ---
-    line_cen = Star.bands2use[band][0]
-    delta_wv = Star.bands2use[band][1]
-    wvmin, wvmax = (line_cen-delta_wv, line_cen+delta_wv)
-    wvmin = int(wvmin); wvmax = int(wvmax)
-
-    # Convert velocity grid to wavelength grid
-    c_kms = 299792.458
-    w_center = (wvmin + wvmax) / 2
-    wave = vel * w_center / c_kms + w_center
-
-    ccf_tt, ccf_logg, ccf_FeH, ccf_vsini, ccf_resolution = rv_ccf_pars
-
-    # Use user-given parameters to generate CCF template if provided
-    if ccf_tt != 99999:
-        spec_base_name = f'mc_{ccf_tt:1.0f}{ccf_logg*100:1.0f}+{ccf_FeH*100:03.0f}_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
-        spec_dir = f'{prf_dir}/{spec_base_name}'
-        sim_spec_name = f'RVCCFUse_Synmast_spec_{ccf_tt:1.0f}_{ccf_logg:1.2f}_{ccf_FeH:1.2f}_vsini{ccf_vsini:1.02f}_res{ccf_resolution:1.0f}_wv{wvmin}_{wvmax}_flatten.p'
-        sim_spec_path = f'{Star.out_path}{sim_spec_name}'
-
-        ssp.final_flux_spec(
-            'ccf_temp', spec_dir, sim_spec_path, wvmin, wvmax, 
-            Vel_bin_size, flatten=True, pars=rv_ccf_pars)
-        _temp = pd.read_pickle(sim_spec_path)
-        spec_temp = _temp['f'].to_numpy()
     else:
-        # Use spot coverage to estimate Teff for CCF template
-        vel_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{ccf_tempalate_temp:1.0f}_v']
-        spec_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{ccf_tempalate_temp:1.0f}_f']
+        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+    vel = np.asarray(vel, dtype=np.float64)
+    dv_obs = float(vel[1] - vel[0])
+
+    # --- Build wavelength grid for obs spectra (same as your code) ---
+    line_cen, delta_wv = Star.bands2use[band][0], Star.bands2use[band][1]
+    wvmin, wvmax = int(line_cen - delta_wv), int(line_cen + delta_wv)
+    c_kms = 299792.458
+    w_center = 0.5 * (wvmin + wvmax)
+    wave_obs = vel * w_center / c_kms + w_center  # Å
+
+    # --- Build/choose template exactly like before ---
+    ccf_tt, ccf_logg, ccf_FeH, ccf_vsini, ccf_resolution = rv_ccf_pars
+    if Star.ccf_template_photosphereORnot == 1:
+        ccf_template_temp = int(np.round(Star.Temp, -2))
+    else:
+        ccf_template_temp = Star.ccf_temp
+
+    if ccf_tt != 99999:
+        # Use user-provided CCF template parameters
+        spec_base_name = (
+            f'mc_{ccf_tt:1.0f}{ccf_logg*100:1.0f}+{ccf_FeH*100:03.0f}_'
+            'b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
+        )
+        spec_dir = f'{prf_dir}/{spec_base_name}'
+        sim_spec_name = (
+            f'RVCCFUse_Synmast_spec_{ccf_tt:1.0f}_{ccf_logg:1.2f}_{ccf_FeH:1.2f}_'
+            f'vsini{ccf_vsini:1.02f}_res{ccf_resolution:1.0f}_wv{wvmin}_{wvmax}_flatten.p'
+        )
+        sim_spec_path = f'{Star.out_path}{sim_spec_name}'
+        ssp.final_flux_spec(
+            'ccf_temp', spec_dir, sim_spec_path, wvmin, wvmax, Vel_bin_size,
+            flatten=True, pars=rv_ccf_pars
+        )
+        _temp = pd.read_pickle(sim_spec_path)
+        spec_temp = _temp['f'].to_numpy(dtype=float)
+        # Template wavelength grid equals wave_obs after final_flux_spec → we rederive vel_temp below:
+        vel_temp = (wave_obs - w_center) * c_kms / w_center
+    else:
+        # Build PHX-based template at ccf_template_temp with broadening + flattening
+        vel_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{ccf_template_temp:1.0f}_v']
+        spec_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{ccf_template_temp:1.0f}_f']
+        vel_temp = np.asarray(vel_temp, dtype=np.float64)
+        spec_temp = np.asarray(spec_temp, dtype=np.float64)
 
         wave_temp = vel_temp * w_center / c_kms + w_center
-        # Apply vsini broadening
+        # vsini broadening
         wave_temp, spec_temp = rotint(wave_temp, spec_temp, Star.vsini)
-        # Apply instrumental broadening
-        hwhm_list = wave_temp / Star.inst_res / 2
+        # instrumental broadening
+        hwhm_list = wave_temp / Star.inst_res / 2.0
         spec_temp = macbro_dyn(wave_temp, spec_temp, hwhm_list)
-
+        # flatten
+        spec_temp = flatten_ccf_model_spec(wave_temp, spec_temp, band, RVandEWR_dir, plot)
         vel_temp = c_kms * (wave_temp - w_center) / w_center
-        spec_temp = flatten_ccf_model_spec(
-            wave_temp, spec_temp, band, RVandEWR_dir, plot)
 
-        # Save CCF template if requested
         if save_spec_flag == 1:
-            np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template.npy', spec_temp)
-            np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_wave.npy', wave_temp)
+            np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_Tp{Star.ccf_temp:1.0f}.npy', spec_temp)
+            np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_wave_Tp{Star.ccf_temp:1.0f}.npy', wave_temp)
 
     # --- Determine CCF RV range and step ---
-    ccf_step = Vel_bin_size/100 * 2  # x2 for faster forward fitting
+    base_step = (Vel_bin_size / 100.0) * 2.0
 
-    if len(visible_phi) <= 10:
-        # For small number of phases, use a fixed RV window
-        _edge = 40 
-        clip_obs_edges = _edge / np.diff(vel_temp)[0]
-        clip_obs_edges = int(clip_obs_edges*5)
-        
+    # Helper to run mc_ccf across an index list safely
+    def _run_batch(idx_array, flux_box, vmin, vmax, step, clip_px, _cpu_use, _silence_pbar):
+        # partial with closed-over arrays that are not pickled each call
         func = partial(
-            mc_ccf, wave, star_tot, wave_temp, spec_temp, 
-            -_edge, _edge, ccf_step, clip_obs_edges, visible_phi)
-        outs = pqdm(np.arange(len(star_tot)), func, n_jobs=cpu_use)
+            mc_ccf, wave_obs, flux_box, wave_temp, spec_temp, vmin, vmax, step, 
+            clip_px, visible_phi)
+        # pqdm feeds us the integer index; call mc_ccf with star_tot[i] as 2nd arg
+        return pqdm(idx_array, func, n_jobs=_cpu_use, disable=_silence_pbar)
 
-        drvs = np.arange(-_edge, _edge, ccf_step)
-        ccf_rv_shift = get_ccf_peak(np.array(outs), drvs, visible_phi, band)
-        ccf_rv_shift = ccf_rv_shift - np.nanmin(ccf_rv_shift)
+    # Edge clipping in pixels (like your code)
+    # Use template dv for conversion (consistent with your original)
+    dv_tpl = float(vel_temp[1] - vel_temp[0]) if vel_temp.size > 1 else dv_obs
+    # guard: dvt can be tiny; avoid divide-by-zero
+    clip_obs_edges_default = int((10.0 / dv_tpl) * 5) if dv_tpl != 0.0 else 0
+
+    # --- PASS 1: probe a handful of phases to estimate required bounds/step ---
+    if nphi <= 10:
+        # just do one pass with a wide window
+        edge = 40.0
+        trial_idx = np.arange(nphi, dtype=int)
+        outs = _run_batch(
+            trial_idx, star_tot, -edge, edge, base_step, clip_obs_edges, min(cpu_use, nphi), silence_pbar)
+        
+        drvs = np.arange(-edge, edge, base_step, dtype=np.float64)
+        rv_coarse = get_ccf_peak(
+            np.asarray(outs, dtype=object), drvs, visible_phi[trial_idx], band)
+        rv_final = rv_coarse - np.nanmin(rv_coarse)
+        return rv_final.astype(np.float64, copy=False)
+
+    # --- PASS 1: trials to get rough RV and width ---
+    trial_idx  = _pick_trials(visible_phi, n_keep=6)
+    trial_edge = 10.0
+    drvs_trial = np.arange(-trial_edge, trial_edge, base_step, dtype=np.float64)
+    outs_trial = _run_batch(
+        trial_idx, star_tot, -trial_edge, trial_edge, base_step, clip_obs_edges_default, 
+        min(cpu_use, len(trial_idx)), silence_pbar)
+    rv_trial   = get_ccf_peak(np.asarray(outs_trial, dtype=object), drvs_trial, visible_phi[trial_idx], band)
+
+    bound = float(np.nanmax(np.abs(np.round(rv_trial, 3)))) if rv_trial.size else np.nan
+    if not np.isfinite(bound) or bound <= 0.02:
+        return np.full(nphi, np.nan, dtype=np.float64)
+
+    # your ladder for window/step
+    if bound <= 0.5:
+        ccf_bound = 2.0
+        ccf_step  = base_step
+    elif bound <= 5.0:
+        ccf_bound = 10.0
+        ccf_step  = base_step * 10.0
     else:
-        # For many phases, do trial CCFs to estimate RV window
-        _loc0 = np.argmin(np.abs(visible_phi-0.0))
-        _loc1 = np.argmin(np.abs(visible_phi-0.15))
-        _loc2 = np.argmin(np.abs(visible_phi-0.2))
-        _loc3 = np.argmin(np.abs(visible_phi-0.25))
-        _loc4 = np.argmin(np.abs(visible_phi-0.3))
-        _loc5 = np.argmin(np.abs(visible_phi-0.5))
-        trial_locs = np.array([_loc0, _loc1, _loc2, _loc3, _loc4, _loc5], dtype=int)
+        ccf_bound = bound * 4.0
+        ccf_step  = base_step * 100.0
 
-        _edge = 10
-        clip_obs_edges = _edge / np.diff(vel_temp)[0]
-        clip_obs_edges = int(clip_obs_edges*5)
-        
-        func = partial(
-            mc_ccf, wave, star_tot[trial_locs], wave_temp, spec_temp, 
-            -_edge, _edge, ccf_step, clip_obs_edges, visible_phi)
-        outs = pqdm(
-            np.arange(len(trial_locs)), func, n_jobs=6, disable=silence_pbar)
+    clip_obs_edges = int((ccf_bound / dv_tpl) * 5) if dv_tpl != 0.0 else 0
 
-        drvs = np.arange(-_edge, _edge, ccf_step)
-        _rv_shift = get_ccf_peak(
-            np.array(outs), drvs, visible_phi[trial_locs], band) 
-        logger.debug('_rv_shift', _rv_shift)
+    # --- PASS 2: full run with chosen window/step (FINAL) ---
+    drvs_full = np.arange(-ccf_bound, ccf_bound, ccf_step, dtype=np.float64)
+    outs_full = _run_batch(
+        np.arange(nphi, dtype=int), star_tot, -ccf_bound, ccf_bound, ccf_step, 
+        clip_obs_edges, min(cpu_use, nphi), silence_pbar)
+    rv_full   = get_ccf_peak(np.asarray(outs_full, dtype=object), drvs_full, visible_phi, band)
+    rv_full   = rv_full - np.nanmean(rv_full)
 
-        ccf_bounds = np.round(_rv_shift, decimals=3)
-        ccf_bound = np.nanmax(np.abs(ccf_bounds))
-        logger.debug(f'org ccf_bound: {ccf_bound}')
-        
-        if ccf_bound <= 0.02:
-            ccf_rv_shift = np.zeros(len(star_tot), dtype=np.float64)
-            ccf_rv_shift[:] = np.nan
-            return ccf_rv_shift
-        
-        elif (ccf_bound > 0.02) and (ccf_bound<=0.5):
-            ccf_bound = 2
-            ccf_step = ccf_step        
-        elif (ccf_bound > 0.5) and (ccf_bound<=5):
-            ccf_bound = 10
-            ccf_step = ccf_step*10
-        else:
-            ccf_bound = ccf_bound * 4
-            ccf_step = ccf_step*100
-
-        logger.debug(f'ccf_bound: {ccf_bound}, ccf_step: {ccf_step}')
-        clip_obs_edges = (ccf_bound) / np.diff(vel_temp)[0]
-        clip_obs_edges = int(clip_obs_edges*5)
-
-        func = partial(
-            mc_ccf, wave, star_tot, wave_temp, spec_temp, 
-            -ccf_bound, ccf_bound, ccf_step, clip_obs_edges, visible_phi)
-        ccf_rv_shift_box = pqdm(
-            np.arange(len(star_tot)), func, n_jobs=cpu_use, disable=silence_pbar)
-
-        drvs_full = np.arange(-ccf_bound, ccf_bound, ccf_step)
-        ccf_rv_shift = get_ccf_peak(np.array(ccf_rv_shift_box), drvs_full, visible_phi, band)
-        ccf_rv_shift = ccf_rv_shift - np.nanmean(ccf_rv_shift)
-
-    return ccf_rv_shift
+    return rv_full.astype(np.float64, copy=False)
