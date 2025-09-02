@@ -469,166 +469,139 @@ def save_phase_pngs(
         plt.close(fig)
 
 
+def ld_law_quadratic(mu, u1, u2):
+    """
+    Quadratic limb darkening shape L(mu) = 1 - u1*(1-mu) - u2*(1-mu)^2.
+    Returns non-negative values (clipped at 0).
+    """
+    L = 1.0 - u1*(1.0 - mu) - u2*(1.0 - mu)**2
+    return np.clip(L, 0.0, None)
+
+def _get_u1u2_for_T(ld_coeff_dict, band, T):
+    """
+    Fetch (u1,u2) for a given band and temperature T.
+    Falls back to nearest available integer temperature if exact not found.
+    """
+    key = f"{band}_{int(T)}"
+    if key in ld_coeff_dict:
+        return ld_coeff_dict[key]
+    else:
+        print(ld_coeff_dict)
+        raise KeyError(f"No LD coeffs found for band '{band}' at T={int(T)}K.")
+    
+
+    # # Nearest-neighbor fallback across available temps for this band
+    # # Expect keys like "<band>_<Tint>"
+    # temps = []
+    # coeffs = []
+    # prefix = f"{band}_"
+    # for k, v in ld_coeff_dict.items():
+    #     if k.startswith(prefix):
+    #         try:
+    #             temps.append(int(k.split("_")[-1]))
+    #             coeffs.append(v)
+    #         except Exception:
+    #             pass
+    # if not temps:
+    #     raise KeyError(f"No LD coeffs found for band '{band}'.")
+    # temps = np.asarray(temps)
+    # idx = np.argmin(np.abs(temps - float(T)))
+    # return coeffs[idx]
+
 def coverage_and_teff(
-    cube,                   # shape (Npsi, G, G), int16 or float
+    cube,                   # (Npsi, G, G), int or float; may be scaled
     y, z,                   # grid coords in [-1, 1], len = G
-    T_phot,                 # quiet photosphere temperature (same units as cube)
+    T_phot,                 # photosphere temperature (same units as 'cube' after scale)
+    ld_coeff_dict,          # dict: f"{band}_{int(T)}" -> (u1, u2)
+    band,                   
     sentinel_offdisk=0,
     scale=1.0,              # if you stored temps scaled (e.g., ×10), give that here
-    weight="area",          # "area" (projected area), "mu" (cosθ), or a callable(Y,Z)->weights
+    ld_by_local_temp=True,  # if True, LD varies with local T in 'cube'
+    T_ref_for_ld=None,      # if ld_by_local_temp=False, use this T for LD (default: T_phot)
 ):
     """
     Returns:
-      f_spot:   total non-photosphere fraction per phase (Npsi,)
-      f_cool:   fraction with T < T_phot per phase (Npsi,)
-      f_hot:    fraction with T > T_phot per phase (Npsi,)
-      Teff:     effective temperature per phase from <T^4>^(1/4) (Npsi,)
+      f_spot:   geometric disk fraction with T != T_phot per phase (Npsi,)
+      f_cool:   geometric disk fraction with T <  T_phot per phase (Npsi,)
+      f_hot:    geometric disk fraction with T >  T_phot per phase (Npsi,)
+      Teff:     flux-equivalent Teff per phase from <T^4>_W^(1/4), W = mu * L(mu) (Npsi,)
+    Notes:
+      - Coverage fractions are **pure projected-area** fractions over the visible disk.
+      - Teff uses **physical weights** W = μ × L(μ) with quadratic limb darkening.
+      - Sentinel/off-disk handled per phase.
     """
-    cube = cube.astype(np.float64) / scale
-    G = cube.shape[1]
+    # Temperatures in physical units
+    cube = cube.astype(np.float64) / scale              # (Npsi, G, G)
+    Npsi, G, G2 = cube.shape
+    assert G == G2, "grid must be square"
+
+    # Geometry
     Y, Z = np.meshgrid(y, z, indexing="ij")
-    disk = (Y*Y + Z*Z) <= 1.0
+    r2   = Y*Y + Z*Z
+    disk = (r2 <= 1.0)
+    mu2d = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))         # cos(theta) on image plane
 
-    # weights
-    if weight == "area":
-        W = np.ones_like(Y, dtype=np.float64)
-    elif weight == "mu":
-        W = np.sqrt(np.clip(1.0 - (Y*Y + Z*Z), 0.0, 1.0))  # cosθ
-    elif callable(weight):
-        W = np.asarray(weight(Y, Z), dtype=np.float64)
-    else:
-        raise ValueError("weight must be 'area', 'mu', or a callable(Y,Z).")
+    # Per-phase validity mask (visible & not sentinel)
+    on3 = disk[None, ...] & (cube != sentinel_offdisk)  # (Npsi, G, G)
 
-    # mask off-disk & sentinel
-    on = disk & (cube[0] != sentinel_offdisk)  # any phase works for sentinel/off-disk
-    W = np.where(on, W, 0.0)
-    Wsum = W.sum()
-    if Wsum == 0:
-        raise ValueError("No on-disk pixels found. Check grid/sentinel.")
+    # ---------- Geometric (projected-disk) coverage weights ----------
+    W2_area = np.ones_like(Y, dtype=np.float64)         # (G, G)
+    W3_area = np.where(on3, W2_area[None, ...], 0.0)    # (Npsi, G, G)
+    Wsum_phase_area = W3_area.sum(axis=(1, 2))          # (Npsi,)
+    if np.any(Wsum_phase_area == 0):
+        bad = np.where(Wsum_phase_area == 0)[0]
+        raise ValueError(f"No valid on-disk pixels for phases: {bad}")
 
-    # Broadcast weights for all phases
-    W3 = W[None, ...]  # (1,G,G) to (Npsi,G,G)
-
-    # Classify pixels
-    is_phot = (cube == T_phot)
+    # Classify temperatures
+    atol = 0.0 if (cube.dtype.kind in "iu") else 1e-6
+    is_phot = np.isclose(cube, T_phot, atol=atol)
     is_cool = (cube <  T_phot)
     is_hot  = (cube >  T_phot)
 
-    # Fractions (weighted by chosen W)
-    f_spot = ( (W3 * (~is_phot)).sum(axis=(1,2)) / Wsum )
-    f_cool = ( (W3 * is_cool   ).sum(axis=(1,2)) / Wsum )
-    f_hot  = ( (W3 * is_hot    ).sum(axis=(1,2)) / Wsum )
+    # Geometric fractions (projected disk)
+    f_spot = (W3_area * (~is_phot)).sum(axis=(1, 2)) / Wsum_phase_area
+    f_cool = (W3_area * ( is_cool)).sum(axis=(1, 2)) / Wsum_phase_area
+    f_hot  = (W3_area * (  is_hot)).sum(axis=(1, 2)) / Wsum_phase_area
 
-    # Effective temperature from area-weighted <T^4>^(1/4)
-    T4_mean = (W3 * (cube**4)).sum(axis=(1,2)) / Wsum
-    Teff = np.power(np.clip(T4_mean, 0.0, None), 0.25)
+    # ---------- Physical weights for Teff: W = μ × L(μ) ----------
+    if ld_by_local_temp:
+        mu3 = mu2d[None, ...]                           # (1, G, G), broadcasts
+        # Map unique integer temps to LD coeffs (only where valid)
+        Tints = np.unique(cube[on3].astype(int))
+        u1_map, u2_map = {}, {}
+        for Tint in Tints:
+            u1, u2 = _get_u1u2_for_T(ld_coeff_dict, band, Tint)
+            u1_map[Tint] = float(u1)
+            u2_map[Tint] = float(u2)
+        # Build per-pixel u1,u2
+        U1 = np.zeros_like(cube, dtype=np.float64)
+        U2 = np.zeros_like(cube, dtype=np.float64)
+        Tint_all = cube.astype(int)
+        for Tint in Tints:
+            sel = (Tint_all == Tint) & on3
+            if np.any(sel):
+                U1[sel] = u1_map[Tint]
+                U2[sel] = u2_map[Tint]
+        L3 = ld_law_quadratic(mu3, U1, U2)              # (Npsi, G, G)
+        W3_phy = np.where(on3, L3 * mu3, 0.0)
 
-    return f_spot, f_cool, f_hot, Teff
-
-import numpy as np
-
-def teff_obs_rotavg(
-    cube, y, z, sentinel_offdisk=0, scale=1.0, limb_darkening=None
-):
-    """
-    Rotation-averaged observer Teff from the phase cube.
-
-    Parameters
-    ----------
-    cube : (Npsi, G, G) array, temps in K*scale
-    y,z  : grid coords in [-1,1], len=G
-    sentinel_offdisk : value used off-disk
-    scale : if you stored temps as int(T*scale)
-    limb_darkening : None or callable(mu)->I(mu) (bolometric intensity law)
-
-    Returns
-    -------
-    Teff_obs : scalar (K)
-
-    Notes
-    -----
-    The equation is:
-        Teff_obs = [ < ∫ I(μ) T^4 dA > / ∫ I(μ) dA ]^(1/4)
-    where <...> is the rotation average, and I(μ) is the
-    limb-darkening law (I(μ)=μ for no limb darkening).
-    """
-    cube = cube.astype(np.float64) / scale
-    Y, Z = np.meshgrid(y, z, indexing='ij')
-    r2 = Y*Y + Z*Z
-    disk = r2 <= 1.0
-    mu = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))
-
-    # Weights for flux integration
-    if limb_darkening is None:
-        W = mu  # projected area only
     else:
-        W = limb_darkening(mu)
+        T_ref = T_phot if (T_ref_for_ld is None) else T_ref_for_ld
+        u1, u2 = _get_u1u2_for_T(ld_coeff_dict, band, T_ref)
+        L2 = ld_law_quadratic(mu2d, u1, u2)             # (G, G)
+        W2_ld = L2 * mu2d
+        W3_phy = np.where(on3, W2_ld[None, ...], 0.0)
 
-    W = np.where(disk, W, 0.0)
-    denom = W.sum()
+    Wsum_phase_phy = W3_phy.sum(axis=(1, 2))
+    if np.any(Wsum_phase_phy <= 0):
+        bad = np.where(Wsum_phase_phy <= 0)[0]
+        raise ValueError(f"No on-disk pixels (or zero physical weight) for phases: {bad}")
 
-    # Ignore off-disk sentinels
-    mask_off = (cube == sentinel_offdisk)
-    T4 = np.where(mask_off, 0.0, cube**4)
+    # ---------- Teff per phase from physically-weighted <T^4> ----------
+    T4_mean_phase = (W3_phy * (cube**4)).sum(axis=(1, 2)) / Wsum_phase_phy
+    Teff_rotavg = (T4_mean_phase.mean())**0.25
 
-    # Per-phase flux proxy and rotation-average
-    num = (T4 * W[None, ...]).sum(axis=(1, 2))
-    T4_mean = num.mean() / denom
-    return T4_mean**0.25
-
-
-def fspot_global_from_cube(
-    cube, y, z, T_phot, sentinel_offdisk=0, scale=1.0, mu_min=0.05
-):
-    """
-    Estimate *global* (surface-area) spot filling factor from the phase cube,
-    independent of spot temperature. Also returns projected (on-disk) f per phase.
-
-    Idea: spots are pixels where T != T_phot. Convert projected pixels to
-    surface-area weights with 1/mu (mu = cosθ), clip near the limb with mu_min,
-    compute per-phase surface-area fractions, then average over phases.
-
-    Parameters
-    ----------
-    cube : (Npsi, G, G) temps in K*scale
-    y,z  : grid coords
-    T_phot : quiet-photosphere temperature (in K)
-    sentinel_offdisk : value used off-disk
-    scale : if you stored temps as int(T*scale)
-    mu_min : limb cutoff to keep 1/mu finite (typ. 0.03–0.1)
-
-    Returns
-    -------
-    f_global : scalar, estimated global surface-area spot fraction
-    f_proj_per_phase : (Npsi,) projected on-disk spot fraction per phase
-    """
-    cube = cube.astype(np.float64) / scale
-    Y, Z = np.meshgrid(y, z, indexing='ij')
-    r2 = Y*Y + Z*Z
-    disk = r2 <= 1.0
-    mu = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))
-
-    # On-disk indicator that also excludes sentinel
-    on = disk & (cube[0] != sentinel_offdisk)
-
-    # Temperature-agnostic spot mask: anything not equal to quiet T
-    is_spot = (cube != T_phot) & on[None, ...]
-
-    # --- Projected (on-disk) fractions per phase (good sanity check)
-    W_proj = np.where(on, 1.0, 0.0)            # projected pixels weight equally
-    denom_proj = W_proj.sum()
-    f_proj_per_phase = (is_spot * W_proj[None, ...]).sum(axis=(1, 2)) / denom_proj
-
-    # --- Deprojected surface-area estimate per phase using 1/mu
-    # (avoid limb singularity with a small cutoff)
-    A = np.where(on & (mu >= mu_min), 1.0 / mu, 0.0)
-    denom_surf = A.sum()
-    f_surf_per_phase = (is_spot * A[None, ...]).sum(axis=(1, 2)) / denom_surf
-
-    # Rotation-average to estimate global
-    f_global = f_surf_per_phase.mean()
-
-    return f_global, f_proj_per_phase
+    return f_spot, f_cool, f_hot, T4_mean_phase, Teff_rotavg
 
 
 def LD_dict2array(star_LD_coeff, band):

@@ -197,6 +197,12 @@ def spot_view_pel(
     Star, grid, visible_phi, SPECstar_tot, ccf_rv_shift, quite_surface_2d, 
     outdir, ohfe_ratio, text1, text2, band, intORflux, model_type, j):
     
+    _teff = Star._phase_teff[j]
+    _fspot = Star._phase_fspot[j] * 100
+    _fcool = Star._phase_fcool[j] * 100
+    _fhot = Star._phase_fhot[j] * 100
+
+    # -------------------------------------------------
     fig = plt.figure(figsize = (7, 3.5), dpi=300 )
 
     gs1 = gridspec.GridSpec(1, 1)
@@ -218,8 +224,16 @@ def spot_view_pel(
     ax1 = map_add_grid(ax1, Star.incl, radius, visible_phi[j])
     
     ax1.text(
-        0.5, -0.1, f'Phase {visible_phi[j]:.3f}', va='center', ha='center', size='small',
+        0.5, -0.09, fr'Phase ${visible_phi[j]:.3f}$', va='center', ha='center', size='small',
         transform=ax1.transAxes)
+    ax1.text(
+        0.5, -0.15,
+        fr'$T_{{\rm eff}}={_teff:4.0f}$ K, '
+        fr'$f_{{spot}}={_fspot:5.2f}$%'  # <-- percent outside $
+        fr' ($f_{{cool}}={_fcool:5.2f}$%'
+        fr', $f_{{hot}}={_fhot:5.2f}$%)',
+        va='center', ha='center', size='xx-small', transform=ax1.transAxes
+    )
     
     c_kms = 299792.458
     w_center = Star.bands2use[band][0]  # [15631.35, 30, ['rv', 'photo']]
@@ -289,10 +303,10 @@ def spot_view_pel(
     ax1.axis('off')
 
     ax1.text(
-        0.05, -0.18, text1, family='monospace', size=5, 
+        0.05, -0.20, text1, family='monospace', size=5, 
         transform=ax1.transAxes, ha='left', va='top')
     ax1.text(
-        0.01, -0.38, text2, family='monospace', size=4, 
+        0.01, -0.40, text2, family='monospace', size=4, 
         transform=ax1.transAxes, ha='left', va='top')
 
     out_dir_pre = f'./outputs/{outdir.split("/")[2]}'
@@ -320,8 +334,8 @@ def spot_view(
         )
     
     # for ii in np.arange(len(visible_phi)):
-    #     spot_view_pel(Star, grid, visible_phi, 
-    #     SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, ohfe_ratio, 
+    #     spot_view_pel( Star, grid_size, visible_phi, 
+    #     integrated_stellar_spectrum, ccf_rv_shift, final_2d_surface_flux_sum, outdir, ohfe_ratio, 
     #     text1, text2, band, intORflux, model_type, ii)
     
     pqdm(np.arange(len(visible_phi)), func, n_jobs=cpu_use)

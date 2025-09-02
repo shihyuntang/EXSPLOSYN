@@ -118,7 +118,7 @@ class Star:
                 LD_teff_wv_coeff[key] = qc[i]
 
             # Robust FeOH aliasing (use tolerance instead of exact float compare)
-            FeOH = 15631.35  # Å
+            FeOH = 15557.0 #15631.35  # Å
             locs = np.where(np.isclose(line_centers, FeOH, atol=1e-3))[0]
             if locs.size:
                 LD_teff_wv_coeff[f"ewr_FeOH_{int(tt)}"] = qc[locs[0]]
@@ -596,7 +596,7 @@ def calculate_activity_signal_spec(
     Spec,
     active_regions_number, active_region_box,
     instrumental_resolution, cpu_use, save_dir, band, 
-    save_spec_flag, fluxORint, silence_pbar,
+    save_spec_flag, fluxORint, silence_pbar, plot_flag,
     *, map_debug_plots: bool = False
 ):
     """
@@ -673,12 +673,7 @@ def calculate_activity_signal_spec(
             add_colorbar=True,
             phase_values=psi,
         )
-        Teff = utils.teff_obs_rotavg(active_2d_surface_temperature_psi, y, z, sentinel_offdisk=0, scale=1.0)
-        logger.info(f'\nAverage Teff of the active regions: {Teff:.1f} K')
-        fspot, fspot_phi = utils.fspot_global_from_cube(
-            active_2d_surface_temperature_psi, y, z, star.Temp, sentinel_offdisk=0, scale=1.0, mu_min=0.05)
-        logger.info(f'\nTotal spot coverage: {fspot:.3%} of the visible hemisphere')
-
+    
     # --- Step 2-2: Integrate spectra over phases using the temperature cube ---
     if fluxORint == 'flux':
         star_LD_coeff = utils.LD_dict2array(star.LD_coeff, band)        # (temps_tab, coeffs_tab)
@@ -712,7 +707,21 @@ def calculate_activity_signal_spec(
         np.save(f'./outputs/{save_dir}/spec/{band}_ss_1.npy',     spec_ss)
         np.save(f'./outputs/{save_dir}/spec/{band}_qsdup_1.npy',  spec_qs_duplicated)
         np.save(f'./outputs/{save_dir}/spec/{band}_vel_1.npy',    vel)
+    
+    if (plot_flag == 1) and (band != 'photo'):
+        # Calculate average Teff and spot coverage fraction per phase
+        f_spot, f_cool, f_hot, T4_mean_phase, Teff = utils.coverage_and_teff(
+            active_2d_surface_temperature_psi, y, z, star.Temp, star.LD_coeff, band,
+            sentinel_offdisk=0, scale=1.0)
+        
+        logger.info(f'\n  >> Average Teff over phases: {Teff:1.0f} K')
+        logger.info(f'  >> Spot coverage fraction over phases: {np.mean(f_spot)*100:1.2f} %')
 
+        star._phase_teff = T4_mean_phase**0.25
+        star._phase_fspot = f_spot
+        star._phase_fcool = f_cool
+        star._phase_fhot  = f_hot
+    
     # --- Step 2b: Combine quiet baseline with active-region contributions ---
     integrated_stellar_spectrum = (
         integrated_stellar_spectrum

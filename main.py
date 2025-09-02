@@ -27,8 +27,9 @@ import visualization as vis
 # CONFIG_FILE = 'config_LkCa4base_SizeDelT_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_2SPOTS_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_study.cfg'
-CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_11spots-1.cfg'
-# CONFIG_FILE = 'config_teff_study.cfg'
+CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_8spots-1.cfg'
+# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_donati_oeg_21spots.cfg'
+# CONFIG_FILE = 'config_LkCa4_one_SPOT_demo.cfg'
 # SAVE_DIR = f'RVandEWR_SizeDelT_width100'
 
 # SimSpecWinSize = 100 # in AA
@@ -376,7 +377,7 @@ def simulation_plot(grid_size, nrho, instrument_res, STAR,
             '{0:18} = {1:<6d}, {2:18} = {3:<6.2f}\n'.format(  'Inst. res.', instrument_res, 'St Prot [d]', STAR.prot) + \
             '{0:18} = {1:<6.2f}, {2:18} = {3:<6.1f}\n'.format('St radius [Rsun]', STAR.rad/SOLAR_RADIUS,     'St incl', STAR.incl) + \
             '{0:18} = {1:<6.2f}, {2:18} = {3:<6.0f}\n'.format('St vsini [km/s]', STAR.vsini,         'St T_photo [K]', STAR.Temp) + \
-            '{0:18} = {1:<6}, {2:5} = {3:<4.2f}, {4:5} = {5:<4.2f}'.format('Syn template', model_type, 'logg', STAR.logg, '[Fe/H]', 0.0)
+            '{0:18} = {1:<6}, {2:5} = {3:<4.2f}, {4:5} = {5:<4.2f}'.format('Syn template', model_type, 'logg', STAR.logg, '[Fe/H]', 0.0)\
 
     text2 = '{} active regions:\n'.format(active_regions_number) + \
             '  lon [deg]= {}\n'.format(np.array2string(
@@ -535,7 +536,7 @@ def main_model(
         # Core simulation
         visible_phi, integrated_stellar_spectrum, _, final_2d_surface_flux_sum = spotact_core.calculate_activity_signal_spec(
             nrho, grid_size, STAR, PSI, SPEC, active_regions_number, active_region_box,
-            instrument_res, cpu_use, SAVE_DIR, band, save_spec_flag, intORflux.lower(), silence_pbar
+            instrument_res, cpu_use, SAVE_DIR, band, save_spec_flag, intORflux.lower(), silence_pbar, plot_flag
         )
         visible_phi = np.asarray(visible_phi, dtype=np.float32)
 
@@ -622,11 +623,14 @@ def main_model(
         else:
             # write CSV (as before)
             from astropy.table import Table
-            tab = Table(data=(visible_phi, ccf_rv_shift, ohfe_ratio),
-                        names=('Phase', 'RV', 'EWR'))
+            tab = Table(data=(visible_phi, ccf_rv_shift, ohfe_ratio, STAR._phase_teff, STAR._phase_fspot),
+                        names=('Phase', 'RV', 'EWR', 'model_Teff', 'fspot'))
             tab['Phase'].format = '%.3f'
             tab['RV'].format    = '%.4f'
             tab['EWR'].format   = '%.5f'
+            tab['model_Teff'].format = '%d'
+            tab['fspot'].format      = '%.4f'
+
             if write_csv:
                 tab.write(f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv',
                           format='csv', overwrite=True)
