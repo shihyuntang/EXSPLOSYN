@@ -13,6 +13,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 from pqdm.processes import pqdm
+# from pqdm.threads import pqdm
 
 
 from ldtk import LDPSetCreator, BoxcarFilter
@@ -125,7 +126,8 @@ class Star:
 
         self.LD_coeff = LD_teff_wv_coeff
 
-    def find_fluxspec(self, Vel_bin_size, plot, syn_model_path=None):
+    def find_fluxspec(
+            self, Vel_bin_size, plot, syn_model_path=None, savehdf=None):
         """
         Find and store flux spectra for the star, spot, and plage at different temperatures.
 
@@ -153,23 +155,23 @@ class Star:
                 if model_type.lower() == 'phx':
                     sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
-                    unflattened_spec_dir = f'{self.out_path}/RASSINE_PHX/{self.phx_flux_file[tt]}'
-                    ssp.final_flux_spec(
-                        model_type, unflattened_spec_dir, sim_spec_path, wvmin, wvmax, 
-                        Vel_bin_size, plot, flatten=False)
-                    final_spec = pd.read_hdf(sim_spec_path)
+                    unflattened_spec = f'{self.out_path}/RASSINE_PHX/{self.phx_flux_file[tt]}'
+                    final_spec = ssp.final_flux_spec(
+                        model_type, unflattened_spec, sim_spec_path, wvmin, wvmax, 
+                        Vel_bin_size, plot, flatten=False, savehdf=savehdf)
+                    # final_spec = pd.read_hdf(sim_spec_path)
 
                 # --- Read SYNmast Spectra ---
                 elif model_type.lower() == 'synmast':
                     # prf_dir = syn_model_path[model_type]
-                    unflattened_spec_dir = ssp.prep_synmast_flux_spec(
-                        tt, self.logg, self.FeH, self.out_path)
+                    unflattened_spec = ssp.prep_synmast_flux_spec(
+                        tt, self.logg, self.FeH, self.out_path, savehdf=savehdf)
                     sim_spec_name = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}_flux.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_spec_name}'
-                    ssp.final_flux_spec(
-                        model_type, unflattened_spec_dir, sim_spec_path, wvmin, wvmax, 
-                        Vel_bin_size, plot, flatten=False)
-                    final_spec = pd.read_hdf(sim_spec_path)
+                    final_spec = ssp.final_flux_spec(
+                        model_type, unflattened_spec, sim_spec_path, wvmin, wvmax, 
+                        Vel_bin_size, plot, flatten=False, savehdf=savehdf)
+                    # final_spec = pd.read_hdf(sim_spec_path)
 
                 else:
                     logger.error('\n[ERROR] Can only handle PHX and Synmast spec!\n')
@@ -185,7 +187,8 @@ class Star:
                 
                 self.flux_spec.update(spec)
 
-    def find_fluxspec_flatten(self, Vel_bin_size, plot, syn_model_path=None, fit_temp=None):
+    def find_fluxspec_flatten(
+            self, Vel_bin_size, plot, syn_model_path=None, fit_temp=None, savehdf=None):
         """
         Prepare and flatten synthetic spectra for all bands and temperatures.
 
@@ -240,10 +243,10 @@ class Star:
                     sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
                     # 2. Cut and convert to velocity space
-                    ssp.final_flux_spec(
+                    flatten_spec = ssp.final_flux_spec(
                         model_type, flat_spec_dir, sim_spec_path, wvmin, wvmax,
-                        Vel_bin_size, plot, flatten=True)
-                    flatten_spec = pd.read_hdf(sim_spec_path)
+                        Vel_bin_size, plot, flatten=True, savehdf=savehdf)
+                    # flatten_spec = pd.read_hdf(sim_spec_path)
 
                 # --- Read Synmast Spectra >>(All RV ccf use PHX as template, thus here for synmast we also have PHX flattened) ---
                 elif model_type.lower() == 'synmast':
@@ -252,10 +255,10 @@ class Star:
                     
                     sim_use_spec = f'SimUse_PHX_ACES_{tt}_{self.logg}_{self.FeH}_{band}_flatten.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_use_spec}'
-                    ssp.final_flux_spec(
+                    flatten_spec = ssp.final_flux_spec(
                         'phx', flat_spec_dir, sim_spec_path, wvmin, wvmax,
-                        Vel_bin_size, plot, flatten=True)
-                    flatten_spec = pd.read_hdf(sim_spec_path)
+                        Vel_bin_size, plot, flatten=True, savehdf=savehdf)
+                    # flatten_spec = pd.read_hdf(sim_spec_path)
                 else:
                     logger.error('\n[ERROR] Can only handle PHX and Synmast spec!\n')
                     continue
@@ -269,7 +272,8 @@ class Star:
                     }
                 self.spec_flatten.update(spec)
 
-    def find_intensityspec(self, Vel_bin_size, plot, syn_model_path=None):
+    def find_intensityspec(
+            self, Vel_bin_size, plot, syn_model_path=None, savehdf=None):
         """
         Find and store intensity spectra for the star, spot, and plage at different temperatures.
 
@@ -295,26 +299,26 @@ class Star:
             for tt in temp_list:
                 # --- Read PHX SYN Intensity Spectra ---
                 if model_type.lower() == 'phx':
-                    unflattened_spec_dir = ssp.prep_phx_intensity_spec(
+                    unflattened_spec = ssp.prep_phx_intensity_spec(
                         tt, self.logg, self.FeH, 0, self.out_path)
                     sim_spec_name = f'PhotoUse_phx_{tt}_{self.logg}_{self.FeH}_{band}.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_spec_name}'
-                    ssp.final_intensity_spec(
-                        model_type, unflattened_spec_dir, sim_spec_path, wvmin, wvmax,
-                        Vel_bin_size, plot, flatten=False)
-                    final_spec = pd.read_hdf(sim_spec_path)
+                    final_spec = ssp.final_intensity_spec(
+                        model_type, unflattened_spec, sim_spec_path, wvmin, wvmax,
+                        Vel_bin_size, plot, flatten=False, savehdf=savehdf)
+                    # final_spec = pd.read_hdf(sim_spec_path)
 
                 # --- Read SYNmast Intensity Spectra ---
                 elif model_type.lower() == 'synmast':
                     prf_dir = syn_model_path[model_type]
-                    unflattened_spec_dir = ssp.prep_synmast_intensity_spec(
-                        tt, self.logg, self.FeH, self.out_path, prf_dir)
+                    unflattened_spec = ssp.prep_synmast_intensity_spec(
+                        tt, self.logg, self.FeH, self.out_path, prf_dir, savehdf=savehdf)
                     sim_spec_name = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_spec_name}'
-                    ssp.final_intensity_spec(
-                        model_type, unflattened_spec_dir, sim_spec_path, wvmin, wvmax,
-                        Vel_bin_size, plot, flatten=False)
-                    final_spec = pd.read_hdf(sim_spec_path)
+                    final_spec = ssp.final_intensity_spec(
+                        model_type, unflattened_spec, sim_spec_path, wvmin, wvmax,
+                        Vel_bin_size, plot, flatten=False, savehdf=savehdf)
+                    # final_spec = pd.read_hdf(sim_spec_path)
 
                 else:
                     print('\n[ERROR] Can only handle PHX and Synmast spec!\n')
@@ -708,7 +712,7 @@ def calculate_activity_signal_spec(
         np.save(f'./outputs/{save_dir}/spec/{band}_qsdup_1.npy',  spec_qs_duplicated)
         np.save(f'./outputs/{save_dir}/spec/{band}_vel_1.npy',    vel)
     
-    if (plot_flag == 1) and (band != 'photo'):
+    if band != 'photo':
         # Calculate average Teff and spot coverage fraction per phase
         f_spot, f_cool, f_hot, T4_mean_phase, Teff = utils.coverage_and_teff(
             active_2d_surface_temperature_psi, y, z, star.Temp, star.LD_coeff, band,

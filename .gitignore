@@ -1,6 +1,7 @@
 # Don't track content of these folders
 outputs/
 syn_spec*/
+NS_fit_results/
 __pycache__/
 
 
@@ -34,3 +35,5 @@ __pycache__/
 *.rar
 *.tar
 *.zip
+*.log
+*.out

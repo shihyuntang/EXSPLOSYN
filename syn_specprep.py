@@ -180,7 +180,8 @@ def get_phx_flux_spec(temp, logg, FeH, alpha, phx_path, out_path):
     return data_name
 
 
-def prep_phx_intensity_spec(temp, logg, FeH, alpha, out_path):
+def prep_phx_intensity_spec(
+        temp, logg, FeH, alpha, out_path, savehdf=None):
     wvmin, wvmax = (500, 50000)
     # Currently, phx int spectra is only use for photometry.
     # The intensity spectra from PHX has too low resolution in wavelength.
@@ -248,13 +249,21 @@ def prep_phx_intensity_spec(temp, logg, FeH, alpha, out_path):
     # spec_df = pd.DataFrame({'wave':wavelength_vac, 'flux':flux_temp, 'mu':mu})    
     # spec_df.to_hdf(out_name, key='spec', complevel=5, index=False)
 
-    out_name = f"{out_path}/Photometry_use_Spec/{name_use.replace('.fits', '.h5')}"
-    with h5py.File(out_name, 'w') as f:
-        f.create_dataset('wave', data=wavelength_vac, compression='gzip', compression_opts=5)
-        f.create_dataset('mu', data=mu, compression='gzip', compression_opts=5)
-        f.create_dataset('flux', data=flux_temp, compression='gzip', compression_opts=5)
+    if savehdf:
+        out_name = f"{out_path}/Photometry_use_Spec/{name_use.replace('.fits', '.h5')}"
+        with h5py.File(out_name, 'w') as f:
+            f.create_dataset('wave', data=wavelength_vac, compression='gzip', compression_opts=5)
+            f.create_dataset('mu', data=mu, compression='gzip', compression_opts=5)
+            f.create_dataset('flux', data=flux_temp, compression='gzip', compression_opts=5)
 
-    return out_name
+        return out_name
+    elif not savehdf:
+        unflattened_spec = {
+            "wave": wavelength_vac,
+            "mu":   mu,
+            "flux": flux_temp,
+        }
+        return unflattened_spec
 
 def parse_synmast_filename(name: str):
     """
@@ -304,7 +313,8 @@ def build_synmast_filename(T: int, logg: float, FeH: float) -> str:
     )
 
 
-def prep_synmast_intensity_spec(temp, logg, FeH, out_path, syn_marcs):
+def prep_synmast_intensity_spec(
+        temp, logg, FeH, out_path, syn_marcs, savehdf=None):
     """
     Build a SYNMAST *intensity* spectrum I(λ, μ) at requested (temp, logg, FeH)
     by interpolating in Teff between the two nearest grid files. Keeps full μ grid.
@@ -387,29 +397,37 @@ def prep_synmast_intensity_spec(temp, logg, FeH, out_path, syn_marcs):
                     I_high.astype(np.float64) * alpha)
 
     # Save (wave→f32, mu→f32, flux→f64)
-    out_name = out_path / "SimUse" / name_use.replace(".prf", "_intensity.h5")
-    with h5py.File(out_name, "w") as h:
-        h.create_dataset("wave", data=wave_vac.astype(np.float32, copy=False),
-                         compression="gzip", compression_opts=5, shuffle=True)
-        h.create_dataset("mu",   data=np.asarray(mu, dtype=np.float32),
-                         compression="gzip", compression_opts=5, shuffle=True)
-        h.create_dataset("flux", data=I_interp,  # float64
-                         compression="gzip", compression_opts=5, shuffle=True)
-        # provenance
-        h.attrs["grid_T_low"]  = T_low
-        h.attrs["grid_T_high"] = T_high
-        h.attrs["alpha"]       = alpha
-        h.attrs["grid_logg"]   = logg_val
-        h.attrs["grid_FeH"]    = FeH_val
-        h.attrs["target_Teff"] = float(temp)
-        h.attrs["target_logg"] = float(logg)
-        h.attrs["target_FeH"]  = float(FeH)
 
-    return str(out_name)
+    if savehdf:
+        out_name = out_path / "SimUse" / name_use.replace(".prf", "_intensity.h5")
+        with h5py.File(out_name, "w") as h:
+            h.create_dataset("wave", data=wave_vac.astype(np.float32, copy=False),
+                            compression="gzip", compression_opts=5, shuffle=True)
+            h.create_dataset("mu",   data=np.asarray(mu, dtype=np.float32),
+                            compression="gzip", compression_opts=5, shuffle=True)
+            h.create_dataset("flux", data=I_interp,  # float64
+                            compression="gzip", compression_opts=5, shuffle=True)
+            # provenance
+            h.attrs["grid_T_low"]  = T_low
+            h.attrs["grid_T_high"] = T_high
+            h.attrs["alpha"]       = alpha
+            h.attrs["grid_logg"]   = logg_val
+            h.attrs["grid_FeH"]    = FeH_val
+            h.attrs["target_Teff"] = float(temp)
+            h.attrs["target_logg"] = float(logg)
+            h.attrs["target_FeH"]  = float(FeH)
+        return str(out_name)
+    elif not savehdf:
+        unflattened_spec = {
+            "wave": wave_vac.astype(np.float32, copy=False),
+            "mu":   np.asarray(mu, dtype=np.float32),
+            "flux": I_interp,  # float64
+        }
+        return unflattened_spec
 
 
 
-def prep_synmast_flux_spec(temp, logg, FeH, out_path):
+def prep_synmast_flux_spec(temp, logg, FeH, out_path, savehdf=None):
     """
     Build a SYNMAST *flux* spectrum at the requested (temp, logg, FeH) by
     linear interpolation in Teff between the two nearest grid files, with
@@ -496,24 +514,31 @@ def prep_synmast_flux_spec(temp, logg, FeH, out_path):
         flux_interp = (spec_low.astype(np.float64) * (1.0 - alpha) +
                        spec_high.astype(np.float64) * alpha)
 
-    # save: wave→float32, flux→float64
-    out_name = out_path / "SimUse" / name_use.replace(".prf", "_flux.h5")
-    with h5py.File(out_name, "w") as h:
-        h.create_dataset("wave", data=wave_vac.astype(np.float32, copy=False),
-                         compression="gzip", compression_opts=5, shuffle=True)
-        h.create_dataset("flux", data=flux_interp,  # float64
-                         compression="gzip", compression_opts=5, shuffle=True)
-        # provenance for reproducibility
-        h.attrs["grid_T_low"]  = T_low
-        h.attrs["grid_T_high"] = T_high
-        h.attrs["alpha"]       = alpha
-        h.attrs["grid_logg"]   = logg_val
-        h.attrs["grid_FeH"]    = FeH_val
-        h.attrs["target_Teff"] = float(temp)
-        h.attrs["target_logg"] = float(logg)
-        h.attrs["target_FeH"]  = float(FeH)
+    if savehdf:
+        # save: wave→float32, flux→float64
+        out_name = out_path / "SimUse" / name_use.replace(".prf", "_flux.h5")
+        with h5py.File(out_name, "w") as h:
+            h.create_dataset("wave", data=wave_vac.astype(np.float32, copy=False),
+                            compression="gzip", compression_opts=5, shuffle=True)
+            h.create_dataset("flux", data=flux_interp,  # float64
+                            compression="gzip", compression_opts=5, shuffle=True)
+            # provenance for reproducibility
+            h.attrs["grid_T_low"]  = T_low
+            h.attrs["grid_T_high"] = T_high
+            h.attrs["alpha"]       = alpha
+            h.attrs["grid_logg"]   = logg_val
+            h.attrs["grid_FeH"]    = FeH_val
+            h.attrs["target_Teff"] = float(temp)
+            h.attrs["target_logg"] = float(logg)
+            h.attrs["target_FeH"]  = float(FeH)
 
-    return str(out_name)
+        return str(out_name)
+    elif not savehdf:
+        unflattened_spec = {
+            "wave": wave_vac.astype(np.float32, copy=False),
+            "flux": flux_interp,  # float64
+        }
+        return unflattened_spec
 
 
 
@@ -624,7 +649,7 @@ def flatten_phx_with_rassine(rassine_path, out_path, phx_flux_file):
 
 def final_flux_spec(
     spec_type, spec_dir, sim_spec_path, wvmin, wvmax, Vel_bin_size, plot,
-    flatten=True, pars=None
+    flatten=True, pars=None, savehdf=None
     ):
     """
     Load a synthetic spectrum, optionally continuum-flatten it, cut to [wvmin,wvmax],
@@ -717,31 +742,35 @@ def final_flux_spec(
         'v': np.asarray(v_new, dtype=np.float32),
         'f': np.asarray(f_new, dtype=np.float64)
         })
-    simulation_spec.to_hdf(sim_spec_path, key='spec', complevel=5, index=False)
     
     ########################################################
-    if plot == 1:
-        fig, (ax1, ax2) = plt.subplots(
-            2, 1, figsize=(6, 4), facecolor='white', dpi=200)
-        
-        ax1.plot(w, f, '-', lw=1)
-        ax2.plot(v_new, f_new, '-', lw=1)
-        
-        ax1.set_xlabel('Wavelength (AA)', fontsize='small')
-        ax2.set_xlabel('Velocity (km/s)', fontsize='small')
-        ax1.set_ylabel('Flux', fontsize='small')
-        ax2.set_ylabel('Flux', fontsize='small')
+    if savehdf:
+        simulation_spec.to_hdf(sim_spec_path, key='spec', complevel=5, index=False)
+    
+        if plot == 1:
+            fig, (ax1, ax2) = plt.subplots(
+                2, 1, figsize=(6, 4), facecolor='white', dpi=200)
+            
+            ax1.plot(w, f, '-', lw=1)
+            ax2.plot(v_new, f_new, '-', lw=1)
+            
+            ax1.set_xlabel('Wavelength (AA)', fontsize='small')
+            ax2.set_xlabel('Velocity (km/s)', fontsize='small')
+            ax1.set_ylabel('Flux', fontsize='small')
+            ax2.set_ylabel('Flux', fontsize='small')
 
-        if flatten:
-            ax1.set_ylim(0, 1.1)
-            ax2.set_ylim(0, 1.1)
-        fig.savefig(sim_spec_path.replace('.h5', '.png'))    
+            if flatten:
+                ax1.set_ylim(0, 1.1)
+                ax2.set_ylim(0, 1.1)
+            fig.savefig(sim_spec_path.replace('.h5', '.png'))    
+    
+    return simulation_spec
 
 
 
 def final_intensity_spec(
-    model_type, spec_dir, sim_spec_path, wvmin, wvmax, Vel_bin_size, plot,
-    flatten=True, pars=None
+    model_type, spec_dir_dict, sim_spec_path, wvmin, wvmax, Vel_bin_size, plot,
+    flatten=True, pars=None, savehdf=None
     ):
     """
     Load an *intensity* spectrum I(λ, μ) (PHX / Synmast / template),
@@ -761,25 +790,38 @@ def final_intensity_spec(
     spec = model_type.lower()
     # ---------- Read wave, mu, fluxes ----------
     if spec == 'phx':
-        with h5py.File(spec_dir, 'r') as f:
+        if savehdf:
+            with h5py.File(spec_dir_dict, 'r') as f:
+                wave   = f['wave'][:].astype(np.float32, copy=False)          # (n_wave,)
+                mu     = f['mu'][:].astype(np.float32, copy=False)[::-1]      # descending μ
+                fluxes = f['flux'][:].astype(np.float64, copy=False).T[:, ::-1]  # (n_wave, n_mu), align with μ
+        elif not savehdf:
+            f = spec_dir_dict
             wave   = f['wave'][:].astype(np.float32, copy=False)          # (n_wave,)
             mu     = f['mu'][:].astype(np.float32, copy=False)[::-1]      # descending μ
             fluxes = f['flux'][:].astype(np.float64, copy=False).T[:, ::-1]  # (n_wave, n_mu), align with μ
+        
         if flatten:
             raise ValueError('Flattening PHX intensity spectra is not supported.')
 
     elif spec == 'synmast':
-        with h5py.File(spec_dir, 'r') as f:
+        if savehdf:
+            with h5py.File(spec_dir_dict, 'r') as f:
+                wave   = f['wave'][:].astype(np.float32, copy=False)
+                mu     = f['mu'][:].astype(np.float32, copy=False)
+                fluxes = f['flux'][:].astype(np.float64, copy=False)           # (n_wave, n_mu) or (n_wave,)
+        elif not savehdf:
+            f = spec_dir_dict
             wave   = f['wave'][:].astype(np.float32, copy=False)
             mu     = f['mu'][:].astype(np.float32, copy=False)
-            fluxes = f['flux'][:].astype(np.float64, copy=False)           # (n_wave, n_mu) or (n_wave,)
+            fluxes = f['flux'][:].astype(np.float64, copy=False)              
         if fluxes.ndim == 1:
             fluxes = fluxes[:, None]  # promote to (n_wave, 1)
 
     elif spec == 'ccf_temp':
         # Example placeholder; adapt if you truly need intensity from this path.
         _, _, _, ccf_vsini, ccf_resolution = pars
-        wave, flux1d = rds3v(spec_dir, vsini=ccf_vsini, vrt=2.0,
+        wave, flux1d = rds3v(spec_dir_dict, vsini=ccf_vsini, vrt=2.0,
                              instrum=ccf_resolution, if_flat=flatten)
         wave = air2vac(wave).astype(np.float32, copy=False)
         fluxes = np.asarray(flux1d, dtype=np.float64)
@@ -845,30 +887,34 @@ def final_intensity_spec(
         df_dict[f'mu_{mu[i]}'] = f_out[:, i]
 
     simulation_spec = pd.DataFrame(df_dict)
-    simulation_spec.to_hdf(sim_spec_path, key='spec', complevel=5, index=False)
-    
+
     ########################################################
-    if plot == 1:
-        fig, (ax1, ax2) = plt.subplots(
-            2, 1, figsize=(6, 4), facecolor='white', dpi=200)
-        
-        for i in range(F.shape[1]):
-            ax1.plot(w, F[:, i], '-', lw=1, label=f'mu={mu[i]}')
-            ax2.plot(v_new, f_new[:, i], '-', lw=1, label=f'mu={mu[i]}')
-        # ax1.plot(w, f, '-', lw=1)
-        # ax2.plot(v_new, f_new, '-', lw=1)
-        ax1.legend(fontsize='xx-small', loc='upper right')
-        ax2.legend(fontsize='xx-small', loc='upper right')
-        ax1.set_xlabel('Wavelength (AA)', fontsize='small')
-        ax2.set_xlabel('Velocity (km/s)', fontsize='small')
-        ax1.set_ylabel('Flux', fontsize='small')
-        ax2.set_ylabel('Flux', fontsize='small')
+    if savehdf:
+        simulation_spec.to_hdf(sim_spec_path, key='spec', complevel=5, index=False)
 
-        if flatten:
-            ax1.set_ylim(0, 1.1)
-            ax2.set_ylim(0, 1.1)
+        if plot == 1:
+            fig, (ax1, ax2) = plt.subplots(
+                2, 1, figsize=(6, 4), facecolor='white', dpi=200)
+            
+            for i in range(F.shape[1]):
+                ax1.plot(w, F[:, i], '-', lw=1, label=f'mu={mu[i]}')
+                ax2.plot(v_new, f_new[:, i], '-', lw=1, label=f'mu={mu[i]}')
+            # ax1.plot(w, f, '-', lw=1)
+            # ax2.plot(v_new, f_new, '-', lw=1)
+            ax1.legend(fontsize='xx-small', loc='upper right')
+            ax2.legend(fontsize='xx-small', loc='upper right')
+            ax1.set_xlabel('Wavelength (AA)', fontsize='small')
+            ax2.set_xlabel('Velocity (km/s)', fontsize='small')
+            ax1.set_ylabel('Flux', fontsize='small')
+            ax2.set_ylabel('Flux', fontsize='small')
 
-        fig.savefig(sim_spec_path.replace('.h5', '.png'))    
+            if flatten:
+                ax1.set_ylim(0, 1.1)
+                ax2.set_ylim(0, 1.1)
+
+            fig.savefig(sim_spec_path.replace('.h5', '.png'))  
+
+    return simulation_spec  
 
 
 

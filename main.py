@@ -130,7 +130,13 @@ def init_setup_cfg(
         logger.info('No filters specified. Will not generate photometry.')
 
     # --- Paths ---
-    path_sub = 1 if hostname == 'Swing' else 2
+    if hostname == 'Swing':
+        path_sub = 1
+    elif hostname == 'taurus':
+        path_sub = 2
+    else: 
+        path_sub = 3
+    print('hostname: ', hostname)
     RASSINE_PATH = cfg.get('path', f'rassine_path{path_sub}')
     SYNmast_PATH = cfg.get('path', f'synmast_prf{path_sub}')
     phx_path     = cfg.get('path', 'PHOENIX_path')
@@ -143,8 +149,9 @@ def init_setup_cfg(
     nrho           = cfg.getint('main', 'nrho')
     instrument_res = cfg.getint('main', 'instrument_reso')
 
-    cpu_use = 6 if hostname == 'Swing' else (int(os.cpu_count()*0.9) or 8)
+    # cpu_use = 6 if hostname == 'Swing' else (int(os.cpu_count()*0.9) or 8)
     # cpu_use = 6 if hostname == 'Swing' else 30
+    cpu_use = int(cfg.get('main', 'cpu'))
 
     # --- Stellar params ---
     stellar_radius  = cfg.getfloat('star', 'radius') * SOLAR_RADIUS
@@ -278,7 +285,8 @@ def init_setup_cfg(
         active_regions_number, active_region_box, sim_spec_line_centers, filters
         )
 
-def setup_activate_spectra(bands, STAR, plot_flag, syn_model_path):
+def setup_activate_spectra(
+        bands, STAR, plot_flag, syn_model_path, savehdf=None):
     """
     Prepare synthetic spectra for all bands and temperatures for the spotted star simulation.
 
@@ -311,9 +319,11 @@ def setup_activate_spectra(bands, STAR, plot_flag, syn_model_path):
 
     # Build synthetic spectra “banks” only for the modes we actually need
     if 'flux' in intensity_modes:
-        STAR.find_fluxspec(SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path)
+        STAR.find_fluxspec(
+            SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path, savehdf=savehdf)
     if 'intensity' in intensity_modes or 'photo' in intensity_modes:
-        STAR.find_intensityspec(SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path)
+        STAR.find_intensityspec(
+            SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path, savehdf=savehdf)
 
     # Build per-band Spec dictionaries (temp -> Spec)
     # Keep the same order as bands.keys(), so SPEC_box[i] matches enumerate(bands.keys()) in main_model
@@ -558,9 +568,10 @@ def main_model(
                     flux_dict[fname] = np.asarray(lightcurves_flux[j], dtype=np.float32)
                 results_by_band[band] = {
                     'phase': visible_phi,
-                    'rv':    ccf_rv_shift,
-                    'ewr':   ohfe_ratio,
-                    'photo': {'mag': mag_dict, 'flux': flux_dict},
+                    # 'rv':    ccf_rv_shift,
+                    # 'ewr':   ohfe_ratio,
+                    'mag': mag_dict, 
+                    'flux': flux_dict
                 }
             else:
                 # write CSV (as before)
@@ -726,7 +737,8 @@ if __name__ == '__main__':
         active_region_Temp) = active_region_box
     
     # --- Setup the synthetic spectra for Spotted spectra simulation ---
-    SPEC_box = setup_activate_spectra(bands, STAR, plot_flag, syn_model_path)
+    SPEC_box = setup_activate_spectra(
+        bands, STAR, plot_flag, syn_model_path, savehdf = save_spec_flag)
 
     ################################################################################################
     

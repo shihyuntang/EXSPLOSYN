@@ -12,6 +12,9 @@ from numpy import cos, sin
 from numba import njit
 # from scipy import signal
 from pqdm.processes import pqdm
+# print("Using pqdm with processes")
+# from pqdm.threads import pqdm
+
 # import pysynphot as pysynphot
 
 import visualization as vis
