@@ -5,6 +5,8 @@ import numpy as np
 from numba import njit
 from scipy.signal import find_peaks
 
+import visualization as vis
+
 # @njit
 # def _ccf(drvs, mode, w, f, tw, tf, c, weights, meanWl):
 #     """
@@ -396,7 +398,8 @@ def _quad_refine(x, y, k):
     return x1 + delta * dx
 
 
-def get_ccf_peak(ccf_box, drvs, visible_phi, band, refine=True, prominence=0.1):
+def get_ccf_peak(
+        ccf_box, drvs, visible_phi, band, outdir, refine=True, prominence=0.1):
     """
     Locate the RV of the strongest (most prominent) CCF peak per phase.
     If `refine` is True, apply a tiny quadratic refinement for sub-grid precision.
@@ -407,10 +410,23 @@ def get_ccf_peak(ccf_box, drvs, visible_phi, band, refine=True, prominence=0.1):
         ccf = ccf_box[i]
         if ccf is None or len(ccf) == 0:
             continue
+        
+        # --- Normalize the CCF to [0, 1] ---
+        ccf_min = np.nanmin(ccf)
+        ccf_max = np.nanmax(ccf)
+        if ccf_max > ccf_min:
+            ccf_norm = (ccf - ccf_min) / (ccf_max - ccf_min)
+        else:
+            ccf_norm = ccf
 
-        peaks, props = find_peaks(ccf, prominence=prominence)
+        peaks, props = find_peaks(ccf_norm, prominence=prominence)
+        
+        # Optionally:
+        # vis.plot_cc(drvs, ccf, rvs[i], visible_phi[i], band, props)
+
         if peaks.size == 0:
-            # print(f' >> CCF cannot find peaks at {band} phase {visible_phi[i]:.3f}')
+            print(f' >> CCF cannot find peaks at {band} phase {visible_phi[i]:.3f}')
+            vis.plot_cc(drvs, ccf, None, visible_phi[i], band, props, outdir)
             continue
 
         # most prominent peak
@@ -419,14 +435,15 @@ def get_ccf_peak(ccf_box, drvs, visible_phi, band, refine=True, prominence=0.1):
 
         # edge guard
         if k == 0 or k == len(ccf) - 1:
-            # print(f' >> CCF peak at edge at {band} phase {visible_phi[i]:.3f}')
+            print(f' >> CCF peak at edge at {band} phase {visible_phi[i]:.3f}')
             rvs[i] = np.nan
             continue
 
         # optional sub-grid refine
         rvs[i] = _quad_refine(drvs, ccf, k) if refine else rv_peak
-        
-        # Optionally: vis.plot_cc(drvs, ccf, new_rv, visible_phi[i], band, properties)
+
+        # Optionally:
+        # vis.plot_cc(drvs, ccf, rvs[i], visible_phi[i], band, props, outdir)
     return rvs
 
 

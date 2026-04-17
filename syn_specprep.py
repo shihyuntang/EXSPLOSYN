@@ -341,9 +341,9 @@ def prep_synmast_intensity_spec(
         Ts.append(T_i); Gs.append(g_i); Zs.append(z_i)
 
     if not Ts:
-        raise FileNotFoundError(f"No SYNMAST .prf files found in {syn_marcs}")
+        raise FileNotFoundError("No SYNMAST .prf files found in ", syn_marcs)
 
-    Ts = np.array(sorted(set(Ts)), dtype=np.int32)
+    Ts = np.array(sorted(set(Ts)), dtype=np.float32)
     Gs = np.array(sorted(set(Gs)), dtype=np.float32)
     Zs = np.array(sorted(set(Zs)), dtype=np.float32)
 
@@ -369,7 +369,7 @@ def prep_synmast_intensity_spec(
     # Filenames
     name_low  = build_synmast_filename(T_low,  logg_val, FeH_val)
     name_high = build_synmast_filename(T_high, logg_val, FeH_val)
-    name_use  = build_synmast_filename(int(round(temp)), logg, FeH)  # label only
+    name_use  = build_synmast_filename(np.round(temp, 4), logg, FeH)  # label only
 
     path_low  = syn_marcs / name_low
     path_high = syn_marcs / name_high
@@ -461,7 +461,7 @@ def prep_synmast_flux_spec(temp, logg, FeH, out_path, savehdf=None):
     if not prf_files:
         raise FileNotFoundError(f"No SYNMAST .prf files found in {syn_marcs}")
 
-    Ts = np.array(sorted(set(Ts)), dtype=np.int32)
+    Ts = np.array(sorted(set(Ts)), dtype=np.float32)
     Gs = np.array(sorted(set(Gs)), dtype=np.float32)
     Zs = np.array(sorted(set(Zs)), dtype=np.float32)
 
@@ -487,7 +487,7 @@ def prep_synmast_flux_spec(temp, logg, FeH, out_path, savehdf=None):
     # filenames for endpoints and label for output
     name_low  = build_synmast_filename(T_low,  logg_val, FeH_val)
     name_high = build_synmast_filename(T_high, logg_val, FeH_val)
-    name_use  = build_synmast_filename(int(round(temp)), logg, FeH)  # label only
+    name_use  = build_synmast_filename(np.round(temp, 4), logg, FeH)  # label only
 
     path_low  = syn_marcs / name_low
     path_high = syn_marcs / name_high
@@ -497,22 +497,26 @@ def prep_synmast_flux_spec(temp, logg, FeH, out_path, savehdf=None):
         raise FileNotFoundError(f"Missing grid file: {path_high}")
 
     # read endpoints (no flatten), convert to vacuum
-    wave_air, spec_low = rds3v(str(path_low),  vsini=0, vrt=2.0, if_flat=False, get_intensity=False)
-    _,        spec_high = rds3v(str(path_high), vsini=0, vrt=2.0, if_flat=False, get_intensity=False)
+    wave_air, spec_low, c_low = rds3v(str(path_low),  vsini=0, vrt=2.0, if_flat=False, get_intensity=False)
+    _,        spec_high, c_high = rds3v(str(path_high), vsini=0, vrt=2.0, if_flat=False, get_intensity=False)
     wave_vac = air2vac(wave_air)
 
     # ensure 2-D flux shape (n_wave, n_mu) for consistency
     spec_low  = spec_low[:, None]  if spec_low.ndim  == 1 else spec_low
     spec_high = spec_high[:, None] if spec_high.ndim == 1 else spec_high
+
     if spec_low.shape != spec_high.shape:
         raise ValueError(f"Low/high spectra shapes differ: {spec_low.shape} vs {spec_high.shape}")
 
     # linear interpolation in Teff (float64 math)
     if T_low == T_high:
         flux_interp = spec_low.astype(np.float64, copy=False)
+        c_interp = c_low.astype(np.float64, copy=False)
     else:
         flux_interp = (spec_low.astype(np.float64) * (1.0 - alpha) +
                        spec_high.astype(np.float64) * alpha)
+        c_interp = (c_low.astype(np.float64) * (1.0 - alpha) +
+                    c_high.astype(np.float64) * alpha)
 
     if savehdf:
         # save: wave→float32, flux→float64
@@ -521,6 +525,8 @@ def prep_synmast_flux_spec(temp, logg, FeH, out_path, savehdf=None):
             h.create_dataset("wave", data=wave_vac.astype(np.float32, copy=False),
                             compression="gzip", compression_opts=5, shuffle=True)
             h.create_dataset("flux", data=flux_interp,  # float64
+                            compression="gzip", compression_opts=5, shuffle=True)
+            h.create_dataset("continuum", data=c_interp,  # float64
                             compression="gzip", compression_opts=5, shuffle=True)
             # provenance for reproducibility
             h.attrs["grid_T_low"]  = T_low
@@ -537,6 +543,7 @@ def prep_synmast_flux_spec(temp, logg, FeH, out_path, savehdf=None):
         unflattened_spec = {
             "wave": wave_vac.astype(np.float32, copy=False),
             "flux": flux_interp,  # float64
+            "continuum": c_interp,  # float64
         }
         return unflattened_spec
 
@@ -595,7 +602,7 @@ def flatten_phx_with_rassine(rassine_path, out_path, phx_flux_file):
     root_dir = str(rassine_path).rstrip("/") + "/"
 
     cmd = [
-        "python3",
+        "python",
         str(rassine_py),
         str(in_pkl),
         out_dir,   # <output_dir> with trailing '/'

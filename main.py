@@ -27,14 +27,22 @@ import visualization as vis
 # CONFIG_FILE = 'config_LkCa4base_SizeDelT_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_2SPOTS_study.cfg'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_study.cfg'
-CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_8spots-1.cfg'
+# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_fitting_8spots-1.cfg'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_donati_oeg_21spots.cfg'
 # CONFIG_FILE = 'config_LkCa4_one_SPOT_demo.cfg'
+# CONFIG_FILE = 'config_2TemplateFit_test_1.cfg'
+# CONFIG_FILE = 'config_LimbDarkeningMu_test.cfg'
+# CONFIG_FILE = 'config_Chenming_HD113816.cfg'
 # SAVE_DIR = f'RVandEWR_SizeDelT_width100'
+# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mimicking_ZDI.cfg'
+CONFIG_FILE = 'config_LkCa4_multi_SPOTS_chi2_fitting_ZDI_Tinit.cfg'
+# CONFIG_FILE = 'config_max_size.cfg'
 
 # SimSpecWinSize = 100 # in AA
-SIMSPEC_VEL_BIN_SIZE = 100/1000 # in km/s
 SOLAR_RADIUS = 695700 # km
+SYNMAST_FeOH = 'LisaGrid_synmast_v1.9_spirou_marcs'
+SYNMAST_Ti = 'ChrisGrid_Ti_synmast_v1.9_spirou_marcs'
+SYNMAST_CO = 'ChrisGrid_CO_synmast_v1.9_spirou_marcs'
 # ------------------------------------------------
 hostname = socket.gethostname() 
 hostname = hostname.split('.')[0].split('-')[0]
@@ -77,7 +85,7 @@ def init_setup_cfg(
         (STAR, bands, SAVE_DIR, nrho, grid_size, instrument_res, cpu_use, plot_flag,
          save_spec_flag, sim_spec_window_size, syn_model_path, rv_ccf_pars, PSI,
          active_regions_number, active_region_box, sim_spec_line_centers, filters)
-    """
+    """ 
     # --- Read config ---
     cfg = configparser.ConfigParser(inline_comment_prefixes=';')
     read_ok = cfg.read(config_file)
@@ -108,7 +116,11 @@ def init_setup_cfg(
         for w in sim_spec_line_centers
     }
     bands = {}
-    bands['ewr_FeOH'] = [15557.0, 90.0, 'rv', 'intensity', 'synmast']
+    bands['ewr_FeOH'] = [15557.0, 94.0, 'rv', 'intensity', 'synmast']
+    # bands['ewr_FeOH'] = [15557.0, 90.0, 'rv', 'flux', 'synmast']
+    # bands['spec_FeOH'] = [15562.5, 108, 'rv', 'intensity', 'synmast']
+    # bands['spec_K_CO'] = [23138.0, 81.0, 'rv', 'intensity', 'synmast']
+    # bands['spec_K_Ti'] = [22263.0, 52.0, 'rv', 'intensity', 'synmast']
 
     if has_filters:
         logger.info(f'\nDetect filters. Will generate photometry for {filters}.')
@@ -140,7 +152,14 @@ def init_setup_cfg(
     RASSINE_PATH = cfg.get('path', f'rassine_path{path_sub}')
     SYNmast_PATH = cfg.get('path', f'synmast_prf{path_sub}')
     phx_path     = cfg.get('path', 'PHOENIX_path')
-    syn_model_path = {'phx': RASSINE_PATH, 'synmast': SYNmast_PATH}
+    syn_model_path = {
+        'phx': RASSINE_PATH, 
+        'synmast': {
+            'FeOH': os.path.join(SYNmast_PATH, SYNMAST_FeOH),
+            'Ti': os.path.join(SYNmast_PATH, SYNMAST_Ti),
+            'CO': os.path.join(SYNmast_PATH, SYNMAST_CO)
+        }
+    }
 
     # --- Output & model params ---
     plot_flag      = cfg.getint('output', 'plot')
@@ -153,20 +172,50 @@ def init_setup_cfg(
     # cpu_use = 6 if hostname == 'Swing' else 30
     cpu_use = int(cfg.get('main', 'cpu'))
 
+    spec_oversample_factor = cfg.getint('spectroscopic', 'spec_oversample_factor')
+    # ====================================================================
+    # DYNAMIC VELOCITY BIN CALCULATION
+    # ====================================================================
+    c_kms = 299792.458
+    if instrument_res > 0:
+        inst_fwhm_kms = c_kms / instrument_res
+        sim_spec_vel_bin_size = inst_fwhm_kms / spec_oversample_factor
+
+        # Hard cap: Maximum 1.0 km/s to prevent CCF degradation
+        if sim_spec_vel_bin_size > 1.0:
+            sim_spec_vel_bin_size = 1.0
+            
+        # Hard cap: Minimum 0.1 km/s to prevent infinite RAM usage
+        elif sim_spec_vel_bin_size < 0.1:
+            nyquist_limit = inst_fwhm_kms / 3.0
+            
+            if 0.1 > nyquist_limit:
+                logger.warning(
+                    f"\n [WARNING] Instrumental resolution (R={instrument_res}) is exceptionally high! "
+                    f"Capping vel bin at 0.1 km/s violates the Nyquist limit (<3 points per FWHM). "
+                    f"Your spectral lines will be severely undersampled."
+                )
+            else:
+                logger.info(
+                    f"\n [NOTE] Capping velocity bin at minimum 0.1 km/s. "
+                    f"Will not achieve 15x oversampling for R={instrument_res}, but Nyquist is preserved."
+                )
+            sim_spec_vel_bin_size = 0.1
+    else:
+        # Fallback for photometry-only runs where R=0
+        sim_spec_vel_bin_size = 1.0 
+        
+    logger.warning(f"  >> Dynamic Velocity Bin Size set to: {sim_spec_vel_bin_size:.3f} km/s")
+    # ====================================================================
+
     # --- Stellar params ---
     stellar_radius  = cfg.getfloat('star', 'radius') * SOLAR_RADIUS
     rotation_period = cfg.getfloat('star', 'prot')
     incl            = cfg.getfloat('star', 'I')
     psi             = cfg.getfloat('star', 'psi')
-    Temp            = cfg.getint('star', 'Tstar')
+    Temp            = cfg.getfloat('star', 'Tstar')
     logg            = cfg.getfloat('star', 'logg')
     FeH             = cfg.getfloat('star', 'FeH')
-
-    # --- Active region counts ---
-    cool_n = cfg.getint('cool_active_regions', 'spot_number')
-    hot_n  = cfg.getint('hot_active_regions',  'spot_number')
-    active_regions_number = cool_n + hot_n
-    logger.info(f"Found {cool_n} cool region(s), and {hot_n} hot region(s).")
 
     # --- Fast parsers for lists ---
     def parse_region(section: str, key: str, dtype):
@@ -174,29 +223,66 @@ def init_setup_cfg(
         cleaned = re.sub(r'[,\s]+', ' ', raw).strip()
         if not cleaned:
             return np.array([], dtype=dtype)
-        return np.fromstring(cleaned, sep=' ', dtype=dtype)
+        
+        # Use split() inside np.array instead of np.fromstring. 
+        # This natively supports both numbers (np.float32) and strings (str).
+        return np.array(cleaned.split(), dtype=dtype)
 
+    # Temperature dict for LkCa 4 ZDI image
+    cool_hot_dict = {
+        3600: {'a': 322.0, 'b': 223.0, 'c': 116.0, 'd': 122.0, 'e': 259.0, 'f': 426.0},
+        3700: {'a': 341.0, 'b': 235.0, 'c': 121.0, 'd': 133.0, 'e': 293.0, 'f': 512.0},
+        3800: {'a': 360.0, 'b': 248.0, 'c': 128.0, 'd': 155.0, 'e': 354.0, 'f': 678.0},
+        3900: {'a': 386.0, 'b': 269.0, 'c': 144.0, 'd': 178.0, 'e': 454.0, 'f': 855.0},
+        4000: {'a': 417.0, 'b': 295.0, 'c': 161.0, 'd': 224.0, 'e': 584.0, 'f': 1022.0},
+        4100: {'a': 456.0, 'b': 330.0, 'c': 183.0, 'd': 292.0, 'e': 701.0, 'f': 1143.0},
+        # 4000: {'a': 433, 'b': 298, 'c': 156, 'd': 173, 'e': 370, 'f': 586},
+        # 3900: {'a': 416, 'b': 285, 'c': 149, 'd': 159, 'e': 341, 'f': 545},
+        # 3800: {'a': 396, 'b': 272, 'c': 139, 'd': 153, 'e': 318, 'f': 509},
+        # 3700: {'a': 377, 'b': 263, 'c': 136, 'd': 142, 'e': 297, 'f': 469},
+    }
     # Cool regions
     cool_longs = parse_region('cool_active_regions', 'longitudes', np.float32)
     cool_lats  = parse_region('cool_active_regions', 'latitudes',  np.float32)
     cool_sizes = parse_region('cool_active_regions', 'sizes',      np.float32)
-    cool_dT    = parse_region('cool_active_regions', 'Tcool_spots', np.int16)
+    cool_dT    = parse_region('cool_active_regions', 'Tcool_spots', np.float64)
+
+    if (cool_dT.size == 1) and (cool_sizes.size > 1):
+        cool_dT = np.full_like(cool_sizes, cool_dT[0], dtype=np.float64)
+    
+    # cool_dT    = parse_region('cool_active_regions', 'Tcool_spots', str)
+    # cool_dT    = np.array([cool_hot_dict.get(int(Temp), {}).get(t, 0) for t in cool_dT], dtype=np.float64)
 
     if cool_dT.size:
         idx = np.argsort(cool_dT)[::-1]  # largest |ΔT| first
         cool_longs, cool_lats, cool_sizes, cool_dT = cool_longs[idx], cool_lats[idx], cool_sizes[idx], cool_dT[idx]
-    cool_T = np.int32(Temp) - cool_dT.astype(np.int32)
+    cool_T = Temp - cool_dT
 
     # Hot regions
     hot_longs = parse_region('hot_active_regions', 'longitudes', np.float32)
     hot_lats  = parse_region('hot_active_regions', 'latitudes',  np.float32)
     hot_sizes = parse_region('hot_active_regions', 'sizes',      np.float32)
-    hot_dT    = parse_region('hot_active_regions', 'Thot_faculae', np.int16)
+    hot_dT    = parse_region('hot_active_regions', 'Thot_faculae', np.float64)
+    
+    if (hot_dT.size == 1) and (hot_sizes.size > 1):
+        hot_dT = np.full_like(hot_sizes, hot_dT[0], dtype=np.float64)
+
+    # hot_dT    = parse_region('hot_active_regions', 'Thot_faculae', str)
+    # hot_dT    = np.array([cool_hot_dict.get(int(Temp), {}).get(t, 0) for t in hot_dT], dtype=np.float64)
 
     if hot_dT.size:
         idx = np.argsort(hot_dT)[::-1]
         hot_longs, hot_lats, hot_sizes, hot_dT = hot_longs[idx], hot_lats[idx], hot_sizes[idx], hot_dT[idx]
-    hot_T = np.int32(Temp) + hot_dT.astype(np.int32)
+    hot_T = Temp + hot_dT
+
+    # --- Active region counts ---
+    # cool_n = cfg.getint('cool_active_regions', 'spot_number')
+    # hot_n  = cfg.getint('hot_active_regions',  'spot_number')
+    cool_n = cool_longs.size
+    hot_n  = hot_longs.size
+    active_regions_number = cool_n + hot_n
+    logger.info(f"Found {cool_n} cool region(s), and {hot_n} hot region(s).")
+    # -----------------------------
 
     # Convert % area -> radius fraction (sqrt of fractional area)
     cool_sizes = np.sqrt(cool_sizes / 100.0, dtype=np.float32)
@@ -205,8 +291,8 @@ def init_setup_cfg(
     # Concatenate all regions
     active_region_longs = np.concatenate([cool_longs, hot_longs]).astype(np.float32, copy=False)
     active_region_lats  = np.concatenate([cool_lats,  hot_lats ]).astype(np.float32, copy=False)
-    active_region_sizes = np.concatenate([cool_sizes, hot_sizes]).astype(np.float32, copy=False)
-    active_region_Temp  = np.concatenate([cool_T,     hot_T   ]).astype(np.int32,   copy=False)
+    active_region_sizes = np.concatenate([cool_sizes, hot_sizes]).astype(np.float64, copy=False)
+    active_region_Temp  = np.concatenate([cool_T,     hot_T    ]).astype(np.float32, copy=False)
     active_region_box   = [active_region_longs, active_region_lats, active_region_sizes, active_region_Temp]
 
     # --- Star object ---
@@ -217,9 +303,9 @@ def init_setup_cfg(
         psi=psi,
         rad_sun=SOLAR_RADIUS,
         rad=stellar_radius,
-        Temp=int(Temp),
-        Tspot=cool_T,        # already int32
-        Tfaculae=hot_T,      # already int32
+        Temp=Temp,
+        Tspot=cool_T,
+        Tfaculae=hot_T,
         logg=logg,
         FeH=FeH,
         bands2use=bands,
@@ -255,7 +341,8 @@ def init_setup_cfg(
         with open(phase_in, 'r') as f:
             PSI = np.fromiter((float(line.split()[0]) for line in f), dtype=np.float32)
     elif phase_step > 0:
-        PSI = np.arange(-0.75, 0.751, phase_step, dtype=np.float32)
+        # PSI = np.arange(-0.75, 0.751, phase_step, dtype=np.float32)
+        PSI = np.arange(-0.5, 0.5, phase_step, dtype=np.float32)
     else:
         logger.warning("Put a positive phase step ('ph_step') or provide a phase file ('ph_in').")
         PSI = np.array([], dtype=np.float32)
@@ -277,16 +364,17 @@ def init_setup_cfg(
         STAR.ccf_temp = float(cfg.get('ccf', 'Teff'))
         fit_temp = STAR.ccf_temp
 
-    STAR.find_fluxspec_flatten(SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path, fit_temp)
+    STAR.find_fluxspec_flatten(sim_spec_vel_bin_size, plot_flag, syn_model_path, fit_temp)
 
     return (
         STAR, bands, SAVE_DIR, nrho, grid_size, instrument_res, cpu_use, plot_flag,
         save_spec_flag, sim_spec_window_size, syn_model_path, rv_ccf_pars, PSI,
-        active_regions_number, active_region_box, sim_spec_line_centers, filters
+        active_regions_number, active_region_box, sim_spec_line_centers, filters,
+        sim_spec_vel_bin_size
         )
 
 def setup_activate_spectra(
-        bands, STAR, plot_flag, syn_model_path, savehdf=None):
+        bands, STAR, plot_flag, syn_model_path, sim_spec_vel_bin_size, savehdf=None):
     """
     Prepare synthetic spectra for all bands and temperatures for the spotted star simulation.
 
@@ -299,14 +387,14 @@ def setup_activate_spectra(
     Returns:
         list[dict[int, spotact_core.Spec]]: same ordering as bands.keys()
     """
+
     # Which intensity modes do we need overall?
     # (Set avoids duplicates; also robust if someone adds more bands later.)
     intensity_modes = {params[3] for params in bands.values()}
 
-    # Unique temperature list (int32) to avoid duplicate Spec objects
     # Keep photosphere + all spot/facula temps
     temp_list = np.unique(
-        np.concatenate(([np.int32(STAR.Temp)], STAR.Tspot.astype(np.int32), STAR.Tfaculae.astype(np.int32)))
+        np.concatenate(([STAR.Temp], STAR.Tspot, STAR.Tfaculae))
     )
 
     # Vectorize band centers/widths once, cast to float32 to save RAM
@@ -315,15 +403,17 @@ def setup_activate_spectra(
 
     # Limb darkening only needs to be computed once for the temp×band grid
     # (Both flux and intensity paths rely on LD.)
-    STAR.get_quadratic_limbdarken(temp_list, line_centers, line_widths)
+
+    if len(line_centers) != 0: 
+        STAR.get_quadratic_limbdarken(temp_list, line_centers, line_widths)
 
     # Build synthetic spectra “banks” only for the modes we actually need
     if 'flux' in intensity_modes:
         STAR.find_fluxspec(
-            SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path, savehdf=savehdf)
+            sim_spec_vel_bin_size, plot_flag, savehdf=savehdf)
     if 'intensity' in intensity_modes or 'photo' in intensity_modes:
         STAR.find_intensityspec(
-            SIMSPEC_VEL_BIN_SIZE, plot_flag, syn_model_path, savehdf=savehdf)
+            sim_spec_vel_bin_size, plot_flag, syn_model_path, savehdf=savehdf)
 
     # Build per-band Spec dictionaries (temp -> Spec)
     # Keep the same order as bands.keys(), so SPEC_box[i] matches enumerate(bands.keys()) in main_model
@@ -331,10 +421,10 @@ def setup_activate_spectra(
     for band_name in bands.keys():
         center, width, mode, int_or_flux, model_type = bands[band_name]
         spec_dict = {
-            int(t): spotact_core.Spec(
+            np.round(t, 4): spotact_core.Spec(
                 star=STAR,
                 band=band_name,
-                temperature=int(t),
+                temperature=t,
                 intORflux=int_or_flux,
                 model_type=model_type,
             )
@@ -391,13 +481,13 @@ def simulation_plot(grid_size, nrho, instrument_res, STAR,
 
     text2 = '{} active regions:\n'.format(active_regions_number) + \
             '  lon [deg]= {}\n'.format(np.array2string(
-                active_region_longs, separator=',', formatter={'float_kind': lambda x: f'{int(x):5d}'})) + \
+                active_region_longs, separator=',', formatter={'float_kind': lambda x: f'{int(x):4d}'})) + \
             '  lat [deg]= {}\n'.format(np.array2string(
-                active_region_lats, separator=',', formatter={'float_kind': lambda x: f'{int(x):5d}'})) + \
+                active_region_lats, separator=',', formatter={'float_kind': lambda x: f'{int(x):4d}'})) + \
             '   size [%]= {}\n'.format(np.array2string(
-                active_region_sizes_percent, separator=',', formatter={'float_kind': lambda x: f'{float(x):5.1f}'})) + \
+                active_region_sizes_percent, separator=',', formatter={'float_kind': lambda x: f'{float(x):4.1f}'})) + \
             '   Temp [K]= {}\n'.format(np.array2string(
-                active_region_dTemp, separator=',', formatter={'float_kind': lambda x: fr'${int(x):+7d}$'}))
+                active_region_dTemp, separator=',', formatter={'float_kind': lambda x: fr'${int(x):+5.1f}$'}))
     
     if band != 'photo':
         vis.spot_view(
@@ -442,8 +532,8 @@ def simulation_plot(grid_size, nrho, instrument_res, STAR,
 def main_model(
     logger, bands, nrho, grid_size, STAR, PSI, SPEC_box, filters,
     active_regions_number, active_region_box, rv_ccf_pars, syn_model_path,
-    instrument_res, cpu_use, SAVE_DIR, save_spec_flag, plot_flag, silence_pbar,
-    in_memory: bool = False, write_csv: bool = True,
+    instrument_res, cpu_use, SAVE_DIR, save_spec_flag, plot_flag, sim_spec_vel_bin_size,
+    silence_pbar, in_memory: bool = False, write_csv: bool = True,
 ):
     """
     Run the per-band spotted-star simulations and write outputs.
@@ -502,7 +592,7 @@ def main_model(
     active_region_longs = np.asarray(active_region_longs, dtype=np.float32)[seq_idx]
     active_region_lats  = np.asarray(active_region_lats,  dtype=np.float32)[seq_idx]
     active_region_sizes = np.asarray(active_region_sizes, dtype=np.float32)[seq_idx]
-    active_region_Temp  = np.asarray(active_region_Temp,  dtype=np.int32)[seq_idx]
+    active_region_Temp  = np.asarray(active_region_Temp,  dtype=np.float64)[seq_idx]
     active_region_org_idx = active_region_org_idx[seq_idx]
 
     active_region_box = (
@@ -565,12 +655,12 @@ def main_model(
                 for j, filt in enumerate(filters):
                     fname = filt.split('/')[1]
                     mag_dict[fname]  = np.asarray(lightcurves_mag[j],  dtype=np.float32)
-                    flux_dict[fname] = np.asarray(lightcurves_flux[j], dtype=np.float32)
+                    flux_dict[fname] = np.asarray(lightcurves_flux[j], dtype=np.float64)
                 results_by_band[band] = {
                     'phase': visible_phi,
                     # 'rv':    ccf_rv_shift,
                     # 'ewr':   ohfe_ratio,
-                    'mag': mag_dict, 
+                    # 'mag': mag_dict, 
                     'flux': flux_dict
                 }
             else:
@@ -580,7 +670,7 @@ def main_model(
                 for j, filt in enumerate(filters):
                     fname = filt.split('/')[1]
                     tab[f'{fname}_mag']  = np.asarray(lightcurves_mag[j],  dtype=np.float32)
-                    tab[f'{fname}_flux'] = np.asarray(lightcurves_flux[j], dtype=np.float32)
+                    tab[f'{fname}_flux'] = np.asarray(lightcurves_flux[j], dtype=np.float64)
                     tab[f'{fname}_mag'].format  = '%.6f'
                     tab[f'{fname}_flux'].format = '%.6f'
                 tab['Phase'].format = '%.3f'
@@ -620,8 +710,8 @@ def main_model(
         logger.info('\nCalculating the RV with CCF...\n')
         ccf_rv_shift = spotact_core.cal_ccf_rv(
             integrated_stellar_spectrum, STAR, visible_phi, band, intORflux, model_type,
-            rv_ccf_pars, syn_model_path['synmast'], cpu_use, SAVE_DIR, SIMSPEC_VEL_BIN_SIZE,
-            plot_flag, silence_pbar, save_spec_flag
+            rv_ccf_pars, syn_model_path['synmast'], cpu_use, SAVE_DIR, sim_spec_vel_bin_size,
+            plot_flag, silence_pbar, save_spec_flag, outdir
         )
         ccf_rv_shift = np.asarray(ccf_rv_shift, dtype=np.float32)
 
@@ -730,7 +820,7 @@ if __name__ == '__main__':
     (STAR, bands, SAVE_DIR, nrho, grid_size, instrument_res, cpu_use,
         plot_flag, save_spec_flag, sim_spec_window_size, syn_model_path,
         rv_ccf_pars, PSI, active_regions_number, active_region_box,
-        sim_spec_line_centers, filters) = init_setup_cfg(
+        sim_spec_line_centers, filters, sim_spec_vel_bin_size) = init_setup_cfg(
             logger, CONFIG_FILE, post_fix=args.out)
 
     (active_region_longs, active_region_lats, active_region_sizes, 
@@ -738,7 +828,8 @@ if __name__ == '__main__':
     
     # --- Setup the synthetic spectra for Spotted spectra simulation ---
     SPEC_box = setup_activate_spectra(
-        bands, STAR, plot_flag, syn_model_path, savehdf = save_spec_flag)
+        bands, STAR, plot_flag, syn_model_path, sim_spec_vel_bin_size, 
+        savehdf = save_spec_flag)
 
     ################################################################################################
     
@@ -747,7 +838,8 @@ if __name__ == '__main__':
         logger, bands, nrho, grid_size, STAR, PSI, SPEC_box, filters,
         active_regions_number, active_region_box, 
         rv_ccf_pars, syn_model_path, instrument_res, 
-        cpu_use, SAVE_DIR, save_spec_flag, plot_flag, silence_pbar=args.silence)
+        cpu_use, SAVE_DIR, save_spec_flag, plot_flag, sim_spec_vel_bin_size, 
+        silence_pbar=args.silence)
     
     
     # ######################################################################

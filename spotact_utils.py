@@ -58,7 +58,7 @@ def get_equivalent_width(Star, flux_phi, visible_phi, band, intORflux, model_typ
         OH/Fe equivalent-width ratio per phase.
     """
     # --- Resolve velocity grid for this band at the photosphere temp ---
-    key_v = f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'
+    key_v = f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v'
     if intORflux == 'flux':
         vel = Star.flux_spec[key_v]
     else:
@@ -155,9 +155,9 @@ def get_equivalent_width(Star, flux_phi, visible_phi, band, intORflux, model_typ
 #     depth_l_oh0 = []
 
 #     if intORflux == 'flux':
-#         vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+#         vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
 #     elif intORflux == 'intensity':
-#         vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+#         vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
 
 #     for i in range(len(visible_phi)):
 #         CCFstar_tot_flip = 1 + -1 * CCFstar_tot[i]
@@ -423,7 +423,7 @@ def save_phase_pngs(
     Y, Z = np.meshgrid(y, z, indexing="ij")           # Y,Z shaped (G,G): axis0=y, axis1=z
     disk_mask = (Y*Y + Z*Z) <= 1.0
 
-    vals = cube[:, disk_mask].astype(np.float32)
+    vals = cube[:, disk_mask].astype(np.float64)
     vals = vals[vals != sentinel_offdisk]
     vmin = np.percentile(vals, 1); vmax = np.percentile(vals, 99)
     if vmin == vmax: vmax = vmin + 1
@@ -432,7 +432,7 @@ def save_phase_pngs(
     extent = (-1, 1, -1, 1)                           # ★ x=y in [-1,1], y=z in [-1,1]
 
     for i in range(Npsi):
-        frame = cube[i].astype(np.float32)
+        frame = cube[i].astype(np.float64)
         mask2d = ~disk_mask | (frame == sentinel_offdisk)
 
         # ★ Transpose so horizontal axis = y, vertical axis = z
@@ -477,36 +477,74 @@ def ld_law_quadratic(mu, u1, u2):
     L = 1.0 - u1*(1.0 - mu) - u2*(1.0 - mu)**2
     return np.clip(L, 0.0, None)
 
+# def _get_u1u2_for_T(ld_coeff_dict, band, T):
+#     """
+#     Fetch (u1,u2) for a given band and temperature T.
+#     Falls back to nearest available integer temperature if exact not found.
+#     """
+#     key = f"{band}_{np.round(T, 4)}"
+#     if key in ld_coeff_dict:
+#         return ld_coeff_dict[key]
+#     else:
+#         print(ld_coeff_dict)
+#         raise KeyError(f"No LD coeffs found for band '{band}' at T={np.round(T, 4)}K.")
+    
+
+#     # # Nearest-neighbor fallback across available temps for this band
+#     # # Expect keys like "<band>_<Tint>"
+#     # temps = []
+#     # coeffs = []
+#     # prefix = f"{band}_"
+#     # for k, v in ld_coeff_dict.items():
+#     #     if k.startswith(prefix):
+#     #         try:
+#     #             temps.append(int(k.split("_")[-1]))
+#     #             coeffs.append(v)
+#     #         except Exception:
+#     #             pass
+#     # if not temps:
+#     #     raise KeyError(f"No LD coeffs found for band '{band}'.")
+#     # temps = np.asarray(temps)
+#     # idx = np.argmin(np.abs(temps - float(T)))
+#     # return coeffs[idx]
+
 def _get_u1u2_for_T(ld_coeff_dict, band, T):
     """
     Fetch (u1,u2) for a given band and temperature T.
-    Falls back to nearest available integer temperature if exact not found.
+    Falls back to nearest available temperature if exact not found
+    due to float32 vs float64 precision mismatches.
     """
-    key = f"{band}_{int(T)}"
+    # 1. Try exact 4-decimal match first
+    key = f"{band}_{np.round(T, 4)}"
     if key in ld_coeff_dict:
         return ld_coeff_dict[key]
-    else:
-        print(ld_coeff_dict)
-        raise KeyError(f"No LD coeffs found for band '{band}' at T={int(T)}K.")
     
+    # 2. Fallback: Nearest-neighbor search for float32 precision drift
+    temps = []
+    coeffs = []
+    prefix = f"{band}_"
+    for k, v in ld_coeff_dict.items():
+        if k.startswith(prefix):
+            try:
+                # Extract the float temperature from the key
+                temps.append(float(k.split("_")[-1]))
+                coeffs.append(v)
+            except Exception:
+                pass
+                
+    if not temps:
+        raise KeyError(f"No LD coeffs found for band '{band}'.")
+        
+    temps = np.asarray(temps)
+    idx = np.argmin(np.abs(temps - float(T)))
+    
+    # Safety check: ensure it is just a tiny float rounding error (< 0.1 K), 
+    # not a completely missing temperature grid
+    if np.abs(temps[idx] - float(T)) > 0.1:
+        raise KeyError(f"No LD coeffs found for band '{band}' at T={T}K. Closest is {temps[idx]}K.")
+        
+    return coeffs[idx]
 
-    # # Nearest-neighbor fallback across available temps for this band
-    # # Expect keys like "<band>_<Tint>"
-    # temps = []
-    # coeffs = []
-    # prefix = f"{band}_"
-    # for k, v in ld_coeff_dict.items():
-    #     if k.startswith(prefix):
-    #         try:
-    #             temps.append(int(k.split("_")[-1]))
-    #             coeffs.append(v)
-    #         except Exception:
-    #             pass
-    # if not temps:
-    #     raise KeyError(f"No LD coeffs found for band '{band}'.")
-    # temps = np.asarray(temps)
-    # idx = np.argmin(np.abs(temps - float(T)))
-    # return coeffs[idx]
 
 def coverage_and_teff(
     cube,                   # (Npsi, G, G), int or float; may be scaled
@@ -515,7 +553,7 @@ def coverage_and_teff(
     ld_coeff_dict,          # dict: f"{band}_{int(T)}" -> (u1, u2)
     band,                   
     sentinel_offdisk=0,
-    scale=1.0,              # if you stored temps scaled (e.g., ×10), give that here
+    scale=1.0,              # if stored temps scaled (e.g., ×10), give that here
     ld_by_local_temp=True,  # if True, LD varies with local T in 'cube'
     T_ref_for_ld=None,      # if ld_by_local_temp=False, use this T for LD (default: T_phot)
 ):
@@ -563,34 +601,33 @@ def coverage_and_teff(
     f_cool = (W3_area * ( is_cool)).sum(axis=(1, 2)) / Wsum_phase_area
     f_hot  = (W3_area * (  is_hot)).sum(axis=(1, 2)) / Wsum_phase_area
 
-    # ---------- Physical weights for Teff: W = μ × L(μ) ----------
+    # ---------- weights for Teff: W = LD(μ) ----------
     if ld_by_local_temp:
         mu3 = mu2d[None, ...]                           # (1, G, G), broadcasts
-        # Map unique integer temps to LD coeffs (only where valid)
-        Tints = np.unique(cube[on3].astype(int))
+        # Map unique 1.4f temps to LD coeffs (only where valid)
+        Ts = np.unique(cube[on3].astype(float))
         u1_map, u2_map = {}, {}
-        for Tint in Tints:
-            u1, u2 = _get_u1u2_for_T(ld_coeff_dict, band, Tint)
-            u1_map[Tint] = float(u1)
-            u2_map[Tint] = float(u2)
+        for TT in Ts:
+            u1, u2 = _get_u1u2_for_T(ld_coeff_dict, band, TT)
+            u1_map[TT] = float(u1)
+            u2_map[TT] = float(u2)
         # Build per-pixel u1,u2
         U1 = np.zeros_like(cube, dtype=np.float64)
         U2 = np.zeros_like(cube, dtype=np.float64)
-        Tint_all = cube.astype(int)
-        for Tint in Tints:
-            sel = (Tint_all == Tint) & on3
+        T_all = np.round(cube, 4)
+        for TT in Ts:
+            sel = (T_all == TT) & on3
             if np.any(sel):
-                U1[sel] = u1_map[Tint]
-                U2[sel] = u2_map[Tint]
+                U1[sel] = u1_map[TT]
+                U2[sel] = u2_map[TT]
         L3 = ld_law_quadratic(mu3, U1, U2)              # (Npsi, G, G)
-        W3_phy = np.where(on3, L3 * mu3, 0.0)
+        W3_phy = np.where(on3, L3, 0.0)
 
     else:
         T_ref = T_phot if (T_ref_for_ld is None) else T_ref_for_ld
         u1, u2 = _get_u1u2_for_T(ld_coeff_dict, band, T_ref)
         L2 = ld_law_quadratic(mu2d, u1, u2)             # (G, G)
-        W2_ld = L2 * mu2d
-        W3_phy = np.where(on3, W2_ld[None, ...], 0.0)
+        W3_phy = np.where(on3, L2[None, ...], 0.0)
 
     Wsum_phase_phy = W3_phy.sum(axis=(1, 2))
     if np.any(Wsum_phase_phy <= 0):
@@ -619,19 +656,19 @@ def LD_dict2array(star_LD_coeff, band):
 
     temps, coeffs = [], []
     for k, v in sub.items():
-        _, tstr = k.split("_", 1)
-        temps.append(int(tstr))
+        tstr = k.split("_")
+        temps.append(np.round(tstr[-1], 4))
         coeffs.append(v)  # e.g., (u1,u2) or (u1,u2,u3)
 
-    temps = np.asarray(temps, dtype=np.int32)
-    coeffs = np.asarray(coeffs, dtype=np.float32)  # (N,K)
+    temps = np.asarray(temps, dtype=np.float64)
+    coeffs = np.asarray(coeffs, dtype=np.float64)  # (N,K)
 
     order = np.argsort(temps)
-    temps_tab  = temps[order].astype(np.int16)
+    temps_tab  = temps[order]
     coeffs_tab = coeffs[order]
 
     # compact LUT (no giant dense array)
-    lut_keys = temps_tab.astype(np.int32)                       # [T1, T2, ...]
+    lut_keys = np.round(temps_tab, 4)                      # [T1, T2, ...]
     lut_vals = np.arange(temps_tab.size, dtype=np.int32)        # [0, 1, 2, ...]
 
     return temps_tab, coeffs_tab, lut_keys, lut_vals
@@ -639,13 +676,16 @@ def LD_dict2array(star_LD_coeff, band):
 @njit
 def lut_lookup_eq(temp, lut_keys, lut_vals):
     """
-    Compact O(N) lookup by equality. N is small, so this is cheap.
-    Returns row index (>=0) or -1 if not found.
+    Nearest-neighbor lookup to bridge float32 (cube) and float64 (keys).
     """
-    for i in range(lut_keys.size):
-        if lut_keys[i] == temp:
-            return lut_vals[i]
-    return -1
+    best = 0
+    bestd = abs(lut_keys[0] - temp)
+    for i in range(1, lut_keys.size):
+        d = abs(lut_keys[i] - temp)
+        if d < bestd:
+            best = i
+            bestd = d
+    return lut_vals[best]
 
 
 
@@ -666,23 +706,23 @@ def Spec_intensity_dict2array(spec, fluxORint):
     mu_grid = None
 
     for T, obj in spec.items():
-        temps.append(int(T))
-        spect_list.append(np.asarray(obj.intensity, dtype=np.float32))
+        temps.append(np.round(T, 4))
+        spect_list.append(np.asarray(obj.intensity, dtype=np.float64))
         if want_mu and mu_grid is None:
             # as miu are the same for all T, thus we only need one array, unlike spectrum
             mu_grid = np.asarray(obj.mu, dtype=np.float32)
 
 
-    temps = np.asarray(temps, dtype=np.int32)
+    temps = np.asarray(temps, dtype=np.float64)
     spectrum_tab = np.stack(spect_list, axis=0)  # (N, ...), float32
 
     order = np.argsort(temps)
-    temps_tab    = temps[order].astype(np.int16)
+    temps_tab    = temps[order]
     spectrum_tab = spectrum_tab[order]
 
     mu_s_tab = mu_grid if want_mu else None
 
-    lut_keys = temps_tab.astype(np.int32)
+    lut_keys = np.round(temps_tab, 4)
     lut_vals = np.arange(temps_tab.size, dtype=np.int32)
 
     return temps_tab, spectrum_tab, mu_s_tab, lut_keys, lut_vals

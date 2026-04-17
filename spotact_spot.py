@@ -571,10 +571,11 @@ def itot_int(vrot, incl, limba1, limba2, grid_size, vrad_spec, intensity_spec,
                 r_cos = np.sqrt( 1 - (y*y+z*z) )  # mu angle
                 
                 # --- Use mu angle spectra instead of scaling flux via limb-darkening ---
-                # # index of the closest mu value to r_cos
-                # f_loc = int(np.argmin(np.abs(mu_s - r_cos))) 
+                
+                # --- method 1: interpolate on mu spectra ---
+                # index of the closest mu value to r_cos
+                # f_loc = int(np.argmin(np.abs(mu_s - r_cos)))
 
-                # # interpolate on mu spectra
                 # if r_cos >= mu_s[0]:
                 #     intensity_spec_use = intensity_spec[:, 0]
                 # elif r_cos <= mu_s[-1]:
@@ -593,6 +594,8 @@ def itot_int(vrot, incl, limba1, limba2, grid_size, vrad_spec, intensity_spec,
 
                 #     intensity_spec_use = mu1_int_low + ( (r_cos - mu1_low)/(mu1_high - mu1_low) )\
                 #                     *(mu1_int_high - mu1_int_low)
+                    
+                # --- method 2: nearest neighbor (no interpolation) ---
                 f_loc = utils.nearest_mu_index(mu_s, r_cos)
                 intensity_spec_use = intensity_spec[:, f_loc]
                 
@@ -658,7 +661,7 @@ def spot_scan_flux(
     _, spec_spectrum, _, sp_keys, sp_vals = Spec_dict
 
     # Active-pixel indices (nonzero + not photosphere)
-    mask = (active_2d_surface_temperature != 0) & (active_2d_surface_temperature != Tphoto)
+    mask = (active_2d_surface_temperature != 0) & (active_2d_surface_temperature != np.float32(Tphoto))
     act_idxy, act_idxz = np.where(mask)
 
     delta_grid  = 2.0 / grid_size
@@ -686,7 +689,7 @@ def spot_scan_flux(
         # rotation Doppler shift for this pixel
         delta = y * vrot * sinIncl
 
-        active_temp = int(active_2d_surface_temperature[iy, iz])
+        active_temp = active_2d_surface_temperature[iy, iz]
 
         # Active spectrum row and LD coeffs
         js = utils.lut_lookup_eq(active_temp, sp_keys, sp_vals)
@@ -777,7 +780,7 @@ def spot_scan_int(
     """
     _, spec_spectrum, mu_s, sp_keys, sp_vals = Spec_dict
 
-    mask = (active_2d_surface_temperature != 0) & (active_2d_surface_temperature != Tphoto)
+    mask = (active_2d_surface_temperature != 0) & (active_2d_surface_temperature != np.float32(Tphoto))
     act_idxy, act_idxz = np.where(mask)
 
     delta_grid  = 2.0 / grid_size
@@ -798,13 +801,20 @@ def spot_scan_int(
         z = -1.0 + iz * delta_grid
         delta = y * vrot * sinIncl
 
-        active_temp = int(active_2d_surface_temperature[iy, iz])
+        active_temp = active_2d_surface_temperature[iy, iz]
         js = utils.lut_lookup_eq(active_temp, sp_keys, sp_vals)
         intensity_spec_active_full = spec_spectrum[js]  # (n_spec, n_mu)
 
         # Closest mu to r_cos (intensity grids already encode limb-darkening)
         r_cos = np.sqrt(1.0 - (y * y + z * z))
         f_loc = utils.nearest_mu_index(mu_s, r_cos)
+
+        # --- NEW ADD, if is hot spot, only have effect when mu<0.8 ---
+        # - So we just skip when delta_T > 0 & r_cos >= 0.8
+        # delta_T = active_temp - Tphoto
+        # if (delta_T > 0) and (r_cos >= 0.8):
+        #     continue
+        # ------------------------------------------------------------
 
         intensity_quiet_use  = intensity_spec_quiet[:, f_loc]
         intensity_active_use = intensity_spec_active_full[:, f_loc]
@@ -917,13 +927,12 @@ def spot_scan(
                                                 # Therefore, if the grid's x_coord^2 >= 1-spot_size^2,
                                                 # it is inside the spot circumference.
                     
-                    if active_2d_surface_temperature[iy, iz] == Tphoto:
+                    if active_2d_surface_temperature[iy, iz] == np.float32(Tphoto):
                         # only if the gird is still at the photosphere temperature we update it
                         active_2d_surface_temperature[iy, iz] = active_temp
                     
     return active_2d_surface_temperature
 
-                
 
 def spot_scan_npsi_pal(
     inclination, Tphoto, psi, grid_size, Spec_dict, star_LD_coeff,
@@ -1010,7 +1019,13 @@ def spot_scan_npsi(
     #     )
 
     # Always parallelize
-    outs = pqdm(np.arange(npsi, dtype=int), worker, n_jobs=cpu_use, disable=silence_pbar)
+    try:
+        outs = pqdm(np.arange(npsi, dtype=int), worker, n_jobs=cpu_use, disable=silence_pbar)
+    except KeyboardInterrupt:
+        print("\n[Ctrl+C detected] Terminating worker processes and freeing memory...")
+        # Because pqdm wraps standard multiprocessing, exiting the main process 
+        # cleanly usually signals the context manager to tear down the pool.
+        sys.exit(1)
 
     # Fill arrays
     for i, (spec_stellar, spec_quiet, phi, flux_active, flux_quiet) in enumerate(outs):

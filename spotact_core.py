@@ -4,6 +4,7 @@ from functools import partial
 from datetime import timedelta
 
 import numpy as np
+from scipy.interpolate import CubicSpline
 # from numpy import cos, sin
 # from scipy import signal,interpolate
 # from scipy.signal import find_peaks
@@ -63,9 +64,9 @@ class Star:
         self.psi = psi
         self.rad_sun = rad_sun
         self.rad = rad
-        self.Temp = Temp
-        self.Tspot = Tspot
-        self.Tfaculae = Tfaculae
+        self.Temp = np.round(Temp, 4)
+        self.Tspot = np.round(Tspot, 4)
+        self.Tfaculae = np.round(Tfaculae, 4)
         self.logg = logg
         self.FeH = FeH
         self.bands2use = bands2use
@@ -115,19 +116,30 @@ class Star:
 
             # Package results
             for i in range(len(line_centers)):
-                key = f"w{int(line_centers[i] // 100)}_{int(tt)}"
+                key = f"w{int(line_centers[i] // 100)}_{np.round(tt, 4)}"
                 LD_teff_wv_coeff[key] = qc[i]
 
             # Robust FeOH aliasing (use tolerance instead of exact float compare)
-            FeOH = 15557.0 #15631.35  # Å
-            locs = np.where(np.isclose(line_centers, FeOH, atol=1e-3))[0]
-            if locs.size:
-                LD_teff_wv_coeff[f"ewr_FeOH_{int(tt)}"] = qc[locs[0]]
+            _wave_cen = 15557.0 #15631.35  # Å
+            locs = np.where(np.isclose(line_centers, _wave_cen, atol=1e-3))[0]
+            if locs.size: LD_teff_wv_coeff[f"ewr_FeOH_{np.round(tt, 4)}"] = qc[locs[0]]
+
+            _wave_cen = 15562.5
+            locs = np.where(np.isclose(line_centers, _wave_cen, atol=1e-3))[0]
+            if locs.size: LD_teff_wv_coeff[f"spec_FeOH_{np.round(tt, 4)}"] = qc[locs[0]]
+
+            _wave_cen = 23138.0
+            locs = np.where(np.isclose(line_centers, _wave_cen, atol=1e-3))[0]
+            if locs.size: LD_teff_wv_coeff[f"spec_K_CO_{np.round(tt, 4)}"] = qc[locs[0]]
+
+            _wave_cen = 22263.0
+            locs = np.where(np.isclose(line_centers, _wave_cen, atol=1e-3))[0]
+            if locs.size: LD_teff_wv_coeff[f"spec_K_Ti_{np.round(tt, 4)}"] = qc[locs[0]]
 
         self.LD_coeff = LD_teff_wv_coeff
 
     def find_fluxspec(
-            self, Vel_bin_size, plot, syn_model_path=None, savehdf=None):
+            self, Vel_bin_size, plot, savehdf=None):
         """
         Find and store flux spectra for the star, spot, and plage at different temperatures.
 
@@ -138,7 +150,7 @@ class Star:
         """
         # Build temperature list for all components (star, spot, plage)
         temp_list = np.unique(
-            np.concatenate([[self.Temp], self.Tspot, self.Tfaculae]).astype(np.int32))
+            np.concatenate([[self.Temp], self.Tspot, self.Tfaculae]))
         self.flux_spec = {}
 
         for band, (line_cen, delta_wv, rvORphoto, intORflux, model_type) in self.bands2use.items():
@@ -181,8 +193,8 @@ class Star:
                 v_arr = final_spec['v'].values.astype(np.float32, copy=False)
                 f_arr = final_spec['f'].values.astype(np.float64, copy=False)
                 spec = {
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': v_arr,
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': f_arr
+                    f'{band}_{model_type}_{intORflux}_{tt:1.4f}_v': v_arr,
+                    f'{band}_{model_type}_{intORflux}_{tt:1.4f}_f': f_arr
                     }
                 
                 self.flux_spec.update(spec)
@@ -203,10 +215,10 @@ class Star:
         # Build temperature list for all components
         if fit_temp is None:
             temp_list_all = np.unique(
-                np.concatenate([[self.Temp], self.Tspot, self.Tfaculae]).astype(np.int32))
+                np.concatenate([[self.Temp], self.Tspot, self.Tfaculae]))
         else:
             temp_list_all = np.unique(
-                np.concatenate([[self.Temp], self.Tspot, self.Tfaculae, [fit_temp]]).astype(np.int32))
+                np.concatenate([[self.Temp], self.Tspot, self.Tfaculae, [fit_temp]]))
 
         logger.info(f'\nChecking model spectra for temperatures {temp_list_all} K')
         self.dw_phx_flux(temp_list_all, alpha=0)
@@ -225,9 +237,9 @@ class Star:
             # band-specific temperature set
             if fit_temp is None:
                 # temp_list = np.array([self.Temp], dtype=np.int32) if intORflux == 'intensity' else temp_list_all
-                temp_list = np.array([self.Temp], dtype=np.int32)
+                temp_list = np.array([self.Temp], dtype=np.float64)
             else:
-                temp_list = np.array([fit_temp], dtype=np.int32)
+                temp_list = np.array([fit_temp], dtype=np.float64)
                 # if intORflux == 'intensity':
                 #     temp_list = np.unique(np.array([self.Temp, fit_temp], dtype=np.int32))
                 # else:
@@ -267,8 +279,8 @@ class Star:
                 v_arr = flatten_spec['v'].values.astype(np.float32, copy=False)
                 f_arr = flatten_spec['f'].values.astype(np.float64, copy=False)
                 spec = {
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': v_arr,
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': f_arr
+                    f'{band}_{model_type}_{intORflux}_{tt:1.4f}_v': v_arr,
+                    f'{band}_{model_type}_{intORflux}_{tt:1.4f}_f': f_arr
                     }
                 self.spec_flatten.update(spec)
 
@@ -284,7 +296,7 @@ class Star:
         """
         # Build temperature list for all components (star, spot, plage)
         temp_list = np.unique(
-                np.concatenate([[self.Temp], self.Tspot, self.Tfaculae]).astype(np.int32))
+                np.concatenate([[self.Temp], self.Tspot, self.Tfaculae]))
         self.int_spec = {}
 
         for band, (line_cen, delta_wv, rvORphoto, intORflux, model_type) in self.bands2use.items():
@@ -300,7 +312,7 @@ class Star:
                 # --- Read PHX SYN Intensity Spectra ---
                 if model_type.lower() == 'phx':
                     unflattened_spec = ssp.prep_phx_intensity_spec(
-                        tt, self.logg, self.FeH, 0, self.out_path)
+                        tt, self.logg, self.FeH, 0, self.out_path, savehdf=savehdf)
                     sim_spec_name = f'PhotoUse_phx_{tt}_{self.logg}_{self.FeH}_{band}.h5'
                     sim_spec_path = f'{self.out_path}/SimUse/{sim_spec_name}'
                     final_spec = ssp.final_intensity_spec(
@@ -310,7 +322,7 @@ class Star:
 
                 # --- Read SYNmast Intensity Spectra ---
                 elif model_type.lower() == 'synmast':
-                    prf_dir = syn_model_path[model_type]
+                    prf_dir = syn_model_path[model_type][band.split("_")[-1]]
                     unflattened_spec = ssp.prep_synmast_intensity_spec(
                         tt, self.logg, self.FeH, self.out_path, prf_dir, savehdf=savehdf)
                     sim_spec_name = f'SimUse_Synmast_{tt}_{self.logg}_{self.FeH}_{band}.h5'
@@ -332,8 +344,8 @@ class Star:
                 f_arr = df_mu.to_numpy(dtype=np.float64, copy=False)  # (n_v, n_mu)
 
                 spec = {
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_v': v_arr,
-                    f'{band}_{model_type}_{intORflux}_{tt:1.0f}_f': f_arr,
+                    f'{band}_{model_type}_{intORflux}_{tt:1.4f}_v': v_arr,
+                    f'{band}_{model_type}_{intORflux}_{tt:1.4f}_f': f_arr,
                 }
                 self.int_spec.update(spec)
             
@@ -443,21 +455,31 @@ class Spec:
         """
         # Select the correct spectrum arrays based on type
         if intORflux == 'flux':
-            self.rv = star.flux_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.0f}_v']
-            self.intensity = star.flux_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.0f}_f']
+            self.rv = star.flux_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.4f}_v']
+            self.intensity = star.flux_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.4f}_f']
         elif intORflux == 'intensity':
-            self.rv = star.int_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.0f}_v']
-            self.intensity = star.int_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.0f}_f']
+            self.rv = star.int_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.4f}_v']
+            self.intensity = star.int_spec[f'{band}_{model_type}_{intORflux}_{temperature:1.4f}_f']
             self.mu = star.int_spec[f'mu_{model_type}']
 
         self.width = np.max(self.rv)
         self.step = self.rv[1] - self.rv[0]
         self.n = len(self.rv)  # Number of points in the CCF
 
-        # Calculate n_v: number of points needed to cover rotation broadening
-        # Ensure n_v is odd for symmetry
-        n_v_est = self.n + round(((1.1 * star.vrot) / self.step) * 2)
-        if np.round(((1.1 * star.vrot) / self.step) * 2) % 2 == 0:
+        # # Calculate n_v: number of points needed to cover rotation broadening
+        # # Ensure n_v is odd for symmetry
+        # n_v_est = self.n + round(((1.1 * star.vrot) / self.step) * 2)
+        # if np.round(((1.1 * star.vrot) / self.step) * 2) % 2 == 0:
+        #     self.n_v = int(n_v_est)
+        # else:
+        #     self.n_v = int(n_v_est + 1)
+        
+        # Calculate n_v: number of points needed to cover rotation broadening + CCF shifts
+        # Enforce a minimum padding of 20 km/s to prevent CCF 'NaN' failures at large bin sizes
+        pad_vel = max(1.1 * star.vrot, 20.0) 
+        n_v_est = self.n + round((pad_vel / self.step) * 2)
+        
+        if np.round((pad_vel / self.step) * 2) % 2 == 0:
             self.n_v = int(n_v_est)
         else:
             self.n_v = int(n_v_est + 1)
@@ -534,9 +556,9 @@ def flatten_model_spec(
     """
     # --- velocity grid for this band/type ---
     if intORflux == 'flux':
-        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
     else:  # 'intensity'
-        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
 
     visible_phi = np.asarray(visible_phi)
     n_phase = flux_phi.shape[0]
@@ -615,9 +637,9 @@ def calculate_activity_signal_spec(
             final_2d_surface_flux_sum (np.ndarray): 2D array of final surface flux (with active regions).
     """
     # --- Step 1: Quiet photosphere baseline (spectrum + surface flux map) ---
-    Spec_photosphere = Spec[int(star.Temp)]
+    Spec_photosphere = Spec[np.round(star.Temp, 4)]
     if fluxORint == 'flux':
-        u1, u2 = star.LD_coeff[f"{band}_{int(star.Temp)}"]
+        u1, u2 = star.LD_coeff[f"{band}_{np.round(star.Temp, 4)}"]
         integrated_stellar_spectrum, quite_2d_surface_flux_sum = stsp.itot_flux(
             star.vrot, star.incl, u1, u2, grid_size, 
             Spec_photosphere.rv, Spec_photosphere.intensity, Spec_photosphere.v_interval, 
@@ -636,18 +658,21 @@ def calculate_activity_signal_spec(
     (active_region_longs, active_region_lats, 
      active_region_sizes, active_region_Temp) = active_region_box
 
-    # --- Step 2-1: Build temperature cube over phases (int16; sentinel=0 off-disk) ---
+    # --- Step 2-1: Build temperature cube over phases (float32; sentinel=0 off-disk) ---
     nphi = len(psi)
-    temp_quiet = int(star.Temp)
+    temp_quiet = star.Temp
 
     y = np.linspace(-1.0, 1.0, grid_size, dtype=np.float32)
     z = np.linspace(-1.0, 1.0, grid_size, dtype=np.float32)
     Y, Z = np.meshgrid(y, z, indexing="ij")
     disk_mask = (Y * Y + Z * Z) <= 1.0
 
-    single_layer = np.where(disk_mask, temp_quiet, 0).astype(np.int16)
+    single_layer = np.where(disk_mask, temp_quiet, 0).astype(np.float32)
 
-    active_2d_surface_temperature_psi = np.empty((nphi, grid_size, grid_size), dtype=np.int16)
+    # set active_2d_surface_temperature to float32 to save memory;
+    active_2d_surface_temperature_psi = np.empty(
+        (nphi, grid_size, grid_size), dtype=np.float32
+        )
     active_2d_surface_temperature_psi[...] = single_layer[None, ...]
 
     logger.info('\nCalculate Active Regions...')
@@ -662,7 +687,7 @@ def calculate_activity_signal_spec(
             active_2d_surface_temperature_psi[ipsi] = stsp.spot_scan(
                 star.incl, grid_size, active_region_sizes[rr], active_region_longs[rr], 
                 active_region_lats[rr], psi[ipsi],
-                idx_miny, idx_minz, idx_maxy, idx_maxz, int(active_region_Temp[rr]),
+                idx_miny, idx_minz, idx_maxy, idx_maxz, np.round(active_region_Temp[rr], 4),
                 active_2d_surface_temperature_psi[ipsi], temp_quiet
             )
 
@@ -712,7 +737,7 @@ def calculate_activity_signal_spec(
         np.save(f'./outputs/{save_dir}/spec/{band}_qsdup_1.npy',  spec_qs_duplicated)
         np.save(f'./outputs/{save_dir}/spec/{band}_vel_1.npy',    vel)
     
-    if band != 'photo':
+    if (band != 'photo') & (silence_pbar != True):
         # Calculate average Teff and spot coverage fraction per phase
         f_spot, f_cool, f_hot, T4_mean_phase, Teff = utils.coverage_and_teff(
             active_2d_surface_temperature_psi, y, z, star.Temp, star.LD_coeff, band,
@@ -784,7 +809,7 @@ def get_photometric(
     """
 
     # ---- grid: velocity -> wavelength (Å) ----
-    vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']  # (n_v,)
+    vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']  # (n_v,)
     line_center, delta_wave = Star.bands2use[band][0], Star.bands2use[band][1]
     wvmin = int(line_center - delta_wave)
     wvmax = int(line_center + delta_wave)
@@ -862,7 +887,7 @@ def _pick_trials(visible_phi, n_keep=6):
 
 def cal_ccf_rv(
         star_tot, Star, visible_phi, band, intORflux, model_type, rv_ccf_pars, prf_dir, 
-        cpu_use, RVandEWR_dir, Vel_bin_size, plot, silence_pbar, save_spec_flag):
+        cpu_use, RVandEWR_dir, Vel_bin_size, plot, silence_pbar, save_spec_flag, outdir):
     """
     Calculate the RV shift for each phase by cross-correlating with a template.
 
@@ -890,9 +915,9 @@ def cal_ccf_rv(
 
     # --- Obs velocity grid on which star_tot lives ---
     if intORflux == 'flux':
-        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        vel = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
     else:
-        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        vel = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
     vel = np.asarray(vel, dtype=np.float64)
     dv_obs = float(vel[1] - vel[0])
 
@@ -913,12 +938,12 @@ def cal_ccf_rv(
     if ccf_tt != 99999:
         # Use user-provided CCF template parameters
         spec_base_name = (
-            f'mc_{ccf_tt:1.0f}{ccf_logg*100:1.0f}+{ccf_FeH*100:03.0f}_'
+            f'mc_{ccf_tt:1.4f}{ccf_logg*100:1.0f}+{ccf_FeH*100:03.0f}_'
             'b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf'
         )
         spec_dir = f'{prf_dir}/{spec_base_name}'
         sim_spec_name = (
-            f'RVCCFUse_Synmast_spec_{ccf_tt:1.0f}_{ccf_logg:1.2f}_{ccf_FeH:1.2f}_'
+            f'RVCCFUse_Synmast_spec_{ccf_tt:1.4f}_{ccf_logg:1.2f}_{ccf_FeH:1.2f}_'
             f'vsini{ccf_vsini:1.02f}_res{ccf_resolution:1.0f}_wv{wvmin}_{wvmax}_flatten.p'
         )
         sim_spec_path = f'{Star.out_path}{sim_spec_name}'
@@ -932,8 +957,8 @@ def cal_ccf_rv(
         vel_temp = (wave_obs - w_center) * c_kms / w_center
     else:
         # Build PHX-based template at ccf_template_temp with broadening + flattening
-        vel_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{ccf_template_temp:1.0f}_v']
-        spec_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{ccf_template_temp:1.0f}_f']
+        vel_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{ccf_template_temp:1.4f}_v']
+        spec_temp = Star.spec_flatten[f'{band}_{model_type}_{intORflux}_{ccf_template_temp:1.4f}_f']
         vel_temp = np.asarray(vel_temp, dtype=np.float64)
         spec_temp = np.asarray(spec_temp, dtype=np.float64)
 
@@ -948,23 +973,56 @@ def cal_ccf_rv(
         vel_temp = c_kms * (wave_temp - w_center) / w_center
 
         if save_spec_flag == 1:
-            np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_Tp{Star.ccf_temp:1.0f}.npy', spec_temp)
-            np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_wave_Tp{Star.ccf_temp:1.0f}.npy', wave_temp)
+            np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_Tp{Star.ccf_temp:1.4f}.npy', spec_temp)
+            np.save(f'./outputs/{RVandEWR_dir}/ccf_template/{band}_ccf_template_wave_Tp{Star.ccf_temp:1.4f}.npy', wave_temp)
 
     # --- Determine CCF RV range and step ---
     base_step = (Vel_bin_size / 100.0) * 2.0
 
+    # --- make sure the template has a higher resolution of the "obs" ---
+    valid_temp_mask = (wave_temp >= wave_obs[0]) & (wave_temp <= wave_obs[-1])
+    n_obs = len(wave_obs)
+    n_temp_in_range = np.sum(valid_temp_mask)
+
+    oversample_factor = 5
+
+    if n_temp_in_range < oversample_factor * n_obs:
+        # print(f"Upsampling template: current ratio is {n_temp_in_range/n_obs:.2f}x. Target: {oversample_factor}x")
+        
+        # 2. Calculate the new size needed for the ENTIRE template array 
+        # to maintain the oversample_factor in the overlapping region.
+        # We upscale the whole array to ensure we don't lose the edges needed for RV shifting.
+        current_temp_size = len(wave_temp)
+        target_temp_size = int(current_temp_size * (oversample_factor * n_obs / max(1, n_temp_in_range)))
+        
+        # Create the new fine wavelength grid
+        wave_temp_fine = np.linspace(wave_temp[0], wave_temp[-1], target_temp_size)
+        
+        # 3. Apply Cubic Spline interpolation
+        cs = CubicSpline(wave_temp, spec_temp)
+        spec_temp_fine = cs(wave_temp_fine)
+        
+        # Overwrite the original arrays with the up-sampled versions
+        wave_temp = wave_temp_fine
+        spec_temp = spec_temp_fine
+
     # Helper to run mc_ccf across an index list safely
     def _run_batch(idx_array, flux_box, vmin, vmax, step, clip_px, _cpu_use, _silence_pbar):
         # partial with closed-over arrays that are not pickled each call
+
         func = partial(
             mc_ccf, wave_obs, flux_box, wave_temp, spec_temp, vmin, vmax, step, 
             clip_px, visible_phi)
         # pqdm feeds us the integer index; call mc_ccf with star_tot[i] as 2nd arg
-        return pqdm(idx_array, func, n_jobs=_cpu_use, disable=_silence_pbar)
+        try:
+            out = pqdm(idx_array, func, n_jobs=_cpu_use, disable=_silence_pbar)
+        except KeyboardInterrupt:
+            print("\n[Ctrl+C detected] Terminating worker processes and freeing memory...")
+            sys.exit(1)
+        return out
 
-    # Edge clipping in pixels (like your code)
-    # Use template dv for conversion (consistent with your original)
+    # Edge clipping in pixels 
+    # Use template dv for conversion 
     dv_tpl = float(vel_temp[1] - vel_temp[0]) if vel_temp.size > 1 else dv_obs
     # guard: dvt can be tiny; avoid divide-by-zero
     clip_obs_edges_default = int((10.0 / dv_tpl) * 5) if dv_tpl != 0.0 else 0
@@ -975,11 +1033,11 @@ def cal_ccf_rv(
         edge = 40.0
         trial_idx = np.arange(nphi, dtype=int)
         outs = _run_batch(
-            trial_idx, star_tot, -edge, edge, base_step, clip_obs_edges, min(cpu_use, nphi), silence_pbar)
+            trial_idx, star_tot, -edge, edge, base_step, clip_obs_edges_default, min(cpu_use, nphi), silence_pbar)
         
         drvs = np.arange(-edge, edge, base_step, dtype=np.float64)
         rv_coarse = get_ccf_peak(
-            np.asarray(outs, dtype=object), drvs, visible_phi[trial_idx], band)
+            np.asarray(outs, dtype=object), drvs, visible_phi[trial_idx], band, outdir)
         rv_final = rv_coarse - np.nanmin(rv_coarse)
         return rv_final.astype(np.float64, copy=False)
 
@@ -990,22 +1048,27 @@ def cal_ccf_rv(
     outs_trial = _run_batch(
         trial_idx, star_tot, -trial_edge, trial_edge, base_step, clip_obs_edges_default, 
         min(cpu_use, len(trial_idx)), silence_pbar)
-    rv_trial   = get_ccf_peak(np.asarray(outs_trial, dtype=object), drvs_trial, visible_phi[trial_idx], band)
+    rv_trial   = get_ccf_peak(
+        np.asarray(outs_trial, dtype=object), drvs_trial, visible_phi[trial_idx], band, outdir)
 
     bound = float(np.nanmax(np.abs(np.round(rv_trial, 3)))) if rv_trial.size else np.nan
     if not np.isfinite(bound) or bound <= 0.02:
         return np.full(nphi, np.nan, dtype=np.float64)
 
-    # your ladder for window/step
+    # ladder for window/step
     if bound <= 0.5:
         ccf_bound = 2.0
         ccf_step  = base_step
+        # print(f'\n   Bound = {bound:1.3f} <= 0.5 km/s → using tight window ±{ccf_bound} km/s and fine step {ccf_step:1.5f} km/s')
     elif bound <= 5.0:
         ccf_bound = 10.0
+        # ccf_bound = 5
         ccf_step  = base_step * 10.0
+        # print(f'\n   Bound = {bound:1.3f} <= 5.0 km/s → using medium window ±{ccf_bound} km/s and medium step {ccf_step:1.5f} m/s')
     else:
         ccf_bound = bound * 4.0
         ccf_step  = base_step * 100.0
+        # print(f'\n   Bound = {bound:1.3f} > 5.0 km/s → using wide window ±{ccf_bound} km/s and coarse step {ccf_step:1.3f} km/s')
 
     clip_obs_edges = int((ccf_bound / dv_tpl) * 5) if dv_tpl != 0.0 else 0
 
@@ -1014,7 +1077,9 @@ def cal_ccf_rv(
     outs_full = _run_batch(
         np.arange(nphi, dtype=int), star_tot, -ccf_bound, ccf_bound, ccf_step, 
         clip_obs_edges, min(cpu_use, nphi), silence_pbar)
-    rv_full   = get_ccf_peak(np.asarray(outs_full, dtype=object), drvs_full, visible_phi, band)
+    rv_full   = get_ccf_peak(
+        np.asarray(outs_full, dtype=object), drvs_full, visible_phi, band, outdir
+    )
     rv_full   = rv_full - np.nanmean(rv_full)
 
     return rv_full.astype(np.float64, copy=False)

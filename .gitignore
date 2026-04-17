@@ -2,6 +2,7 @@
 outputs/
 syn_spec*/
 NS_fit_results/
+model_intro/
 __pycache__/
 
 

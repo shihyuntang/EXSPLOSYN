@@ -238,11 +238,11 @@ def spot_view_pel(
     c_kms = 299792.458
     w_center = Star.bands2use[band][0]  # [15631.35, 30, ['rv', 'photo']]
     if intORflux == 'intensity':
-        _v = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        _v = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
         _wave =( _v * w_center / c_kms) + w_center
         ax2.plot(_wave, SPECstar_tot[j], '-k', lw=1)
     elif intORflux == 'flux':
-        _v = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        _v = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
         _wave =( _v * w_center / c_kms) + w_center
         ax2.plot(_wave, SPECstar_tot[j], '-k', lw=1)
 
@@ -250,19 +250,19 @@ def spot_view_pel(
     ax2.set_xlim(_wave[0], _wave[-1])
     # if intORflux == 'intensity':
     #     ax2.set_xlim(
-    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][0], 
-    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][-1]
+    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v'][0], 
+    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v'][-1]
     #         )
     # elif intORflux == 'flux':
     #     ax2.set_xlim(
-    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][0], 
-    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][-1]
+    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v'][0], 
+    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v'][-1]
     #         )
     # ax2.set_xlabel(r'Velocity [km s$^{-1}$]',  size='small')
     ax2.set_xlabel(r'Wavelength [$\AA$]',  size='small')
     ax2.set_ylabel(f'Normalized Flux',  size='small')
     
-    if 'OH' in band:
+    if 'ewr' in band:
 
         ax3.plot(visible_phi[:j], ohfe_ratio[:j], '-o', c='tab:grey', ms=2, mew=2)
         ax3.plot(visible_phi[j], ohfe_ratio[j], 'o', c='k', ms=2, mew=2)
@@ -354,33 +354,36 @@ def spot_view(
     else:
         print('\n"magick or convert" function not found, skip making .gif\n')
 
-def plot_cc(drvs, cc, new_rv, phase, band, properties):
-    drvs_temp = drvs[cc == np.max(cc)]
+def plot_cc(drvs, cc, new_rv, phase, band, properties, outdir):
+    # drvs_temp = drvs[cc == np.max(cc)]
 
     fig, ax = plt.subplots(1, 1, figsize=(4, 3))
 
     ax.plot(drvs, cc, 'k-', lw=.7)
 
-    ax.axvline(
-        np.mean(drvs_temp), ls='-', lw=1, alpha=0.5, c='tab:blue'
+    # ax.axvline(
+        # np.mean(drvs_temp), ls='-', lw=1, alpha=0.5, c='tab:blue'
+        # )
+    if new_rv is not None:
+        ax.axvline(
+            new_rv, ls='--', lw=1, alpha=0.5, c='tab:red'
         )
-    ax.axvline(
-        new_rv, ls='--', lw=1, alpha=0.5, c='tab:red'
-        )
-    
-    ax.text(0.05, 0.4, f'RV: {new_rv:1.4f} km/s', transform=ax.transAxes, size='x-small')
-    ax.text(0.05, 0.3, f'Prominences: {properties["prominences"]}', transform=ax.transAxes, size='x-small')
-    ax.text(0.05, 0.2, f'left_bases: {properties["left_bases"]}', transform=ax.transAxes, size='x-small')
-    ax.text(0.05, 0.1, f'right_bases: {properties["right_bases"]}', transform=ax.transAxes, size='x-small')
+
+        ax.text(0.05, 0.95, f'RV: {new_rv:1.4f} km/s', transform=ax.transAxes, size='x-small')
+    ax.text(0.05, 0.85, f'Prominences: {properties["prominences"]}', transform=ax.transAxes, size='x-small')
+    ax.text(0.05, 0.75, f'left_bases: {properties["left_bases"]}', transform=ax.transAxes, size='x-small')
+    ax.text(0.05, 0.65, f'right_bases: {properties["right_bases"]}', transform=ax.transAxes, size='x-small')
 
     ax.set_xlabel(r'Velocity [km/s]',  size='small')
     ax.set_ylabel('CCF',  size='small')
     ax.tick_params(
         axis='both', which='both', labelsize='small', right=True, 
         top=True, direction='in', width=.7)
-    
+
+    out_dir_pre = f'./outputs/{outdir.split("/")[2]}'
+    os.makedirs(f'{out_dir_pre}/CCF', exist_ok=True)
     fig.savefig(
-        f'./outputs/CCF/{band}_phase_{phase:1.3f}.png', format='png', 
+        f'{out_dir_pre}/CCF/{band}_phase_{phase:1.3f}.png', format='png', 
         bbox_inches='tight'
         )
     plt.close(fig)
