@@ -16,10 +16,12 @@ from matplotlib.ticker import AutoMinorLocator
 from pqdm.processes import pqdm
 # from pqdm.threads import pqdm
 
-
 from ldtk import LDPSetCreator, BoxcarFilter
 from ldtk.ldtk import LDPSet
-from pyphot import svo, unit
+from pyphot import svo, Filter
+from pyphot import config
+unit = config.units
+
 
 from basic_spec import rotint
 from macbro_dynamic import macbro_dyn
@@ -795,7 +797,7 @@ def get_photometric(
     visible_phi: np.ndarray,
     band: str,
     intORflux: str,
-    model_type: str
+    model_type: str,
 ):
     """
     Compute relative magnitudes and normalized fluxes per filter.
@@ -816,12 +818,47 @@ def get_photometric(
 
     c_kms = 299_792.458
     w_center = (wvmin + wvmax) * 0.5  # Å (float64)
-    wave = (vel * w_center / c_kms + w_center) * unit['AA']  # Quantity (n_v,)
+    wave = (vel * w_center / c_kms + w_center) * unit.U('AA')  # Quantity (n_v,)
 
-    # ---- preload filters once ----
-    # Optional tiny cache on the Star object so repeated calls are cheap
+    # # ---- preload filters once ----
+    # # Optional tiny cache on the Star object so repeated calls are cheap
+    # if getattr(Star, "_pyphot_filters", None) is None:
+    #     Star._pyphot_filters = {f: svo.get_pyphot_filter(f) for f in Star.filters}
+    # filters_resolved = [Star._pyphot_filters[f] for f in Star.filters]
+    
+    # ---- preload filters purely from cache ----
     if getattr(Star, "_pyphot_filters", None) is None:
-        Star._pyphot_filters = {f: svo.get_pyphot_filter(f) for f in Star.filters}
+        Star._pyphot_filters = {}
+        cache_dir = './bandpass_cash'
+
+        for f in Star.filters:
+            safe_fname = f.replace('/', '_') + '.csv'
+            cache_path = os.path.join(cache_dir, safe_fname)
+
+            if not os.path.exists(cache_path):
+                raise FileNotFoundError(
+                    f"Cached filter profile {cache_path} not found. "
+                    f"Ensure the initialization block downloaded it successfully."
+                )
+
+            # Load strictly from local cache
+            # logger.info(f"Loading filter {f} from local cache: {cache_path}") # Optional: comment out to reduce log spam
+            
+            with open(cache_path, 'r') as ff:
+                first_line = ff.readline()
+                # Extract dtype from something like "# dtype:photon"
+                date_type = first_line.strip().split(':')[1]
+                
+            # 2. Read the numeric array (np.loadtxt automatically skips lines starting with '#')
+            data = np.loadtxt(cache_path, delimiter=',')
+                    
+            cached_wave = data[:, 0] * unit.U('AA')
+            cached_transmit = data[:, 1]
+
+            Star._pyphot_filters[f] = Filter(
+                cached_wave, cached_transmit, name=f, dtype=date_type
+            )
+
     filters_resolved = [Star._pyphot_filters[f] for f in Star.filters]
 
     # ---- pre-allocate outputs ----
@@ -831,7 +868,7 @@ def get_photometric(
     lightcurve_flux_box = np.empty((n_filts, n_phases), dtype=np.float64)
 
     # ---- constant for units ----
-    erg_s_cm2_AA = unit['erg/s/cm**2/AA']
+    erg_s_cm2_AA = unit.U('erg/s/cm**2/AA')
 
     # ---- per filter, loop phases ----
     for i, (filt_name, filt_obj) in enumerate(zip(Star.filters, filters_resolved)):

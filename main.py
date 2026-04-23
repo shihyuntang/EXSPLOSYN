@@ -35,7 +35,8 @@ import visualization as vis
 # CONFIG_FILE = 'config_Chenming_HD113816.cfg'
 # SAVE_DIR = f'RVandEWR_SizeDelT_width100'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mimicking_ZDI.cfg'
-CONFIG_FILE = 'config_LkCa4_multi_SPOTS_chi2_fitting_ZDI_Tinit.cfg'
+CONFIG_FILE = 'config_LkCa4_multi_SPOTS_chi2_fitting_ZDI_Tinit_SBPLX.cfg'
+# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_chi2_fitting_ZDI_Tinit_BOBYQA.cfg'
 # CONFIG_FILE = 'config_max_size.cfg'
 
 # SimSpecWinSize = 100 # in AA
@@ -97,6 +98,14 @@ def init_setup_cfg(
     save_folder_name = cfg.get('output', 'save_folder_name', fallback='').strip()
     SAVE_DIR = f"{save_folder_name}_{post_fix}_{hostname}" if post_fix else f"{save_folder_name}_{hostname}"
 
+    # ==========================================================
+    # HPC RESTART FIX: Swap dynamic SLURM node name for "nots"
+    # Example: "MyDir_15spots_bb3u16c1" -> "MyDir_15spots_nots"
+    # ==========================================================
+    # if hostname is not "Swing" it "taurus", replace the last part of SAVE_DIR with "nots"
+    if hostname not in ["Swing", "taurus"]:
+        SAVE_DIR = SAVE_DIR.rsplit('_', 1)[0] + "_nots"
+
     # --- Spectroscopic parameters ---
     wv_start = cfg.getint('spectroscopic', 'wavelength_start')
     wv_end   = cfg.getint('spectroscopic', 'wavelength_end')
@@ -122,24 +131,98 @@ def init_setup_cfg(
     # bands['spec_K_CO'] = [23138.0, 81.0, 'rv', 'intensity', 'synmast']
     # bands['spec_K_Ti'] = [22263.0, 52.0, 'rv', 'intensity', 'synmast']
 
+    # if has_filters:
+    #     logger.info(f'\nDetect filters. Will generate photometry for {filters}.')
+    #     try:
+    #         from pyphot import svo  # import here so unit tests without pyphot still pass init for spec-only runs
+    #         profiles = [svo.get_pyphot_filter(filt) for filt in filters]
+    #         # nm -> Å
+    #         fwv = np.concatenate([p.wavelength for p in profiles]).astype(np.float32) * 10.0
+    #         wmin, wmax = float(np.min(fwv)), float(np.max(fwv))
+    #         if wmin < 500 or wmax > 50000:
+    #             logger.warning(f'Filter wavelength range {wmin:.1f}–{wmax:.1f} Å is outside 500–50000 Å.')
+    #         photo_center = int((wmax + wmin) * 0.5)
+    #         photo_width  = int((wmax - wmin) * 0.5)
+    #         bands['photo'] = [float(photo_center), float(photo_width), 'photo', 'intensity', 'phx']
+    #     except Exception as e:
+    #         logger.warning(f'Photometry filters could not be loaded ({e}). Photometry will be skipped.')
+    #         has_filters = False
+    # else:
+    #     logger.info('No filters specified. Will not generate photometry.')
     if has_filters:
         logger.info(f'\nDetect filters. Will generate photometry for {filters}.')
         try:
-            from pyphot import svo  # import here so unit tests without pyphot still pass init for spec-only runs
-            profiles = [svo.get_pyphot_filter(filt) for filt in filters]
-            # nm -> Å
-            fwv = np.concatenate([p.wavelength for p in profiles]).astype(np.float32) * 10.0
+            from pyphot import svo, Filter
+            from pyphot import config
+            unit = config.units
+
+            cache_dir = './bandpass_cash'
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            profiles_fwv = []
+            
+            for filt in filters:
+                safe_fname = filt.replace('/', '_') + '.csv'
+                cache_path = os.path.join(cache_dir, safe_fname)
+                
+                if os.path.exists(cache_path):
+                    # 1. Read the top line manually to extract the dtype
+                    with open(cache_path, 'r') as f:
+                        first_line = f.readline()
+                        # Extract dtype from something like "# dtype:photon"
+                        date_type = first_line.strip().split(':')[1]
+                        
+                    # 2. Read the numeric array (np.loadtxt automatically skips lines starting with '#')
+                    data = np.loadtxt(cache_path, delimiter=',')
+                    fwv_angstrom = data[:, 0]
+                    # transmit = data[:, 1]  # if you need the transmission array here as well
+                    
+                else:
+                    # Download, save to cache, and extract wavelength
+                    logger.info(f"Downloading filter {filt} from SVO to cache...")
+                    filt_obj = svo.get_pyphot_filter(filt)
+                    
+                    # Force conversion to Angstroms immediately
+                    fwv_angstrom = filt_obj.wavelength.to('AA').value
+                    date_type = filt_obj.dtype  # 'energy' or 'photon'
+                    
+                    save_data = np.column_stack((
+                        fwv_angstrom, 
+                        filt_obj.transmit
+                    ))
+                    
+                    # Embed the dtype into a multi-line header
+                    header_text = f"dtype:{date_type}\nwavelength_AA,transmission"
+                    
+                    np.savetxt(
+                        cache_path, 
+                        save_data, 
+                        delimiter=',', 
+                        header=header_text
+                        # The default is comments='# ', so the file header will look like:
+                        # # dtype:photon
+                        # # wavelength_AA,transmission
+                    )
+                
+                profiles_fwv.append(fwv_angstrom)
+
+            # Concatenate all wavelengths. No * 10.0 needed since they are already in Angstroms.
+            fwv = np.concatenate(profiles_fwv).astype(np.float32)
             wmin, wmax = float(np.min(fwv)), float(np.max(fwv))
+            
             if wmin < 500 or wmax > 50000:
                 logger.warning(f'Filter wavelength range {wmin:.1f}–{wmax:.1f} Å is outside 500–50000 Å.')
+            
             photo_center = int((wmax + wmin) * 0.5)
             photo_width  = int((wmax - wmin) * 0.5)
             bands['photo'] = [float(photo_center), float(photo_width), 'photo', 'intensity', 'phx']
+            
         except Exception as e:
             logger.warning(f'Photometry filters could not be loaded ({e}). Photometry will be skipped.')
             has_filters = False
     else:
         logger.info('No filters specified. Will not generate photometry.')
+
 
     # --- Paths ---
     if hostname == 'Swing':
@@ -581,12 +664,13 @@ def main_model(
     cool_mask = (active_region_Temp - STAR.Temp) < 0
     hot_mask  = (active_region_Temp - STAR.Temp) > 0
 
-    cool_sort = np.argsort(STAR.Tspot)            # cool temps low->high
-    hot_sort  = np.argsort(STAR.Tfaculae)[::-1]   # hot temps high->low
+    cool_sort = np.argsort(STAR.Tspot)            # cool temps low->high, 2300, 2400, 2500, ...
+    hot_sort  = np.argsort(STAR.Tfaculae)[::-1]   # hot temps high->low, 4100, 4000, 3900, ...
 
     cool_idx = np.flatnonzero(cool_mask)[cool_sort]
     hot_idx  = np.flatnonzero(hot_mask)[hot_sort]
     seq_idx  = np.concatenate([cool_idx, hot_idx]) if (cool_idx.size + hot_idx.size) else np.arange(n_regions)
+    # e.g., 2300, 2400, 2500, ..., 4100, 4000, 3900, ... for a star with both cool and hot regions.
 
     # Reorder + compact dtypes
     active_region_longs = np.asarray(active_region_longs, dtype=np.float32)[seq_idx]
@@ -643,7 +727,7 @@ def main_model(
         if band == 'photo':
             # Photometry only
             lightcurves_mag, lightcurves_flux = spotact_core.get_photometric(
-                integrated_stellar_spectrum, STAR, visible_phi, band, intORflux, model_type
+                integrated_stellar_spectrum, STAR, visible_phi, band, intORflux, model_type, 
             )
             ccf_rv_shift = np.full_like(visible_phi, np.nan, dtype=np.float32)
             ohfe_ratio   = np.full_like(visible_phi, np.nan, dtype=np.float32)
