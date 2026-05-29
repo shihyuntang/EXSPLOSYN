@@ -31,13 +31,15 @@ import visualization as vis
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_donati_oeg_21spots.cfg'
 # CONFIG_FILE = 'config_LkCa4_one_SPOT_demo.cfg'
 # CONFIG_FILE = 'config_2TemplateFit_test_1.cfg'
+# CONFIG_FILE = 'config_2TemplateFit_test_exsplosyn-1.cfg'
 # CONFIG_FILE = 'config_LimbDarkeningMu_test.cfg'
 # CONFIG_FILE = 'config_Chenming_HD113816.cfg'
 # SAVE_DIR = f'RVandEWR_SizeDelT_width100'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mimicking_ZDI.cfg'
-CONFIG_FILE = 'config_LkCa4_multi_SPOTS_chi2_fitting_ZDI_Tinit_SBPLX.cfg'
+# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_chi2_fitting_ZDI_Tinit_SBPLX.cfg'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_chi2_fitting_ZDI_Tinit_BOBYQA.cfg'
 # CONFIG_FILE = 'config_max_size.cfg'
+CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mcmc_fitting_ZDI_Tinit-5spots.cfg'
 
 # SimSpecWinSize = 100 # in AA
 SOLAR_RADIUS = 695700 # km

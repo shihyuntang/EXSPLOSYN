@@ -1098,7 +1098,7 @@ def cal_ccf_rv(
         ccf_step  = base_step
         # print(f'\n   Bound = {bound:1.3f} <= 0.5 km/s → using tight window ±{ccf_bound} km/s and fine step {ccf_step:1.5f} km/s')
     elif bound <= 5.0:
-        ccf_bound = 10.0
+        ccf_bound = 15.0
         # ccf_bound = 5
         ccf_step  = base_step * 10.0
         # print(f'\n   Bound = {bound:1.3f} <= 5.0 km/s → using medium window ±{ccf_bound} km/s and medium step {ccf_step:1.5f} m/s')
