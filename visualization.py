@@ -216,8 +216,33 @@ def spot_view_pel(
 
     radius = grid//2
 
-    st_spot_surface = quite_surface_2d[j]/np.max(quite_surface_2d)
-    st_spot_surface[st_spot_surface == 0.0] = np.nan
+    # st_spot_surface = quite_surface_2d[j]/np.max(quite_surface_2d)
+    # st_spot_surface[st_spot_surface == 0.0] = np.nan
+    
+    # --- true geometry masking ---
+    surface_flux = np.asarray(quite_surface_2d[j], dtype=np.float64,)
+    surface_max = np.nanmax(surface_flux)
+
+    if not np.isfinite(surface_max) or surface_max <= 0.0:
+        raise ValueError(
+            f"Invalid surface-flux maximum at phase index {j}: "
+            f"{surface_max}"
+        )
+
+    st_spot_surface = surface_flux / surface_max
+
+    # Remove tiny negative values from floating-point subtraction,
+    # while preserving genuine zero-flux black pixels.
+    st_spot_surface = np.clip(st_spot_surface, 0.0, 1.0,)
+
+    # Mask only pixels geometrically outside the stellar disk.
+    coord = -1.0 + (np.arange(grid, dtype=np.float64) * (2.0 / grid))
+
+    Y, Z = np.meshgrid(coord, coord, indexing="ij",)
+    off_disk = (Y * Y + Z * Z) >= 1.0
+    st_spot_surface[off_disk] = np.nan
+     # -------------------------------
+     
     ax1.imshow(
         st_spot_surface, extent=[-radius, radius, -radius, radius], 
         cmap='Oranges_r', vmin=0, vmax=1, origin='lower')

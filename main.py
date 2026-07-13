@@ -35,11 +35,12 @@ import visualization as vis
 # CONFIG_FILE = 'config_LimbDarkeningMu_test.cfg'
 # CONFIG_FILE = 'config_Chenming_HD113816.cfg'
 # SAVE_DIR = f'RVandEWR_SizeDelT_width100'
-# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mimicking_ZDI.cfg'
+CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mimicking_ZDI.cfg'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_chi2_fitting_ZDI_Tinit_SBPLX.cfg'
 # CONFIG_FILE = 'config_LkCa4_multi_SPOTS_chi2_fitting_ZDI_Tinit_BOBYQA.cfg'
-# CONFIG_FILE = 'config_max_size.cfg'
-CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mcmc_fitting_ZDI_Tinit-5spots.cfg'
+# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mcmc_fitting_ZDI_Tinit-3.cfg'
+# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mcmc_fitting_ZDI_Tinit-4spots.cfg'
+# CONFIG_FILE = 'config_LkCa4_multi_SPOTS_mcmc_fitting_ZDI_Tinit-4spots-dk.cfg'
 
 # SimSpecWinSize = 100 # in AA
 SOLAR_RADIUS = 695700 # km
@@ -105,7 +106,7 @@ def init_setup_cfg(
     # Example: "MyDir_15spots_bb3u16c1" -> "MyDir_15spots_nots"
     # ==========================================================
     # if hostname is not "Swing" it "taurus", replace the last part of SAVE_DIR with "nots"
-    if hostname not in ["Swing", "taurus"]:
+    if hostname not in ["Swing", "taurus", "Mac"]:
         SAVE_DIR = SAVE_DIR.rsplit('_', 1)[0] + "_nots"
 
     # --- Spectroscopic parameters ---
@@ -132,6 +133,9 @@ def init_setup_cfg(
     # bands['spec_FeOH'] = [15562.5, 108, 'rv', 'intensity', 'synmast']
     # bands['spec_K_CO'] = [23138.0, 81.0, 'rv', 'intensity', 'synmast']
     # bands['spec_K_Ti'] = [22263.0, 52.0, 'rv', 'intensity', 'synmast']
+    # bands['spec_K_CO'] = [23138.0, 81.0, 'rv', 'intensity', 'synmast']
+    # bands['spec_K_Ti'] = [22250, 50.0, 'rv', 'intensity', 'synmast']
+    # bands['lsd_like'] = [17500.0, 5.0, 'rv', 'flux', 'gaussian_lsd']
 
     # if has_filters:
     #     logger.info(f'\nDetect filters. Will generate photometry for {filters}.')
@@ -227,7 +231,7 @@ def init_setup_cfg(
 
 
     # --- Paths ---
-    if hostname == 'Swing':
+    if (hostname == 'Swing') or (hostname == 'Mac'):
         path_sub = 1
     elif hostname == 'taurus':
         path_sub = 2
@@ -326,37 +330,55 @@ def init_setup_cfg(
         # 3800: {'a': 396, 'b': 272, 'c': 139, 'd': 153, 'e': 318, 'f': 509},
         # 3700: {'a': 377, 'b': 263, 'c': 136, 'd': 142, 'e': 297, 'f': 469},
     }
+    zdi_log_brightness = {
+        'a': -0.15,
+        'b': -0.10,
+        'c': -0.05,
+        'd': +0.05,
+        'e': +0.10,
+        'f': +0.15,
+        }
+
     # Cool regions
     cool_longs = parse_region('cool_active_regions', 'longitudes', np.float32)
     cool_lats  = parse_region('cool_active_regions', 'latitudes',  np.float32)
     cool_sizes = parse_region('cool_active_regions', 'sizes',      np.float32)
-    cool_dT    = parse_region('cool_active_regions', 'Tcool_spots', np.float64)
-
-    if (cool_dT.size == 1) and (cool_sizes.size > 1):
-        cool_dT = np.full_like(cool_sizes, cool_dT[0], dtype=np.float64)
+    # cool_dT    = parse_region('cool_active_regions', 'Tcool_spots', np.float64)
+    # BLACK_SPOT_SENTINEL = 9999.99
+    # black_cool = np.isclose(cool_dT, BLACK_SPOT_SENTINEL, atol=0.01,)
     
-    # cool_dT    = parse_region('cool_active_regions', 'Tcool_spots', str)
-    # cool_dT    = np.array([cool_hot_dict.get(int(Temp), {}).get(t, 0) for t in cool_dT], dtype=np.float64)
-
+    # if (cool_dT.size == 1) and (cool_sizes.size > 1):
+    #     cool_dT = np.full_like(cool_sizes, cool_dT[0], dtype=np.float64)
+    
+    cool_levels = parse_region('cool_active_regions', 'Tcool_spots', str)
+    cool_dT    = np.array([cool_hot_dict.get(int(Temp), {}).get(t, 0) for t in cool_levels], dtype=np.float64)
+    BLACK_SPOT_SENTINEL = 9999.99
+    black_cool = np.isclose(cool_dT, BLACK_SPOT_SENTINEL, atol=0.01,)
+    
     if cool_dT.size:
         idx = np.argsort(cool_dT)[::-1]  # largest |ΔT| first
+        # cool_longs, cool_lats, cool_sizes, cool_dT, cool_levels = cool_longs[idx], cool_lats[idx], cool_sizes[idx], cool_dT[idx], cool_levels[idx]
         cool_longs, cool_lats, cool_sizes, cool_dT = cool_longs[idx], cool_lats[idx], cool_sizes[idx], cool_dT[idx]
-    cool_T = Temp - cool_dT
-
+        black_cool = black_cool[idx]
+    # cool_T = Temp - cool_dT
+    cool_T = np.where(black_cool, BLACK_SPOT_SENTINEL, Temp - cool_dT,)
+    physical_cool_T = cool_T[~black_cool]
+    
     # Hot regions
     hot_longs = parse_region('hot_active_regions', 'longitudes', np.float32)
     hot_lats  = parse_region('hot_active_regions', 'latitudes',  np.float32)
     hot_sizes = parse_region('hot_active_regions', 'sizes',      np.float32)
-    hot_dT    = parse_region('hot_active_regions', 'Thot_faculae', np.float64)
+    # hot_dT    = parse_region('hot_active_regions', 'Thot_faculae', np.float64)
     
-    if (hot_dT.size == 1) and (hot_sizes.size > 1):
-        hot_dT = np.full_like(hot_sizes, hot_dT[0], dtype=np.float64)
+    # if (hot_dT.size == 1) and (hot_sizes.size > 1):
+    #     hot_dT = np.full_like(hot_sizes, hot_dT[0], dtype=np.float64)
 
-    # hot_dT    = parse_region('hot_active_regions', 'Thot_faculae', str)
-    # hot_dT    = np.array([cool_hot_dict.get(int(Temp), {}).get(t, 0) for t in hot_dT], dtype=np.float64)
+    hot_levels = parse_region('hot_active_regions', 'Thot_faculae', str)
+    hot_dT    = np.array([cool_hot_dict.get(int(Temp), {}).get(t, 0) for t in hot_levels], dtype=np.float64)
 
     if hot_dT.size:
         idx = np.argsort(hot_dT)[::-1]
+        # hot_longs, hot_lats, hot_sizes, hot_dT, hot_levels = hot_longs[idx], hot_lats[idx], hot_sizes[idx], hot_dT[idx], hot_levels[idx]
         hot_longs, hot_lats, hot_sizes, hot_dT = hot_longs[idx], hot_lats[idx], hot_sizes[idx], hot_dT[idx]
     hot_T = Temp + hot_dT
 
@@ -389,7 +411,7 @@ def init_setup_cfg(
         rad_sun=SOLAR_RADIUS,
         rad=stellar_radius,
         Temp=Temp,
-        Tspot=cool_T,
+        Tspot=physical_cool_T,
         Tfaculae=hot_T,
         logg=logg,
         FeH=FeH,
@@ -399,6 +421,66 @@ def init_setup_cfg(
     if 'photo' in bands:
         STAR.filters = filters
     STAR.inst_res = instrument_res
+
+    STAR.black_spot_sentinel = BLACK_SPOT_SENTINEL
+    STAR.has_black_spots = bool(np.any(black_cool))
+
+    # -------------------------------------------------------------
+    # --- Brightness calculations ---
+    # cool_log_brightness = np.array(
+    #     [zdi_log_brightness[level] for level in cool_levels],
+    #     dtype=np.float64,
+    # )
+
+    # hot_log_brightness = np.array(
+    #     [zdi_log_brightness[level] for level in hot_levels],
+    #     dtype=np.float64,
+    # )
+
+    # cool_brightness = 10**cool_log_brightness
+    # hot_brightness = 10**hot_log_brightness
+
+    # STAR.cool_levels = cool_levels
+    # STAR.hot_levels = hot_levels
+
+    # STAR.cool_log_brightness = cool_log_brightness
+    # STAR.hot_log_brightness = hot_log_brightness
+
+    # STAR.cool_brightness = cool_brightness
+    # STAR.hot_brightness = hot_brightness
+
+    # STAR.photosphere_log_brightness = 0.0
+    # STAR.photosphere_brightness = 1.0
+    # # ---
+
+    # STAR.log_brightness_by_temperature = {
+    #     float(np.round(STAR.Temp, 4)): 0.0
+    # }
+
+    # for temperature, log_brightness in zip(
+    #     cool_T,
+    #     cool_log_brightness,
+    # ):
+    #     STAR.log_brightness_by_temperature[
+    #         float(np.round(temperature, 4))
+    #     ] = float(log_brightness)
+
+    # for temperature, log_brightness in zip(
+    #     hot_T,
+    #     hot_log_brightness,
+    # ):
+    #     STAR.log_brightness_by_temperature[
+    #         float(np.round(temperature, 4))
+    #     ] = float(log_brightness)
+
+    # STAR.brightness_by_temperature = {
+    #     temperature: float(10**(log_brightness))
+    #     for temperature, log_brightness
+    #     in STAR.log_brightness_by_temperature.items()
+    # }
+
+    # print(STAR.log_brightness_by_temperature, STAR.brightness_by_temperature)
+    # -------------------------------------------------------------
 
     # --- Output directories ---
     out_base = Path("outputs") / SAVE_DIR
@@ -422,15 +504,31 @@ def init_setup_cfg(
     phase_step = cfg.getfloat('output', 'ph_step')
     phase_in   = cfg.get('output', 'ph_in', fallback='').strip()
 
-    if phase_in and phase_in.lower() != 'none':
+    calculate_bolometric_L = cfg.getboolean('output', 'calculate_bolometric_L', fallback=False)
+    STAR.calculate_bolometric_L = calculate_bolometric_L
+
+    if calculate_bolometric_L:
+        logger.info("Bolometric luminosity calculation active: Overriding phase step to 0.02.")
+        PSI = np.arange(0, 1.0, 0.02, dtype=np.float32)
+    elif phase_in and phase_in.lower() != 'none':
         with open(phase_in, 'r') as f:
             PSI = np.fromiter((float(line.split()[0]) for line in f), dtype=np.float32)
     elif phase_step > 0:
-        # PSI = np.arange(-0.75, 0.751, phase_step, dtype=np.float32)
-        PSI = np.arange(-0.5, 0.5, phase_step, dtype=np.float32)
+        PSI = np.arange(-0.75, 0.751, phase_step, dtype=np.float32)
     else:
         logger.warning("Put a positive phase step ('ph_step') or provide a phase file ('ph_in').")
         PSI = np.array([], dtype=np.float32)
+
+    # if phase_in and phase_in.lower() != 'none':
+    #     with open(phase_in, 'r') as f:
+    #         PSI = np.fromiter((float(line.split()[0]) for line in f), dtype=np.float32)
+    # elif phase_step > 0:
+    #     # PSI = np.arange(0, 1.0, phase_step, dtype=np.float32)
+    #     PSI = np.arange(-0.75, 0.751, phase_step, dtype=np.float32)
+    #     # PSI = np.arange(-0.5, 0.5, phase_step, dtype=np.float32)
+    # else:
+    #     logger.warning("Put a positive phase step ('ph_step') or provide a phase file ('ph_in').")
+    #     PSI = np.array([], dtype=np.float32)
 
     # --- PHOENIX paths ---
     phx_root = Path(phx_path).expanduser() / 'PHOENIX-ACES-AGSS-COND-2011'
@@ -496,13 +594,95 @@ def setup_activate_spectra(
     if 'flux' in intensity_modes:
         STAR.find_fluxspec(
             sim_spec_vel_bin_size, plot_flag, savehdf=savehdf)
+    
+    if any(params[4].lower() == "gaussian_lsd" for params in bands.values()):
+        STAR.build_gaussian_lsd_profiles(
+            band="lsd_like",
+            velocity_min=-80.0,
+            velocity_max=80.0,
+            velocity_step=sim_spec_vel_bin_size,
+            doppler_width=3.4,
+            line_depth=0.5,
+        )
+
     if 'intensity' in intensity_modes or 'photo' in intensity_modes:
         STAR.find_intensityspec(
             sim_spec_vel_bin_size, plot_flag, syn_model_path, savehdf=savehdf)
 
+    # Add an artificial zero-flux spectrum for black surface regions.
+    if getattr(STAR, "has_black_spots", False):
+        black_temp = float(STAR.black_spot_sentinel)
+        phot_temp = float(np.round(STAR.Temp, 4))
+
+        for band_name, params in bands.items():
+            _, _, _, int_or_flux, model_type = params
+
+            phot_prefix = (
+                f"{band_name}_{model_type}_{int_or_flux}_"
+                f"{phot_temp:1.4f}"
+            )
+
+            black_prefix = (
+                f"{band_name}_{model_type}_{int_or_flux}_"
+                f"{black_temp:1.4f}"
+            )
+
+            if int_or_flux == "flux":
+                phot_v = STAR.flux_spec[f"{phot_prefix}_v"]
+                phot_f = STAR.flux_spec[f"{phot_prefix}_f"]
+
+                STAR.flux_spec[f"{black_prefix}_v"] = (
+                    np.asarray(phot_v).copy()
+                )
+                STAR.flux_spec[f"{black_prefix}_f"] = (
+                    np.zeros_like(phot_f, dtype=np.float64)
+                )
+
+            elif int_or_flux in ("intensity", "photo"):
+                phot_v = STAR.int_spec[f"{phot_prefix}_v"]
+                phot_f = STAR.int_spec[f"{phot_prefix}_f"]
+
+                STAR.int_spec[f"{black_prefix}_v"] = (
+                    np.asarray(phot_v).copy()
+                )
+                STAR.int_spec[f"{black_prefix}_f"] = (
+                    np.zeros_like(phot_f, dtype=np.float64)
+                )
+
+            else:
+                raise ValueError(
+                    f"Unsupported spectrum type for black spot: "
+                    f"{int_or_flux!r}"
+                )
+
+            # Flux integration explicitly looks up quadratic LD coefficients.
+            # Intensity spectra already encode their center-to-limb behavior.
+            if int_or_flux == "flux":
+                phot_ld_key = f"{band_name}_{phot_temp}"
+                black_ld_key = f"{band_name}_{black_temp}"
+
+                if phot_ld_key not in STAR.LD_coeff:
+                    raise KeyError(
+                        f"Cannot create black-spot LD entry because "
+                        f"{phot_ld_key!r} is missing."
+                    )
+
+                STAR.LD_coeff[black_ld_key] = np.asarray(
+                    STAR.LD_coeff[phot_ld_key]
+                ).copy()
+
+    spec_temp_list = temp_list
+
+    if getattr(STAR, "has_black_spots", False):
+        spec_temp_list = np.unique(
+            np.concatenate([
+                temp_list,
+                [STAR.black_spot_sentinel],
+            ])
+        )
     # Build per-band Spec dictionaries (temp -> Spec)
     # Keep the same order as bands.keys(), so SPEC_box[i] matches enumerate(bands.keys()) in main_model
-    SPEC_box = []
+    SPEC_box = [] 
     for band_name in bands.keys():
         center, width, mode, int_or_flux, model_type = bands[band_name]
         spec_dict = {
@@ -513,8 +693,8 @@ def setup_activate_spectra(
                 intORflux=int_or_flux,
                 model_type=model_type,
             )
-            for t in temp_list
-        }
+            for t in spec_temp_list
+        } 
         SPEC_box.append(spec_dict)
 
     return SPEC_box
@@ -663,15 +843,78 @@ def main_model(
     n_regions = len(active_region_longs)
     active_region_org_idx = np.arange(n_regions)
 
-    cool_mask = (active_region_Temp - STAR.Temp) < 0
-    hot_mask  = (active_region_Temp - STAR.Temp) > 0
+    # >>>>> ---- <<<<<
+    black_temp = getattr(
+        STAR,
+        "black_spot_sentinel",
+        None,
+    )
 
-    cool_sort = np.argsort(STAR.Tspot)            # cool temps low->high, 2300, 2400, 2500, ...
-    hot_sort  = np.argsort(STAR.Tfaculae)[::-1]   # hot temps high->low, 4100, 4000, 3900, ...
+    if black_temp is None:
+        black_mask = np.zeros(
+            active_region_Temp.shape,
+            dtype=bool,
+        )
+    else:
+        black_mask = np.isclose(
+            active_region_Temp,
+            float(black_temp),
+            atol=0.02,
+            rtol=0.0,
+        )
 
-    cool_idx = np.flatnonzero(cool_mask)[cool_sort]
-    hot_idx  = np.flatnonzero(hot_mask)[hot_sort]
-    seq_idx  = np.concatenate([cool_idx, hot_idx]) if (cool_idx.size + hot_idx.size) else np.arange(n_regions)
+    # A black sentinel is logically a cool region even though its
+    # numerical marker is greater than Tphot.
+    cool_mask = (
+        (active_region_Temp < STAR.Temp)
+        | black_mask
+    )
+
+    hot_mask = (
+        (active_region_Temp > STAR.Temp)
+        & (~black_mask)
+    )
+
+    cool_candidates = np.flatnonzero(cool_mask)
+    hot_candidates = np.flatnonzero(hot_mask)
+
+    # Treat black spots as cooler than every physical atmosphere.
+    cool_sort_temperature = np.where(
+        black_mask[cool_candidates],
+        -np.inf,
+        active_region_Temp[cool_candidates],
+    )
+
+    cool_idx = cool_candidates[
+        np.argsort(cool_sort_temperature)
+    ]
+
+    hot_idx = hot_candidates[
+        np.argsort(
+            active_region_Temp[hot_candidates]
+        )[::-1]
+    ]
+
+    seq_idx = np.concatenate([
+        cool_idx,
+        hot_idx,
+    ])
+
+    if seq_idx.size != n_regions:
+        raise ValueError(
+            "Active-region sorting lost one or more regions: "
+            f"input={n_regions}, sorted={seq_idx.size}."
+        )
+
+    # cool_mask = (active_region_Temp - STAR.Temp) < 0
+    # hot_mask  = (active_region_Temp - STAR.Temp) > 0
+
+    # cool_sort = np.argsort(STAR.Tspot)            # cool temps low->high, 2300, 2400, 2500, ...
+    # hot_sort  = np.argsort(STAR.Tfaculae)[::-1]   # hot temps high->low, 4100, 4000, 3900, ...
+
+    # cool_idx = np.flatnonzero(cool_mask)[cool_sort]
+    # hot_idx  = np.flatnonzero(hot_mask)[hot_sort]
+    # seq_idx  = np.concatenate([cool_idx, hot_idx]) if (cool_idx.size + hot_idx.size) else np.arange(n_regions)
     # e.g., 2300, 2400, 2500, ..., 4100, 4000, 3900, ... for a star with both cool and hot regions.
 
     # Reorder + compact dtypes
@@ -720,11 +963,23 @@ def main_model(
         outdir = outdir_base.replace('/MODEL_', f'/{model_type}_')
 
         # Core simulation
-        visible_phi, integrated_stellar_spectrum, _, final_2d_surface_flux_sum = spotact_core.calculate_activity_signal_spec(
+        visible_phi, integrated_stellar_spectrum, _, final_2d_surface_flux_sum, active_2d_surface_temperature_psi = spotact_core.calculate_activity_signal_spec(
             nrho, grid_size, STAR, PSI, SPEC, active_regions_number, active_region_box,
             instrument_res, cpu_use, SAVE_DIR, band, save_spec_flag, intORflux.lower(), silence_pbar, plot_flag
         )
         visible_phi = np.asarray(visible_phi, dtype=np.float32)
+
+        if STAR.calculate_bolometric_L:
+            (L_bol_curve, T_fund_curve, 
+             L_bol_mean, T_fund_mean) = spotact_core.calculate_bolometric_luminosity_curve(
+                STAR, grid_size, active_2d_surface_temperature_psi, visible_phi
+            )
+            logger.info(f"  >> Mean L_bol: {L_bol_mean:.3e} erg/s")
+            logger.info(f"  >> Mean Fundamental Teff: {T_fund_mean:.1f} K")
+        else:
+            L_bol_curve = np.full_like(visible_phi, np.nan, dtype=np.float64)
+            T_fund_curve = np.full_like(visible_phi, np.nan, dtype=np.float64)
+
 
         if band == 'photo':
             # Photometry only
@@ -778,10 +1033,17 @@ def main_model(
             continue
 
         # Spectroscopy branch
-        integrated_stellar_spectrum = spotact_core.flatten_model_spec(
-            STAR, integrated_stellar_spectrum, visible_phi, band,
-            intORflux, model_type, SAVE_DIR, plot_flag
-        )
+        if band == 'lsd_like':
+            # Gaussian LSD template
+            integrated_stellar_spectrum = spotact_core.normalize_gaussian_lsd_profiles(
+                STAR, integrated_stellar_spectrum, visible_phi, band,
+                intORflux, model_type, SAVE_DIR, plot_flag
+            )
+        else:
+            integrated_stellar_spectrum = spotact_core.flatten_model_spec(
+                STAR, integrated_stellar_spectrum, visible_phi, band,
+                intORflux, model_type, SAVE_DIR, plot_flag
+            )
         if save_spec_flag == 1 and not in_memory and write_csv:
             np.save(f'./outputs/{SAVE_DIR}/spec/{band}_flat_final_spec.npy',
                     integrated_stellar_spectrum)
@@ -801,22 +1063,109 @@ def main_model(
         )
         ccf_rv_shift = np.asarray(ccf_rv_shift, dtype=np.float32)
 
+        # --- Calculate the RV from the LSD-like first moment if applicable ---
+        if model_type.lower() == "gaussian_lsd":
+            logger.info(
+                "\nCalculating the RV from the LSD-like first moment...\n"
+            )
+
+            lsd_rv_shift = spotact_core.calculate_first_moment_rv(
+                STAR,
+                integrated_stellar_spectrum,
+                band,
+                intORflux,
+                model_type,
+                velocity_limit=60.0,
+                subtract_mean=False,
+            )
+
+            lsd_rv_shift = np.asarray(
+                lsd_rv_shift,
+                dtype=np.float32,
+            )
+        else:
+            lsd_rv_shift = np.full_like(
+                visible_phi,
+                np.nan,
+                dtype=np.float32,
+            )
+        
+        # print(
+        #     "CCF RV range:",
+        #     np.nanmin(ccf_rv_shift),
+        #     np.nanmax(ccf_rv_shift),
+        # )
+
+        # print(
+        #     "LSD RV range:",
+        #     np.nanmin(lsd_rv_shift),
+        #     np.nanmax(lsd_rv_shift),
+        # )
+
+        # print(
+        #     "Mean LSD RV:",
+        #     np.nanmean(lsd_rv_shift),
+        # )
+
+
+        # -----------------------------------------------------------------
         if in_memory:
             results_by_band[band] = {
                 'phase': visible_phi,
-                'rv':    ccf_rv_shift,
-                'ewr':   ohfe_ratio,
+                'rv': ccf_rv_shift,
+                'lsd_rv': lsd_rv_shift,
+                'ewr': ohfe_ratio,
+                'apparent_Teff': np.asarray(STAR._phase_teff).copy(),
+                'fspot': np.asarray(STAR._phase_fspot).copy(),
+                'f_cool': np.asarray(STAR._phase_fcool).copy(),
+                'f_hot': np.asarray(STAR._phase_fhot).copy(),
+                'T_spot_eff': np.asarray(STAR._phase_Tspot_eff).copy(),
             }
+
         else:
             # write CSV (as before)
             from astropy.table import Table
-            tab = Table(data=(visible_phi, ccf_rv_shift, ohfe_ratio, STAR._phase_teff, STAR._phase_fspot),
-                        names=('Phase', 'RV', 'EWR', 'model_Teff', 'fspot'))
+            tab = Table(
+                data=(
+                    visible_phi,
+                    ccf_rv_shift,
+                    lsd_rv_shift,
+                    ohfe_ratio,
+                    STAR._phase_teff,
+                    T_fund_curve,
+                    L_bol_curve,
+                    STAR._phase_fspot,
+                    STAR._phase_fcool,
+                    STAR._phase_fhot,
+                    STAR._phase_Tspot_eff,
+                ),
+                names=(
+                    "Phase",
+                    "RV",
+                    "LSD_RV",
+                    "EWR",
+                    "apparent_Teff",
+                    "fund_Teff",
+                    "L_bol_erg_s",
+                    "fspot",
+                    "f_cool",
+                    "f_hot",
+                    "T_spot_eff",
+                ),
+            )
+            
             tab['Phase'].format = '%.3f'
             tab['RV'].format    = '%.4f'
             tab['EWR'].format   = '%.5f'
-            tab['model_Teff'].format = '%d'
+            tab['apparent_Teff'].format = '%d'
+            tab["LSD_RV"].format = "%.4f"
+            if STAR.calculate_bolometric_L:
+                tab['fund_Teff'].format  = '%d'       
+            tab['L_bol_erg_s'].format = '%.3e' 
             tab['fspot'].format      = '%.4f'
+            tab['f_cool'].format     = '%.4f'
+            tab['f_hot'].format      = '%.4f'
+            tab['T_spot_eff'].format = '%.4f'
 
             if write_csv:
                 tab.write(f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_{band}_RV_EWR.csv',
@@ -831,7 +1180,14 @@ def main_model(
                 )
 
         # Free big arrays
-        del integrated_stellar_spectrum, final_2d_surface_flux_sum, ccf_rv_shift, ohfe_ratio
+        del (
+            integrated_stellar_spectrum,
+            final_2d_surface_flux_sum,
+            ccf_rv_shift,
+            lsd_rv_shift,
+            ohfe_ratio,
+        )
+        
         logger.info(f'\n--> {band} run time: {(time()-start_time)/60:1.2f} min')
 
     # Restore original order for downstream
@@ -983,4 +1339,3 @@ if __name__ == '__main__':
     #     fig.savefig(
     #         f'./outputs/{SAVE_DIR}/{outdir.split("/")[-1]}_RV_amp_{sim_spec_line_centers[0]}_{sim_spec_line_centers[-1]}.png', 
     #         bbox_inches='tight')
-

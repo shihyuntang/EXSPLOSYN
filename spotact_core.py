@@ -21,7 +21,7 @@ from ldtk.ldtk import LDPSet
 from pyphot import svo, Filter
 from pyphot import config
 unit = config.units
-
+import astropy.constants as const
 
 from basic_spec import rotint
 from macbro_dynamic import macbro_dyn
@@ -98,12 +98,13 @@ class Star:
 
         LD_teff_wv_coeff = {}
         # small sampling is fine if you just want a single estimate, not a posterior
-        nsamples = 12
+        nsamples = 2000
 
+        np.random.seed(69)
         for tt in np.atleast_1d(temperature).astype(float):
             # tiny stds are still needed for LDPSetCreator's sampling
             sc = LDPSetCreator(
-                teff=(tt, 1.0),
+                teff=(tt, 10.0),
                 logg=(self.logg, 0.01),
                 z=(self.FeH, 0.01),
                 filters=filters,
@@ -114,7 +115,7 @@ class Star:
             ps = sc.create_profiles(nsamples=nsamples)
 
             # Get quadratic coefficients: returns (means, covariance)
-            qc, _ = ps.coeffs_qd()  # shape: (n_filters, 2) for (u1, u2)
+            qc, _ = ps.coeffs_qd(do_mc=False)  # shape: (n_filters, 2) for (u1, u2)
 
             # Package results
             for i in range(len(line_centers)):
@@ -138,7 +139,88 @@ class Star:
             locs = np.where(np.isclose(line_centers, _wave_cen, atol=1e-3))[0]
             if locs.size: LD_teff_wv_coeff[f"spec_K_Ti_{np.round(tt, 4)}"] = qc[locs[0]]
 
+            _wave_cen = 22250.0
+            locs = np.where(np.isclose(line_centers, _wave_cen, atol=1e-3))[0]
+            if locs.size: LD_teff_wv_coeff[f"spec_K_Ti_{np.round(tt, 4)}"] = qc[locs[0]]
+
+            # --- for LSD like band ---
+            _wave_cen = 17500.0
+            locs = np.where(np.isclose(line_centers, _wave_cen, atol=1e-3))[0]
+            if locs.size:LD_teff_wv_coeff[f"lsd_like_{np.round(tt, 4)}"] = qc[locs[0]]
+
+
         self.LD_coeff = LD_teff_wv_coeff
+
+    def build_gaussian_lsd_profiles(
+        self,
+        band="lsd_like",
+        velocity_min=-80.0,
+        velocity_max=80.0,
+        velocity_step=0.286,
+        doppler_width=3.4,
+        line_depth=0.5,
+    ):
+        """
+        Build brightness-scaled Gaussian local profiles for a ZDI-like
+        mean-line simulation.
+
+        The adopted Gaussian convention is
+
+            G(v) = exp[-(v / doppler_width)^2]
+
+        and each local flux profile is
+
+            F_T(v) = brightness(T) * [1 - line_depth * G(v)].
+        """
+        if not hasattr(self, "brightness_by_temperature"):
+            raise AttributeError(
+                "STAR.brightness_by_temperature must be defined before "
+                "building Gaussian LSD-like profiles."
+            )
+
+        if velocity_step <= 0:
+            raise ValueError("velocity_step must be positive.")
+
+        if doppler_width <= 0:
+            raise ValueError("doppler_width must be positive.")
+
+        if not 0.0 < line_depth < 1.0:
+            raise ValueError("line_depth must lie between 0 and 1.")
+
+        n_side = int(np.ceil(velocity_max / velocity_step))
+
+        velocity = (
+            np.arange(-n_side, n_side + 1, dtype=np.float64)
+            * velocity_step
+        )
+
+        gaussian = np.exp(
+            -(velocity / doppler_width) ** 2
+        )
+
+        if not hasattr(self, "flux_spec"):
+            self.flux_spec = {}
+
+        for temperature, brightness in self.brightness_by_temperature.items():
+            temperature = float(np.round(temperature, 4))
+            brightness = float(brightness)
+
+            local_flux = brightness * (
+                1.0 - line_depth * gaussian
+            )
+
+            prefix = (
+                f"{band}_gaussian_lsd_flux_"
+                f"{temperature:1.4f}"
+            )
+
+            self.flux_spec[f"{prefix}_v"] = velocity.astype(
+                np.float32
+            )
+
+            self.flux_spec[f"{prefix}_f"] = local_flux.astype(
+                np.float64
+            )
 
     def find_fluxspec(
             self, Vel_bin_size, plot, savehdf=None):
@@ -158,6 +240,8 @@ class Star:
         for band, (line_cen, delta_wv, rvORphoto, intORflux, model_type) in self.bands2use.items():
             # Only process bands that require flux spectra
             if intORflux != 'flux':
+                continue
+            if model_type.lower() == "gaussian_lsd":
                 continue
 
             # Define wavelength window for this band
@@ -230,6 +314,8 @@ class Star:
         for band, (line_cen, delta_wv, rvORphoto, intORflux, model_type) in self.bands2use.items():
             # Only process RV bands            
             if rvORphoto != 'rv':
+                continue
+            if model_type.lower() == "gaussian_lsd":
                 continue
 
             # Build temperature list for this band
@@ -528,6 +614,110 @@ def flatten_ccf_model_spec(vel, flux, band, RVandEWR_dir, plot):
         plt.close(fig)
     return np.array(fluxp_flat)
 
+def normalize_gaussian_lsd_profiles(
+    Star,
+    flux_phi,
+    visible_phi,
+    band,
+    intORflux,
+    model_type,
+    RVandEWR_dir,
+    plot,
+    continuum_velocity_min=65.0,
+):
+    """
+    Continuum-normalize disk-integrated Gaussian LSD-like profiles.
+
+    The continuum is estimated from both velocity-grid edges:
+
+        |v| >= continuum_velocity_min
+
+    No polynomial or spline continuum fitting is performed.
+
+    Parameters
+    ----------
+    Star : Star
+        EXSPLOSYN star object.
+    flux_phi : array-like, shape (n_phase, n_velocity)
+        Disk-integrated profiles.
+    band : str
+        Band name.
+    intORflux : str
+        Spectrum storage type.
+    model_type : str
+        Expected to be 'gaussian_lsd'.
+    continuum_velocity_min : float
+        Minimum absolute velocity used as continuum [km/s].
+
+    Returns
+    -------
+    normalized : ndarray
+        Continuum-normalized profiles.
+    """
+    do_plot = (plot == 1) or (plot is True)
+    visible_phi = np.asarray(visible_phi)
+
+    if intORflux == "flux":
+        key_v = (
+            f"{band}_{model_type}_{intORflux}_"
+            f"{Star.Temp:1.4f}_v"
+        )
+        velocity = Star.flux_spec[key_v]
+    else:
+        key_v = (
+            f"{band}_{model_type}_{intORflux}_"
+            f"{Star.Temp:1.4f}_v"
+        )
+        velocity = Star.int_spec[key_v]
+
+    velocity = np.asarray(velocity, dtype=np.float64)
+    profiles = np.atleast_2d(
+        np.asarray(flux_phi, dtype=np.float64)
+    )
+
+    continuum_mask = (
+        np.abs(velocity) >= float(continuum_velocity_min)
+    )
+
+    # Fallback if the requested edge region is too narrow.
+    if np.count_nonzero(continuum_mask) < 10:
+        vmax = np.nanmax(np.abs(velocity))
+        continuum_mask = np.abs(velocity) >= 0.8 * vmax
+
+    normalized = np.empty_like(profiles)
+
+    for i, profile in enumerate(profiles):
+        continuum = np.nanmedian(profile[continuum_mask])
+
+        if not np.isfinite(continuum) or continuum <= 0.0:
+            raise ValueError(
+                f"Invalid LSD-like continuum at phase index {i}: "
+                f"{continuum}"
+            )
+
+        normalized[i] = profile / continuum
+
+        # optional plot
+        if do_plot:
+            fig, ax = plt.subplots(1, 1, figsize=(7, 3), facecolor='white', dpi=250)
+            ax.plot(velocity, profile, '-k', lw=1, label='Org. model spec', alpha=0.6)
+            ax.plot(velocity, normalized[i], '-', lw=0.8, label='Flatten model spec')
+
+            ax.axhline(1, ls='-', lw=0.5, color='k', alpha=0.3)
+            ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+            ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+            ax.legend(loc='lower right', fontsize='x-small', ncol=4)
+            ax.set_xlabel('Velocity [km/s]')
+            ax.set_ylabel('Flux')
+            ax.set_ylim(0.9, 1.02)
+            fig.savefig(
+                f'./outputs/{RVandEWR_dir}/normal_spec/flatten_{band}_{visible_phi[i]:1.2f}.png',
+                bbox_inches='tight'
+            )
+            plt.close(fig)
+
+    return normalized
+
 def flatten_model_spec(
     Star,
     flux_phi: np.ndarray,
@@ -635,26 +825,26 @@ def calculate_activity_signal_spec(
         tuple:
             visible_phi (np.ndarray): Array of visible phases.
             integrated_stellar_spectrum (np.ndarray): 2D array of integrated spectra for each phase.
-            quite_2d_surface_flux_sum (np.ndarray): 2D array of quiet surface flux.
+            quiet_2d_surface_flux_sum (np.ndarray): 2D array of quiet surface flux.
             final_2d_surface_flux_sum (np.ndarray): 2D array of final surface flux (with active regions).
     """
     # --- Step 1: Quiet photosphere baseline (spectrum + surface flux map) ---
     Spec_photosphere = Spec[np.round(star.Temp, 4)]
     if fluxORint == 'flux':
         u1, u2 = star.LD_coeff[f"{band}_{np.round(star.Temp, 4)}"]
-        integrated_stellar_spectrum, quite_2d_surface_flux_sum = stsp.itot_flux(
+        integrated_stellar_spectrum, quiet_2d_surface_flux_sum = stsp.itot_flux(
             star.vrot, star.incl, u1, u2, grid_size, 
             Spec_photosphere.rv, Spec_photosphere.intensity, Spec_photosphere.v_interval, 
             Spec_photosphere.n_v, Spec_photosphere.n
         )
     else:  # 'intensity'
-        integrated_stellar_spectrum, quite_2d_surface_flux_sum = stsp.itot_int(
+        integrated_stellar_spectrum, quiet_2d_surface_flux_sum = stsp.itot_int(
             star.vrot, star.incl, None, None, grid_size, 
             Spec_photosphere.rv, Spec_photosphere.intensity, Spec_photosphere.v_interval, 
             Spec_photosphere.n_v, Spec_photosphere.n, Spec_photosphere.mu
         )
 
-    final_2d_surface_flux_sum = quite_2d_surface_flux_sum.copy()
+    final_2d_surface_flux_sum = quiet_2d_surface_flux_sum.copy()
 
     # Unpack active region properties
     (active_region_longs, active_region_lats, 
@@ -739,11 +929,30 @@ def calculate_activity_signal_spec(
         np.save(f'./outputs/{save_dir}/spec/{band}_qsdup_1.npy',  spec_qs_duplicated)
         np.save(f'./outputs/{save_dir}/spec/{band}_vel_1.npy',    vel)
     
-    if (band != 'photo') & (silence_pbar != True):
+    # Teff is a model result, so it must also be updated during silent,
+    # in-memory evaluations.  silence_pbar should control display only.
+    if band != 'photo':
         # Calculate average Teff and spot coverage fraction per phase
-        f_spot, f_cool, f_hot, T4_mean_phase, Teff = utils.coverage_and_teff(
-            active_2d_surface_temperature_psi, y, z, star.Temp, star.LD_coeff, band,
-            sentinel_offdisk=0, scale=1.0)
+        # f_spot, f_cool, f_hot, T4_mean_phase, Teff, T_spot_eff_phase = utils.coverage_and_teff(
+        #     active_2d_surface_temperature_psi, y, z, star.Temp, star.LD_coeff, band,
+        #     sentinel_offdisk=0, scale=1.0)
+        f_spot, f_cool, f_hot, T4_mean_phase, Teff, T_spot_eff_phase = (
+            utils.coverage_and_teff(
+                active_2d_surface_temperature_psi,
+                y,
+                z,
+                star.Temp,
+                star.LD_coeff,
+                band,
+                sentinel_offdisk=0,
+                scale=1.0,
+                black_spot_sentinel=getattr(
+                    star,
+                    "black_spot_sentinel",
+                    None,
+                ),
+            )
+        )
         
         logger.info(f'\n  >> Average Teff over phases: {Teff:1.0f} K')
         logger.info(f'  >> Spot coverage fraction over phases: {np.mean(f_spot)*100:1.2f} %')
@@ -752,6 +961,7 @@ def calculate_activity_signal_spec(
         star._phase_fspot = f_spot
         star._phase_fcool = f_cool
         star._phase_fhot  = f_hot
+        star._phase_Tspot_eff = T_spot_eff_phase
     
     # --- Step 2b: Combine quiet baseline with active-region contributions ---
     integrated_stellar_spectrum = (
@@ -786,9 +996,135 @@ def calculate_activity_signal_spec(
     return (
         visible_phi,
         integrated_stellar_spectrum,
-        quite_2d_surface_flux_sum,
-        final_2d_surface_flux_sum
+        quiet_2d_surface_flux_sum,
+        final_2d_surface_flux_sum,
+        active_2d_surface_temperature_psi
     )
+
+def calculate_bolometric_luminosity_curve(
+    star, grid_size, active_2d_surface_temperature_psi, visible_phi
+):
+    """
+    Evaluate the isotropic-equivalent bolometric luminosity and Fundamental Teff
+    across all rotational phases.
+    
+    Utilizes the pre-calculated temperature cube to map empirical specific intensity
+    spectra directly onto the stellar grid, bypassing analytical limb darkening laws.
+    
+    Parameters
+    ----------
+    star : Star
+        Initialized stellar object containing temperature arrays.
+    grid_size : int
+        Resolution of the surface grid (NxN).
+    active_2d_surface_temperature_psi : numpy.ndarray
+        Temperature cube of shape (n_phases, grid_size, grid_size).
+    visible_phi : numpy.ndarray
+        Array of simulation phases.
+        
+    Returns
+    -------
+    luminosity_curve : numpy.ndarray
+        Bolometric luminosity at each phase in erg s^-1.
+    t_fund_curve : numpy.ndarray
+        Fundamental effective temperature (SED-derived) at each phase in K.
+    time_averaged_luminosity : float
+        Mean bolometric luminosity over the rotation period.
+    time_averaged_t_fund : float
+        Mean fundamental effective temperature over the rotation period.
+    """
+    logger.info("\nCalculating Fundamental Bolometric Luminosity Curve directly from I(mu)...")
+    
+    n_phases = len(visible_phi)
+    temp_list = np.unique(np.concatenate([[star.Temp], star.Tspot, star.Tfaculae]))
+    
+    # 1. Pre-calculate bolometric specific intensity arrays (I_bol) for all T and mu
+    I_bol_map = {}
+    mu_grid = None
+    
+    for temp in temp_list:
+        # Load the native mu-dependent intensity spectra
+        unflattened_spec = ssp.prep_phx_intensity_spec(
+            temp, star.logg, star.FeH, 0, star.out_path, savehdf=None
+        )
+        
+        wave_A = unflattened_spec['wave']
+        if mu_grid is None:
+            mu_grid = unflattened_spec['mu']
+            
+        # Integrate the spectrum for every available mu angle
+        I_bol_mu_array = np.zeros(len(mu_grid), dtype=np.float64)
+        for imu in range(len(mu_grid)):
+            # Extract the 1D intensity array for this specific mu
+            # (Note: shape from prep_phx_intensity_spec is (n_mu, n_wave))
+            intensity_erg = unflattened_spec['flux'][imu, :]
+            I_bol_mu_array[imu] = utils.compute_template_bolometric_intensity(wave_A, intensity_erg, temp)
+            
+        I_bol_map[np.round(temp, 4)] = I_bol_mu_array
+
+    # 2. Geometry Setup
+    delta_grid = 2.0 / grid_size
+    pixel_area = delta_grid**2
+    y = np.linspace(-1.0, 1.0, grid_size, dtype=np.float32)
+    z = np.linspace(-1.0, 1.0, grid_size, dtype=np.float32)
+    Y, Z = np.meshgrid(y, z, indexing="ij")
+    
+    r2 = Y**2 + Z**2
+    disk_mask = r2 <= 1.0
+    mu2d = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))
+    
+    luminosity_curve = np.zeros(n_phases, dtype=np.float64)
+    stellar_radius_cm = star.rad * 1e5
+    surface_area = 4.0 * np.pi * (stellar_radius_cm**2)
+
+    pixel_area_sum_box = [] # the sun in each phases shuold be pi
+    # 3. Phase Integration
+    for i in range(n_phases):
+        frame_temps = np.round(active_2d_surface_temperature_psi[i], 4)
+        frame_flux = np.zeros((grid_size, grid_size), dtype=np.float64)
+        pixel_area_sum = []
+        for temp in temp_list:
+            temp_key = np.round(temp, 4)
+            mask = np.isclose(frame_temps, temp_key, atol=1e-2) & disk_mask
+            
+            if np.any(mask):
+                r_cos_masked = mu2d[mask]
+                
+                # Fast vectorized lookup for nearest mu index across all masked pixels
+                # Broadcast subtracts the scalar grid from the array of local mu values
+                diffs = np.abs(r_cos_masked[:, None] - mu_grid[None, :])
+                f_locs = np.argmin(diffs, axis=1)
+                
+                # Retrieve the corresponding integrated specific intensity
+                I_local = I_bol_map[temp_key][f_locs]
+                
+                # Flux contribution to the observer = I(mu) * projected_pixel_area
+                frame_flux[mask] = I_local * pixel_area
+
+                np.sum(mask) * pixel_area  # This should be close to pi for a full disk
+                pixel_area_sum.append(np.sum(mask) * pixel_area)
+
+        pixel_area_sum_box.append(np.sum(pixel_area_sum))
+
+        # Isotropic equivalent luminosity = 4 * pi * R^2 * Integral(Flux_obs)
+        luminosity_curve[i] = surface_area * np.sum(frame_flux)
+        
+    # 4. Extract Fundamental Teff via Stefan-Boltzmann
+    sigma_sb = const.sigma_sb.cgs.value
+    t_fund_curve = (luminosity_curve / (surface_area * sigma_sb))**0.25
+
+    # 5. Calculate Time-Averaged Observational Metrics
+    if n_phases > 1:
+        time_averaged_luminosity = np.mean(luminosity_curve)
+        time_averaged_t_fund = np.mean(t_fund_curve)
+    else:
+        time_averaged_luminosity = luminosity_curve[0]
+        time_averaged_t_fund = t_fund_curve[0]
+    
+    # testing, making sure delta_y times delta_z, which is pixel_area_sum_box, are ~ pi for each phase
+    pixel_area_sum_box = np.round(pixel_area_sum_box, 5)
+    # print(f"Pixel area sum per phase (should be ~pi): {pixel_area_sum_box}")
+    return luminosity_curve, t_fund_curve, time_averaged_luminosity, time_averaged_t_fund
 
 
 def get_photometric(
@@ -972,7 +1308,89 @@ def cal_ccf_rv(
     else:
         ccf_template_temp = Star.ccf_temp
 
-    if ccf_tt != 99999:
+    if model_type.lower() == "gaussian_lsd":
+        # All Gaussian local profiles have the same normalized shape.
+        # Use the quiet photosphere profile as the CCF template.
+        template_temp = float(np.round(Star.Temp, 4))
+
+        key_v = (
+            f"{band}_{model_type}_{intORflux}_"
+            f"{template_temp:1.4f}_v"
+        )
+        key_f = (
+            f"{band}_{model_type}_{intORflux}_"
+            f"{template_temp:1.4f}_f"
+        )
+
+        vel_temp = np.asarray(Star.flux_spec[key_v], dtype=np.float64)
+        spec_temp = np.asarray(Star.flux_spec[key_f], dtype=np.float64)
+
+        # Remove the arbitrary local continuum brightness.
+        continuum = np.nanmedian(
+            spec_temp[np.abs(vel_temp) > 0.8 * np.max(np.abs(vel_temp))]
+        )
+
+        if not np.isfinite(continuum) or continuum <= 0:
+            raise ValueError(
+                "Invalid continuum in Gaussian LSD template."
+            )
+
+        spec_temp = spec_temp / continuum
+
+        # --- Extend the template with flat continuum so it remains valid ---
+        # over the full CCF shift range.
+        template_padding_kms = 30.0
+
+        dv_temp = float(np.nanmedian(np.diff(vel_temp)))
+
+        vel_left = np.arange(
+            vel_temp[0] - template_padding_kms,
+            vel_temp[0],
+            dv_temp,
+            dtype=np.float64,
+        )
+
+        vel_right = np.arange(
+            vel_temp[-1] + dv_temp,
+            vel_temp[-1] + template_padding_kms + 0.5 * dv_temp,
+            dv_temp,
+            dtype=np.float64,
+        )
+
+        vel_temp = np.concatenate([
+            vel_left,
+            vel_temp,
+            vel_right,
+        ])
+
+        spec_temp = np.concatenate([
+            np.ones(vel_left.size, dtype=np.float64),
+            spec_temp,
+            np.ones(vel_right.size, dtype=np.float64),
+        ])
+
+        # ------------------------------------------------------------------
+
+        wave_temp = (vel_temp * w_center / c_kms + w_center)
+
+        # Convert the local Gaussian into a quiet, disk-integrated
+        # rotationally broadened template.
+        wave_temp, spec_temp = rotint(wave_temp,spec_temp,Star.vsini,)
+
+        if Star.inst_res > 0:
+            hwhm_list = wave_temp / Star.inst_res / 2.0
+            spec_temp = macbro_dyn(
+                wave_temp,
+                spec_temp,
+                hwhm_list,
+            )
+
+        vel_temp = (c_kms * (wave_temp - w_center) / w_center)
+        
+
+    elif ccf_tt != 99999:
+        # Existing externally supplied template branch
+
         # Use user-provided CCF template parameters
         spec_base_name = (
             f'mc_{ccf_tt:1.4f}{ccf_logg*100:1.0f}+{ccf_FeH*100:03.0f}_'
@@ -1043,6 +1461,10 @@ def cal_ccf_rv(
         wave_temp = wave_temp_fine
         spec_temp = spec_temp_fine
 
+        vel_temp = (
+        c_kms * (wave_temp - w_center) / w_center
+        )
+
     # Helper to run mc_ccf across an index list safely
     def _run_batch(idx_array, flux_box, vmin, vmax, step, clip_px, _cpu_use, _silence_pbar):
         # partial with closed-over arrays that are not pickled each call
@@ -1062,7 +1484,12 @@ def cal_ccf_rv(
     # Use template dv for conversion 
     dv_tpl = float(vel_temp[1] - vel_temp[0]) if vel_temp.size > 1 else dv_obs
     # guard: dvt can be tiny; avoid divide-by-zero
-    clip_obs_edges_default = int((10.0 / dv_tpl) * 5) if dv_tpl != 0.0 else 0
+    # clip_obs_edges_default = int((10.0 / dv_tpl) * 5) if dv_tpl != 0.0 else 0
+    if model_type.lower() == "gaussian_lsd":
+        clip_obs_edges_default = 0
+    else:
+        clip_obs_edges_default = int((10.0 / dv_tpl) * 5) if dv_tpl != 0.0 else 0
+
 
     # --- PASS 1: probe a handful of phases to estimate required bounds/step ---
     if nphi <= 10:
@@ -1087,6 +1514,33 @@ def cal_ccf_rv(
         min(cpu_use, len(trial_idx)), silence_pbar)
     rv_trial   = get_ccf_peak(
         np.asarray(outs_trial, dtype=object), drvs_trial, visible_phi[trial_idx], band, outdir)
+    
+    # if model_type.lower() == "gaussian_lsd":
+    #     print("trial_idx:", trial_idx)
+    #     print("trial phases:", visible_phi[trial_idx])
+    #     print("trial CCF RV:", rv_trial)
+
+    #     for j, ccf in enumerate(outs_trial):
+    #         ccf = np.asarray(ccf, dtype=np.float64)
+
+    #         finite = np.isfinite(ccf)
+
+    #         if not np.any(finite):
+    #             print(
+    #                 f"trial {j}: ALL CCF VALUES ARE NaN"
+    #             )
+    #             continue
+
+    #         k = np.nanargmax(ccf)
+
+    #         print(
+    #             f"trial {j}: "
+    #             f"finite={finite.sum()}/{ccf.size}, "
+    #             f"min={np.nanmin(ccf):.8e}, "
+    #             f"max={np.nanmax(ccf):.8e}, "
+    #             f"argmax RV={drvs_trial[k]:.6f}"
+    #         )
+    # sys.exit('done')
 
     bound = float(np.nanmax(np.abs(np.round(rv_trial, 3)))) if rv_trial.size else np.nan
     if not np.isfinite(bound) or bound <= 0.02:
@@ -1098,7 +1552,7 @@ def cal_ccf_rv(
         ccf_step  = base_step
         # print(f'\n   Bound = {bound:1.3f} <= 0.5 km/s → using tight window ±{ccf_bound} km/s and fine step {ccf_step:1.5f} km/s')
     elif bound <= 5.0:
-        ccf_bound = 15.0
+        ccf_bound = 20.0
         # ccf_bound = 5
         ccf_step  = base_step * 10.0
         # print(f'\n   Bound = {bound:1.3f} <= 5.0 km/s → using medium window ±{ccf_bound} km/s and medium step {ccf_step:1.5f} m/s')
@@ -1107,7 +1561,11 @@ def cal_ccf_rv(
         ccf_step  = base_step * 100.0
         # print(f'\n   Bound = {bound:1.3f} > 5.0 km/s → using wide window ±{ccf_bound} km/s and coarse step {ccf_step:1.3f} km/s')
 
-    clip_obs_edges = int((ccf_bound / dv_tpl) * 5) if dv_tpl != 0.0 else 0
+    
+    if model_type.lower() == "gaussian_lsd":
+        clip_obs_edges = 0
+    else:
+        clip_obs_edges = int((ccf_bound / dv_tpl) * 5) if dv_tpl != 0.0 else 0
 
     # --- PASS 2: full run with chosen window/step (FINAL) ---
     drvs_full = np.arange(-ccf_bound, ccf_bound, ccf_step, dtype=np.float64)
@@ -1120,3 +1578,96 @@ def cal_ccf_rv(
     rv_full   = rv_full - np.nanmean(rv_full)
 
     return rv_full.astype(np.float64, copy=False)
+
+
+
+
+def calculate_first_moment_rv(
+    Star,
+    flux_phi,
+    band,
+    intORflux,
+    model_type,
+    velocity_limit=60.0,
+    subtract_mean=False,
+):
+    """
+    Calculate the absorption-profile first-moment RV.
+
+    RV = integral[v * (1 - I(v)) dv]
+         --------------------------------
+         integral[(1 - I(v)) dv]
+
+    Parameters
+    ----------
+    Star : Star
+        EXSPLOSYN star object.
+    flux_phi : array-like, shape (n_phase, n_velocity)
+        Continuum-normalized disk-integrated line profiles.
+    band, intORflux, model_type : str
+        Spectrum identifiers.
+    velocity_limit : float or None
+        Integrate over +/- velocity_limit km/s. If None, use the
+        complete velocity grid.
+    subtract_mean : bool
+        If True, subtract the mean RV over all phases.
+
+    Returns
+    -------
+    rv : ndarray, shape (n_phase,)
+        First-moment RV in km/s.
+    """
+    if intORflux == "flux":
+        key_v = (
+            f"{band}_{model_type}_{intORflux}_"
+            f"{Star.Temp:1.4f}_v"
+        )
+        velocity = Star.flux_spec[key_v]
+    else:
+        key_v = (
+            f"{band}_{model_type}_{intORflux}_"
+            f"{Star.Temp:1.4f}_v"
+        )
+        velocity = Star.int_spec[key_v]
+
+    velocity = np.asarray(velocity, dtype=np.float64)
+    profiles = np.atleast_2d(
+        np.asarray(flux_phi, dtype=np.float64)
+    )
+
+    if profiles.shape[1] != velocity.size:
+        raise ValueError(
+            "Profile and velocity-grid sizes do not match: "
+            f"{profiles.shape[1]} versus {velocity.size}."
+        )
+
+    if velocity_limit is None:
+        use = np.ones(velocity.size, dtype=bool)
+    else:
+        use = np.abs(velocity) <= float(velocity_limit)
+
+    v = velocity[use]
+    rv = np.full(profiles.shape[0], np.nan, dtype=np.float64)
+
+    for i, profile in enumerate(profiles):
+        intensity = profile[use]
+
+        # Absorption profile relative to continuum.
+        absorption = 1.0 - intensity
+
+        # Tiny negative values may occur from interpolation/convolution.
+        # They do not represent physical emission in this model.
+        absorption = np.clip(absorption, 0.0, None)
+
+        denominator = np.trapezoid(absorption, v)
+
+        if not np.isfinite(denominator) or denominator <= 0.0:
+            continue
+
+        numerator = np.trapezoid(v * absorption, v)
+        rv[i] = numerator / denominator
+
+    if subtract_mean:
+        rv = rv - np.nanmean(rv)
+
+    return rv

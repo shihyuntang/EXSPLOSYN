@@ -279,7 +279,7 @@ def parse_synmast_filename(name: str):
     (Teff:int, logg:float, FeH:float)
     """
     base = Path(name).name
-    if not base.startswith("mc_") or not base.endswith(".prf"):
+    if not base.startswith("mc_") or not base.endswith(".prf.gz"):
         raise ValueError(f"Not a SYNMAST .prf file: {name}")
     core = base[3:]              # drop "mc_"
     T_str   = core[0:4]          # 4 digits
@@ -309,7 +309,7 @@ def build_synmast_filename(T: int, logg: float, FeH: float) -> str:
     fe_str = f"{'+' if FeH >= 0 else '-'}{val:03d}"
     return (
         f"mc_{T_str}{g_str}{fe_str}"
-        "_b0_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf"
+        "_b00_water_BT2_synmast_tuned_moon880_spirou_1step_v1.9.prf.gz"
     )
 
 
@@ -333,7 +333,7 @@ def prep_synmast_intensity_spec(
 
     # Collect grid points from filenames
     Ts, Gs, Zs = [], [], []
-    for p in syn_marcs.glob("*.prf"):
+    for p in syn_marcs.glob("*.prf.gz"):
         try:
             T_i, g_i, z_i = parse_synmast_filename(p.name)
         except ValueError:
@@ -450,7 +450,7 @@ def prep_synmast_flux_spec(temp, logg, FeH, out_path, savehdf=None):
     # collect grid points (from filenames)
     Ts, Gs, Zs = [], [], []
     prf_files = []
-    for p in syn_marcs.glob("*.prf"):
+    for p in syn_marcs.glob("*.prf.gz"):
         try:
             T_i, g_i, z_i = parse_synmast_filename(p.name)
         except ValueError:

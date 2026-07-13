@@ -8,6 +8,8 @@ from specutils import Spectrum1D
 from specutils.analysis import equivalent_width
 import astropy.units as u
 import matplotlib.pyplot as plt
+import astropy.constants as const
+import astropy.units as u
 
 
 def _apply_instrumental_broadening(inst_reso, vel_grid, spec_flux):
@@ -547,7 +549,7 @@ def _get_u1u2_for_T(ld_coeff_dict, band, T):
 
 
 def coverage_and_teff(
-    cube,                   # (Npsi, G, G), int or float; may be scaled
+    cube_geometry,                   # (Npsi, G, G), int or float; may be scaled
     y, z,                   # grid coords in [-1, 1], len = G
     T_phot,                 # photosphere temperature (same units as 'cube' after scale)
     ld_coeff_dict,          # dict: f"{band}_{int(T)}" -> (u1, u2)
@@ -556,6 +558,7 @@ def coverage_and_teff(
     scale=1.0,              # if stored temps scaled (e.g., ×10), give that here
     ld_by_local_temp=True,  # if True, LD varies with local T in 'cube'
     T_ref_for_ld=None,      # if ld_by_local_temp=False, use this T for LD (default: T_phot)
+    black_spot_sentinel=None,
 ):
     """
     Returns:
@@ -569,9 +572,15 @@ def coverage_and_teff(
       - Sentinel/off-disk handled per phase.
     """
     # Temperatures in physical units
-    cube = cube.astype(np.float64) / scale              # (Npsi, G, G)
-    Npsi, G, G2 = cube.shape
+    cube_geometry = cube_geometry.astype(np.float64) / scale              # (Npsi, G, G)
+    cube_flux = cube_geometry.copy()
+    cube_ld = cube_geometry.copy()
+    Npsi, G, G2 = cube_geometry.shape
     assert G == G2, "grid must be square"
+
+    # Separate cube used only for the bolometric-flux experiment.
+    # cube_flux = cube_geometry.copy()       # <<<<< for DARK spot test
+    # black_temperature_threshold = 2600.0   # <<<<< for DARK spot test
 
     # Geometry
     Y, Z = np.meshgrid(y, z, indexing="ij")
@@ -580,7 +589,31 @@ def coverage_and_teff(
     mu2d = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))         # cos(theta) on image plane
 
     # Per-phase validity mask (visible & not sentinel)
-    on3 = disk[None, ...] & (cube != sentinel_offdisk)  # (Npsi, G, G)
+    on3 = disk[None, ...] & (cube_geometry != sentinel_offdisk)  # (Npsi, G, G)
+
+    if black_spot_sentinel is None:
+        black_mask = np.zeros_like(on3, dtype=bool)
+    else:
+        black_mask = (
+            on3
+            & np.isclose(
+                cube_geometry,
+                float(black_spot_sentinel),
+                atol=0.02,
+                rtol=0.0,
+            )
+        )
+
+    # Black pixels remain geometrically present but emit zero flux.
+    cube_flux[black_mask] = 0.0
+
+    # Use photospheric LD only as a geometric weighting proxy.
+    # This prevents a lookup for nonexistent 9999.99 K coefficients.
+    cube_ld[black_mask] = float(T_phot)
+
+
+    # black_mask = (on3 & (cube_geometry < black_temperature_threshold))  # <<<<< for DARK spot test
+    # cube_flux[black_mask] = 0.0 # <<<<< for DARK spot test
 
     # ---------- Geometric (projected-disk) coverage weights ----------
     W2_area = np.ones_like(Y, dtype=np.float64)         # (G, G)
@@ -591,13 +624,31 @@ def coverage_and_teff(
         raise ValueError(f"No valid on-disk pixels for phases: {bad}")
 
     # Classify temperatures
-    atol = 0.0 if (cube.dtype.kind in "iu") else 1e-6
-    is_phot = np.isclose(cube, T_phot, atol=atol)
-    is_cool = (cube <  T_phot)
-    is_hot  = (cube >  T_phot)
+    # atol = 0.0 if (cube_geometry.dtype.kind in "iu") else 1e-6
+    # The surface cube originates as float32, so allow its expected
+    # sub-millikelvin representation difference.
+    temperature_atol = 0.1
+    # is_phot = np.isclose(cube_geometry, T_phot, atol=atol)
+    # is_cool = (cube_geometry <  T_phot) & (~is_phot)
+    # is_hot  = (cube_geometry >  T_phot) & (~is_phot)
+
+    is_phot = (
+        np.isclose(cube_geometry, T_phot, atol=temperature_atol, rtol=0.0,)
+        & (~black_mask)
+        & on3
+        )
+    
+    is_cool = (on3 & (~is_phot) & ((cube_geometry < T_phot) | black_mask)
+               )
+
+    is_hot = (on3 & (~is_phot) & (cube_geometry > T_phot) & (~black_mask)
+              )
+
+    is_spot = on3 & (~is_phot)
 
     # Geometric fractions (projected disk)
-    f_spot = (W3_area * (~is_phot)).sum(axis=(1, 2)) / Wsum_phase_area
+    # f_spot = (W3_area * (~is_phot)).sum(axis=(1, 2)) / Wsum_phase_area
+    f_spot = (W3_area * ( is_spot)).sum(axis=(1, 2)) / Wsum_phase_area
     f_cool = (W3_area * ( is_cool)).sum(axis=(1, 2)) / Wsum_phase_area
     f_hot  = (W3_area * (  is_hot)).sum(axis=(1, 2)) / Wsum_phase_area
 
@@ -605,16 +656,18 @@ def coverage_and_teff(
     if ld_by_local_temp:
         mu3 = mu2d[None, ...]                           # (1, G, G), broadcasts
         # Map unique 1.4f temps to LD coeffs (only where valid)
-        Ts = np.unique(cube[on3].astype(float))
+        # Ts = np.unique(cube_geometry[on3].astype(float))
+        Ts = np.unique(cube_ld[on3].astype(float))
         u1_map, u2_map = {}, {}
         for TT in Ts:
             u1, u2 = _get_u1u2_for_T(ld_coeff_dict, band, TT)
             u1_map[TT] = float(u1)
             u2_map[TT] = float(u2)
         # Build per-pixel u1,u2
-        U1 = np.zeros_like(cube, dtype=np.float64)
-        U2 = np.zeros_like(cube, dtype=np.float64)
-        T_all = np.round(cube, 4)
+        U1 = np.zeros_like(cube_geometry, dtype=np.float64)
+        U2 = np.zeros_like(cube_geometry, dtype=np.float64)
+        # T_all = np.round(cube_geometry, 4)
+        T_all = np.round(cube_ld, 4)
         for TT in Ts:
             sel = (T_all == TT) & on3
             if np.any(sel):
@@ -635,10 +688,31 @@ def coverage_and_teff(
         raise ValueError(f"No on-disk pixels (or zero physical weight) for phases: {bad}")
 
     # ---------- Teff per phase from physically-weighted <T^4> ----------
-    T4_mean_phase = (W3_phy * (cube**4)).sum(axis=(1, 2)) / Wsum_phase_phy
+    # T4_mean_phase = (W3_phy * (cube_geometry**4)).sum(axis=(1, 2)) / Wsum_phase_phy
+    T4_mean_phase = (W3_phy * cube_flux**4).sum(axis=(1, 2)) / Wsum_phase_phy
+    # T4_mean_phase = (W3_phy * (cube_flux**4)).sum(axis=(1, 2)) / Wsum_phase_phy     # <<<<< for DARK spot test
     Teff_rotavg = (T4_mean_phase.mean())**0.25
 
-    return f_spot, f_cool, f_hot, T4_mean_phase, Teff_rotavg
+    # ---------- Effective Spot Temperature per phase ----------
+    # Isolate the physical weights for only the spotted regions
+    # W3_spot_phy = W3_phy * (~is_phot)
+    W3_spot_phy = W3_phy * is_spot
+    Wsum_spot_phy = W3_spot_phy.sum(axis=(1, 2))
+
+    # Initialize array with NaNs (so phases with 0 spots don't plot as 0 Kelvin)
+    T_spot_eff_phase = np.full(Npsi, np.nan, dtype=np.float64)
+    
+    # Only calculate where spots are actually visible on the disk
+    valid_spots = (Wsum_spot_phy > 0)
+    
+    if np.any(valid_spots):
+        # T4_spot_mean = (W3_spot_phy[valid_spots] * (cube_geometry[valid_spots]**4)).sum(axis=(1, 2)) / Wsum_spot_phy[valid_spots]
+        T4_spot_mean = (W3_spot_phy[valid_spots] * (cube_flux[valid_spots]**4)).sum(axis=(1, 2)) / Wsum_spot_phy[valid_spots]
+        T_spot_eff_phase[valid_spots] = T4_spot_mean ** 0.25
+
+    return f_spot, f_cool, f_hot, T4_mean_phase, Teff_rotavg, T_spot_eff_phase
+
+    # return f_spot, f_cool, f_hot, T4_mean_phase, Teff_rotavg
 
 
 def LD_dict2array(star_LD_coeff, band):
@@ -653,11 +727,11 @@ def LD_dict2array(star_LD_coeff, band):
     sub = {k: v for k, v in star_LD_coeff.items() if k.startswith(f"{band}_")}
     if not sub:
         raise ValueError(f"No LD entries for band {band!r}")
-
+    
     temps, coeffs = [], []
     for k, v in sub.items():
         tstr = k.split("_")
-        temps.append(np.round(tstr[-1], 4))
+        temps.append(np.round(float(tstr[-1]), 4))
         coeffs.append(v)  # e.g., (u1,u2) or (u1,u2,u3)
 
     temps = np.asarray(temps, dtype=np.float64)
@@ -742,3 +816,57 @@ def nearest_mu_index(mu_grid, mu):
             best = i
             bestd = d
     return best
+
+
+def compute_template_bolometric_intensity(wave_vac_A, intensity_erg_mu, temp):
+    """
+    Compute the total bolometric specific intensity for a given stellar template at a specific mu.
+    
+    Integrates the empirical synthetic intensity spectrum via the trapezoidal rule 
+    and appends a numerical Planck function tail for wavelengths beyond 
+    the template limits (e.g., lambda > 5.5 um).
+    
+    Parameters
+    ----------
+    wave_vac_A : numpy.ndarray
+        Wavelength array in vacuum Angstroms.
+    intensity_erg_mu : numpy.ndarray
+        Specific intensity array at a specific mu angle in erg s^-1 cm^-2 sr^-1 A^-1.
+    temp : float
+        Effective temperature of the specific model region [K].
+        
+    Returns
+    -------
+    I_bol : float
+        Total integrated specific intensity in erg s^-1 cm^-2 sr^-1.
+    """
+    # -------------------------------------------------------------------------
+    # PHOENIX native units are erg / s / cm^2 / cm / sr. 
+    # We must multiply by 1e-8 to convert to erg / s / cm^2 / Angstrom / sr 
+    # -------------------------------------------------------------------------
+    intensity_erg_mu_A = intensity_erg_mu * 1e-8
+
+    # 1. Integrate the available empirical template range
+    I_model = np.trapezoid(intensity_erg_mu_A, wave_vac_A)
+    
+    # 2. Calculate the Blackbody tail
+    max_wave_m = np.max(wave_vac_A) * 1e-10
+    wave_tail_m = np.logspace(np.log10(max_wave_m), np.log10(1e-2), 2000)
+    
+    h = const.h.cgs.value
+    c = const.c.cgs.value
+    k = const.k_B.cgs.value
+    
+    wave_tail_cm = wave_tail_m * 100.0
+    
+    # Planck function B_lambda gives Specific Intensity (erg s^-1 cm^-2 cm^-1 sr^-1)
+    bb_intensity_cm = (2.0 * h * c**2 / (wave_tail_cm**5)) / (np.exp((h * c) / (wave_tail_cm * k * temp)) - 1.0)
+    
+    # Convert to Angstrom grid for consistent integration
+    wave_tail_A = wave_tail_cm * 1e8
+    bb_intensity_A = bb_intensity_cm * 1e-8  # erg s^-1 cm^-2 sr^-1 A^-1
+    
+    # Integrate the specific intensity tail
+    I_tail = np.trapezoid(bb_intensity_A, wave_tail_A)
+    
+    return I_model + I_tail
