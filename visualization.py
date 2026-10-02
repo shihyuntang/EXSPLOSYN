@@ -197,6 +197,12 @@ def spot_view_pel(
     Star, grid, visible_phi, SPECstar_tot, ccf_rv_shift, quite_surface_2d, 
     outdir, ohfe_ratio, text1, text2, band, intORflux, model_type, j):
     
+    _teff = Star._phase_teff[j]
+    _fspot = Star._phase_fspot[j] * 100
+    _fcool = Star._phase_fcool[j] * 100
+    _fhot = Star._phase_fhot[j] * 100
+
+    # -------------------------------------------------
     fig = plt.figure(figsize = (7, 3.5), dpi=300 )
 
     gs1 = gridspec.GridSpec(1, 1)
@@ -210,25 +216,58 @@ def spot_view_pel(
 
     radius = grid//2
 
-    st_spot_surface = quite_surface_2d[j]/np.max(quite_surface_2d)
-    st_spot_surface[st_spot_surface == 0.0] = np.nan
+    # st_spot_surface = quite_surface_2d[j]/np.max(quite_surface_2d)
+    # st_spot_surface[st_spot_surface == 0.0] = np.nan
+    
+    # --- true geometry masking ---
+    surface_flux = np.asarray(quite_surface_2d[j], dtype=np.float64,)
+    surface_max = np.nanmax(surface_flux)
+
+    if not np.isfinite(surface_max) or surface_max <= 0.0:
+        raise ValueError(
+            f"Invalid surface-flux maximum at phase index {j}: "
+            f"{surface_max}"
+        )
+
+    st_spot_surface = surface_flux / surface_max
+
+    # Remove tiny negative values from floating-point subtraction,
+    # while preserving genuine zero-flux black pixels.
+    st_spot_surface = np.clip(st_spot_surface, 0.0, 1.0,)
+
+    # Mask only pixels geometrically outside the stellar disk.
+    coord = -1.0 + (np.arange(grid, dtype=np.float64) * (2.0 / grid))
+
+    Y, Z = np.meshgrid(coord, coord, indexing="ij",)
+    off_disk = (Y * Y + Z * Z) >= 1.0
+    st_spot_surface[off_disk] = np.nan
+     # -------------------------------
+     
     ax1.imshow(
         st_spot_surface, extent=[-radius, radius, -radius, radius], 
         cmap='Oranges_r', vmin=0, vmax=1, origin='lower')
     ax1 = map_add_grid(ax1, Star.incl, radius, visible_phi[j])
     
     ax1.text(
-        0.5, -0.1, f'Phase {visible_phi[j]:.3f}', va='center', ha='center', size='small',
+        0.5, -0.09, fr'Phase ${visible_phi[j]:.3f}$', va='center', ha='center', size='small',
         transform=ax1.transAxes)
+    ax1.text(
+        0.5, -0.15,
+        fr'$T_{{\rm eff}}={_teff:4.0f}$ K, '
+        fr'$f_{{spot}}={_fspot:5.2f}$%'  # <-- percent outside $
+        fr' ($f_{{cool}}={_fcool:5.2f}$%'
+        fr', $f_{{hot}}={_fhot:5.2f}$%)',
+        va='center', ha='center', size='xx-small', transform=ax1.transAxes
+    )
     
     c_kms = 299792.458
     w_center = Star.bands2use[band][0]  # [15631.35, 30, ['rv', 'photo']]
     if intORflux == 'intensity':
-        _v = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        _v = Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
         _wave =( _v * w_center / c_kms) + w_center
         ax2.plot(_wave, SPECstar_tot[j], '-k', lw=1)
     elif intORflux == 'flux':
-        _v = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v']
+        _v = Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v']
         _wave =( _v * w_center / c_kms) + w_center
         ax2.plot(_wave, SPECstar_tot[j], '-k', lw=1)
 
@@ -236,19 +275,19 @@ def spot_view_pel(
     ax2.set_xlim(_wave[0], _wave[-1])
     # if intORflux == 'intensity':
     #     ax2.set_xlim(
-    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][0], 
-    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][-1]
+    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v'][0], 
+    #         Star.int_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v'][-1]
     #         )
     # elif intORflux == 'flux':
     #     ax2.set_xlim(
-    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][0], 
-    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.0f}_v'][-1]
+    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v'][0], 
+    #         Star.flux_spec[f'{band}_{model_type}_{intORflux}_{Star.Temp:1.4f}_v'][-1]
     #         )
     # ax2.set_xlabel(r'Velocity [km s$^{-1}$]',  size='small')
     ax2.set_xlabel(r'Wavelength [$\AA$]',  size='small')
     ax2.set_ylabel(f'Normalized Flux',  size='small')
     
-    if 'OH' in band:
+    if 'ewr' in band:
 
         ax3.plot(visible_phi[:j], ohfe_ratio[:j], '-o', c='tab:grey', ms=2, mew=2)
         ax3.plot(visible_phi[j], ohfe_ratio[j], 'o', c='k', ms=2, mew=2)
@@ -289,10 +328,10 @@ def spot_view_pel(
     ax1.axis('off')
 
     ax1.text(
-        0.05, -0.18, text1, family='monospace', size=5, 
+        0.05, -0.20, text1, family='monospace', size=5, 
         transform=ax1.transAxes, ha='left', va='top')
     ax1.text(
-        0.05, -0.38, text2, family='monospace', size=4.5, 
+        0.01, -0.40, text2, family='monospace', size=4, 
         transform=ax1.transAxes, ha='left', va='top')
 
     out_dir_pre = f'./outputs/{outdir.split("/")[2]}'
@@ -320,8 +359,8 @@ def spot_view(
         )
     
     # for ii in np.arange(len(visible_phi)):
-    #     spot_view_pel(Star, grid, visible_phi, 
-    #     SPECstar_tot, ccf_rv_shift, quite_surface_2d, outdir, ohfe_ratio, 
+    #     spot_view_pel( Star, grid_size, visible_phi, 
+    #     integrated_stellar_spectrum, ccf_rv_shift, final_2d_surface_flux_sum, outdir, ohfe_ratio, 
     #     text1, text2, band, intORflux, model_type, ii)
     
     pqdm(np.arange(len(visible_phi)), func, n_jobs=cpu_use)
@@ -340,33 +379,36 @@ def spot_view(
     else:
         print('\n"magick or convert" function not found, skip making .gif\n')
 
-def plot_cc(drvs, cc, new_rv, phase, band, properties):
-    drvs_temp = drvs[cc == np.max(cc)]
+def plot_cc(drvs, cc, new_rv, phase, band, properties, outdir):
+    # drvs_temp = drvs[cc == np.max(cc)]
 
     fig, ax = plt.subplots(1, 1, figsize=(4, 3))
 
     ax.plot(drvs, cc, 'k-', lw=.7)
 
-    ax.axvline(
-        np.mean(drvs_temp), ls='-', lw=1, alpha=0.5, c='tab:blue'
+    # ax.axvline(
+        # np.mean(drvs_temp), ls='-', lw=1, alpha=0.5, c='tab:blue'
+        # )
+    if new_rv is not None:
+        ax.axvline(
+            new_rv, ls='--', lw=1, alpha=0.5, c='tab:red'
         )
-    ax.axvline(
-        new_rv, ls='--', lw=1, alpha=0.5, c='tab:red'
-        )
-    
-    ax.text(0.05, 0.4, f'RV: {new_rv:1.4f} km/s', transform=ax.transAxes, size='x-small')
-    ax.text(0.05, 0.3, f'Prominences: {properties["prominences"]}', transform=ax.transAxes, size='x-small')
-    ax.text(0.05, 0.2, f'left_bases: {properties["left_bases"]}', transform=ax.transAxes, size='x-small')
-    ax.text(0.05, 0.1, f'right_bases: {properties["right_bases"]}', transform=ax.transAxes, size='x-small')
+
+        ax.text(0.05, 0.95, f'RV: {new_rv:1.4f} km/s', transform=ax.transAxes, size='x-small')
+    ax.text(0.05, 0.85, f'Prominences: {properties["prominences"]}', transform=ax.transAxes, size='x-small')
+    ax.text(0.05, 0.75, f'left_bases: {properties["left_bases"]}', transform=ax.transAxes, size='x-small')
+    ax.text(0.05, 0.65, f'right_bases: {properties["right_bases"]}', transform=ax.transAxes, size='x-small')
 
     ax.set_xlabel(r'Velocity [km/s]',  size='small')
     ax.set_ylabel('CCF',  size='small')
     ax.tick_params(
         axis='both', which='both', labelsize='small', right=True, 
         top=True, direction='in', width=.7)
-    
+
+    out_dir_pre = f'./outputs/{outdir.split("/")[2]}'
+    os.makedirs(f'{out_dir_pre}/CCF', exist_ok=True)
     fig.savefig(
-        f'./outputs/CCF/{band}_phase_{phase:1.3f}.png', format='png', 
+        f'{out_dir_pre}/CCF/{band}_phase_{phase:1.3f}.png', format='png', 
         bbox_inches='tight'
         )
     plt.close(fig)
