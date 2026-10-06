@@ -1,23 +1,33 @@
-name: soap-spec
+# Simulation environment; see docs/installation.md for package installation.
+# Conda selects compatible minor/patch releases within the declared ranges.
+name: exsplosyn
 channels:
   - conda-forge
-  - defaults
+  - nodefaults
 dependencies:
-  - python=3.12
-  - pandas
-  - matplotlib
-  - numpy
-  - scipy
-  - astropy
-  - multiprocess
-  - cython
-  - requests
-  - numba=0.60
-  - pytables
+  - python=3.11
   - pip
+  - setuptools
+  - wheel
+  # Numba 0.62.1 requires NumPy <2.4 and llvmlite 0.45.x.
+  - numpy>=2,<2.4
+  - numba=0.62.1
+  - scipy>=1.15,<2
+  - pandas>=3,<4
+  - matplotlib>=3.10,<4
+  - pillow>=10,<13
+  - astropy>=7,<8
+  - h5py>=3.14,<4
+  - pytables>=3.10,<4
+  - pqdm>=0.2,<0.3
+  - tqdm>=4,<5
+  # Download missing PHOENIX flux files.
+  - curl
+  # LDTk dependencies that are available from conda-forge.
+  - traitlets>=5,<6
+  - tenacity>=8,<10
+  - semantic_version>=2,<3
+  # These packages are not available from conda-forge.
   - pip:
-    - more_itertools
-    - pyphot
-    - pqdm
-    - specutils
-    - git+https://github.com/mfouesneau/pyphot
+      - ldtk>=1.8,<2
+      - pyphot>=2.1,<3

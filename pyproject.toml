@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exsplosyn"
+version = "0.9.1"
+description = "EXOplanetary Spotted Photosphere LOw-mass SYNthesizer. High-resolution spectral simulation for spotted low-mass stars."
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "numpy>=2,<2.4", "scipy>=1.15,<2", "pandas>=3,<4",
+    "matplotlib>=3.10,<4", "pillow>=10,<13", "astropy>=7,<8", "h5py>=3.14,<4",
+    "tables>=3.10,<4", "numba==0.62.1", "ldtk>=1.8,<2",
+    "pyphot>=2.1,<3", "pqdm>=0.2,<0.3", "tqdm>=4,<5",
+]
+
+[project.scripts]
+exsplosyn = "exsplosyn.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
