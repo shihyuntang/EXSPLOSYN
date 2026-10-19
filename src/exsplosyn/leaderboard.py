@@ -147,11 +147,13 @@ def show_rankings(report, catalog_path=CATALOG, *, catalog_entries=None):
     feoh = [case for case in report["cases"] if case["case"] == CASE]
     if not feoh:
         return []
-    print("\n>>> FeOH performance leaderboard <<<", flush=True)
+    print("\n" + "=" * 64, flush=True)
+    print("  FeOH performance leaderboard", flush=True)
+    print("=" * 64, flush=True)
     if any(case.get("status") == "skipped" and "library" in case.get("reason", "").lower() for case in feoh):
         print(
             "Want to see where your computer ranks? Download the FeOH library,\n"
-            "set synmast_feoh in configs/demo_lkca4.cfg, then run python benchmark.py again.\n"
+            "set synmast_feoh in configs/performance.cfg, then run python benchmark.py again.\n"
             f"FeOH download: {FEOH_URL}", flush=True,
         )
     scores = score_entries(report, report.get("machine_label") or "Your computer")
@@ -168,9 +170,13 @@ def show_rankings(report, catalog_path=CATALOG, *, catalog_entries=None):
         # An explicitly supplied label replaces that machine's previous result.
         if report.get("machine_label"):
             candidates = [entry for entry in candidates if entry["machine_label"] != current["machine_label"]]
-        print(f"\n{current['workers']} process(es) — mean evaluation time (lower is faster)", flush=True)
+        title = "SINGLE PROCESS" if current["workers"] == 1 else "4 PROCESSES"
+        print(f"\n  {title} | Mean run time (lower is faster)", flush=True)
+        print("-" * 64, flush=True)
         if not candidates:
-            print("No matching reference scores yet; your result is ready to share.", flush=True)
+            print(f"  Your mean : {current['average_s']:.2f} s", flush=True)
+            print("  Ranking   : awaiting matching reference results", flush=True)
+            print("  Share your results folder to help build the leaderboard.", flush=True)
             results.append({"workers": current["workers"], "status": "no_reference_scores"})
             continue
         current = dict(current, is_current=True)
@@ -180,22 +186,24 @@ def show_rankings(report, catalog_path=CATALOG, *, catalog_entries=None):
         total = len(candidates)
         percentile = math.ceil(100 * rank / total)
         top_five = []
-        print(" Rank | Mean time | Computer / CPU", flush=True)
+        print("  Rank    Mean time    Computer / CPU", flush=True)
         for entry in candidates[:5]:
             place = 1 + sum(row["average_s"] < entry["average_s"] for row in candidates)
             marker = " (you)" if entry.get("is_current") else ""
-            print(
-                f" {place:>4} | {entry['average_s']:>7.2f} s | "
-                f"{entry['machine_label']} — {entry['cpu_model']}{marker}", flush=True,
-            )
+            label = entry["machine_label"]
+            if entry["cpu_model"].lower() not in label.lower():
+                label += f" / {entry['cpu_model']}"
+            print(f"  {place:>4}    {entry['average_s']:>7.2f} s    {label}{marker}", flush=True)
             top_five.append(dict(entry, rank=place))
         if rank <= 5:
-            print(f"Your rank: #{rank} of {total} computers.", flush=True)
+            print(f"\n  Your rank: #{rank} of {total} computers.", flush=True)
         else:
-            print(f"Your result: top {percentile}% of {total} computers.", flush=True)
-        print("Compared only with matching benchmark settings; this is a small participant sample.", flush=True)
+            print(f"\n  Your result: top {percentile}% of {total} computers.", flush=True)
         results.append({
             "workers": current["workers"], "status": "ranked", "rank": rank,
             "computer_count": total, "top_percent": percentile, "top_five": top_five,
         })
+    if any(item["status"] == "ranked" for item in results):
+        print("\n  Matching workloads only; rankings cover participating computers.", flush=True)
+    print("=" * 64, flush=True)
     return results

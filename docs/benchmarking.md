@@ -17,9 +17,9 @@ The small FeOH demo library is sufficient; if unavailable, FeOH is omitted.
 
 ## What it runs
 
-The script uses one fixed configuration: **five active regions, 100 phases,
-and a 200 × 200 disk grid**, with photometry, PHOENIX RVs and FeOH RV/EWR
-running together. It changes only **`cpu : 1` versus `cpu : 4`**.
+The script uses one fixed configuration: **five active regions, 200 phases,
+and a 200 × 200 disk grid**, with **TESS/TESS.Red photometry and FeOH
+RV/EWR** running together. It changes only **`cpu : 1` versus `cpu : 4`**.
 
 For each process count, it runs **two warm-ups followed by five timed runs**.
 Each run calls the normal EXSPLOSYN CLI with `--quiet --mode fitting`, including
@@ -31,7 +31,8 @@ may occur during warm-up and are excluded from the reported timed runs.
 
 ## What you get
 
-The terminal shows the computer/CPU, OS, core and worker counts, individual
+The terminal shows the CPU, OS name/version, RAM, Python version, workload,
+core and worker counts, individual
 evaluation times, the **average and median time**, and the **speedup relative
 to one process** for the complete simulation. The four-process test is skipped
 if fewer than four CPUs are available. Reports are saved in a new timestamped folder under `benchmark_results/`:
