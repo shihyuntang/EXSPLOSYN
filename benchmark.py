@@ -25,9 +25,10 @@ from threading import Event, Thread
 from time import perf_counter
 import tomllib
 
-from benchmarks.leaderboard import add_report, load_catalog, show_rankings
-
 ROOT = Path(__file__).resolve().parent
+# Use the source checkout without requiring an editable/package installation.
+sys.path.insert(0, str(ROOT / "src"))
+from exsplosyn.leaderboard import load_catalog, show_rankings
 CASES = ("photometry", "phx_rv", "synmast_feoh")
 CASE_LABELS = {
     "photometry": "Photometry",
@@ -573,21 +574,10 @@ def main(argv=None):
         default="",
         help="Optional descriptive computer name, not a hostname.",
     )
-    parser.add_argument(
-        "--add-result", type=Path,
-        help="Maintainer: add a shared benchmark_details.json to the bundled leaderboard; requires --machine-label.",
-    )
     parser.add_argument("--output-dir", type=Path, default=ROOT / "benchmark_results")
     parser.add_argument("--worker-case", choices=CASES, help=argparse.SUPPRESS)
     parser.add_argument("--worker-result", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if args.add_result is not None:
-        try:
-            count = add_report(args.add_result, args.machine_label)
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            parser.error(str(error))
-        print(f"Added {count} FeOH score(s) for {args.machine_label}.")
-        return 0
     if min(args.workers or 1, args.warmup, args.repeat) < 1 or args.workers == 0:
         parser.error("workers, warmup, and repeat must be positive")
     args.config = args.config.resolve()
@@ -632,7 +622,7 @@ def main(argv=None):
     # Fail on an invalid config before starting any benchmark subprocesses.
     read_config(args.config)
     report = {
-        "protocol": "fixed_temperature_forward_model_v2",
+        "protocol": "fixed_temperature_forward_model_v3",
         "worker_counts": worker_counts,
         "utc_started": datetime.now(timezone.utc).isoformat(),
         "machine_label": args.machine_label,

@@ -60,16 +60,22 @@ The fork is based on the [original RASSINE](https://github.com/MichaelCretignier
 
 ### Optional SYNMAST libraries
 
-The following SYNMAST library is currently available:
+The SYNMAST FeOH library covers approximately 1.5444–1.5679 $\mu$m and is
+available in two versions via [Box](https://utexas.box.com/s/34wcqyq0k0glfl4nc95kfidd1j5nr9kt):
 
-- **FeOH — `FeOH_synmast1.9_marcs_spirou`:** approximately 1.5444–1.5679 $\mu$m.
-  [Download from Box](https://utexas.box.com/s/34wcqyq0k0glfl4nc95kfidd1j5nr9kt).
-<!-- - **Ti:** 2.2200–2.2322 $\mu$m. -->
-<!-- - **CO:** 2.3052–2.3224 $\mu$m. -->
+- **Demo — `FeOH_synmast1.9_marcs_spirou_demo` (9.8 MB): recommended for
+  running the supplied demos and performance benchmark.** Contains ten spectra
+  spanning 3200–4100 K in 100 K steps, at $\log g = 4.0$, [Fe/H] = 0.0,
+  and magnetic-field strength 0 G.
+- **Full — `FeOH_synmast1.9_marcs_spirou_full` (approximately 10.3 GB):**
+  provides the full parameter grid described in
+  [Model applicability and spectral grids](model_limits.md). Depending on your
+  internet connection, the download may take several minutes or longer.
 
-Store the downloaded `FeOH_synmast1.9_marcs_spirou` folder wherever you keep
-your synthetic spectral libraries. Set `synmast_feoh` in `[paths]` to this
-folder; it does not need to be inside the EXSPLOSYN repository.
+Store the downloaded folder wherever you keep your synthetic spectral libraries.
+Set `synmast_feoh` in `[paths]` to that folder; it does not need to be inside
+the EXSPLOSYN repository. Choose the full library when exploring parameters
+outside the demo subset.
 
 ## 4. Configure spectral data and external tools
 
@@ -97,11 +103,12 @@ use the default spectral-data locations.**
   low-resolution intensity spectra.
 - `rassine_root`: the directory containing the EXSPLOSYN-compatible RASSINE fork.
 
-For the SYNMAST FeOH library, replace `/path/to` below with its parent directory:
+For the recommended demo library, replace `/path/to` below with its parent
+directory. If you downloaded the full library, use its `_full` folder instead:
 
 ```ini
 [paths]
-synmast_feoh           : /path/to/FeOH_synmast1.9_marcs_spirou
+synmast_feoh           : /path/to/FeOH_synmast1.9_marcs_spirou_demo
 ```
 
 SYNMAST bands are disabled by default in `demo.cfg`, so this example
@@ -120,8 +127,10 @@ run from the repository root:
 python main.py --help
 ```
 
-This displays the available command-line options. To run your first simulation,
-continue to [Running the demos](running_demos.md).
+This displays the available command-line options.
+
+**Next step:** follow [Running the demos](running_demos.md) to run your first
+simulation, including selecting a configuration file and setting relative paths.
 
 **The first simulation can take longer:** missing PHOENIX spectra are downloaded
 and spectral inputs are prepared. Later runs can reuse these cached inputs.
@@ -139,5 +148,3 @@ python -m pip install . --no-deps
 The `--no-deps` option keeps the dependencies installed in the previous step.
 You can then use `exsplosyn` or `python -m exsplosyn` from any working directory
 while this environment is active.
-
-Configuration files and relative paths still need to be supplied as described in [Running the demos](running_demos.md).

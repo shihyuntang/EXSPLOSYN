@@ -7,12 +7,6 @@ from pathlib import Path
 from time import perf_counter
 
 from .configuration import DEFAULT_CONFIG_FILE, PROJECT_ROOT
-from .simulation_setup import init_setup_cfg
-from .simulation import (
-    main_model,
-    prepare_simulation_spectra,
-    setup_logging,
-)
 
 
 def _project_version():
@@ -84,6 +78,15 @@ def main(argv=None):
     )
 
     args = parser.parse_args(argv)
+
+    # Help/version exit during parsing, before loading scientific dependencies.
+    from .simulation_setup import init_setup_cfg
+    from .simulation import (
+        main_model,
+        prepare_simulation_spectra,
+        setup_logging,
+    )
+
     run_start = perf_counter()
     mode = args.mode
     quiet = mode == "fitting" or args.quiet
@@ -139,7 +142,14 @@ def main(argv=None):
         silence_pbar=quiet,
         mode=mode,
     )
-    logger.info("\nSimulation complete: %.2f s", perf_counter() - run_start)
+    elapsed = perf_counter() - run_start
+    if elapsed >= 120:
+        # Round before splitting so seconds never display as 60.00.
+        minutes, seconds = divmod(round(elapsed, 2), 60)
+        duration = f"{int(minutes)} min {seconds:05.2f} s"
+    else:
+        duration = f"{elapsed:.2f} s"
+    logger.info("\nSimulation complete: %s", duration)
     if mode != "fitting":
         logger.info("%19s: %s", "Model ID", star.model_hash[:10])
         logger.info("%19s: %s", "Output directory", Path("outputs") / save_dir)

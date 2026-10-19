@@ -1,0 +1,60 @@
+{
+  "entries": [
+    {
+      "protocol": "fixed_temperature_forward_model_v2",
+      "exsplosyn": "0.9.1",
+      "workload_sha256": "4b4553e75d7222b01b31ef18d0341e74649e1ec1306b616f23cbbdf6de48dd5c",
+      "workers": 1,
+      "warmup": 2,
+      "repeat": 5,
+      "thread_policy": "inherit environment and library defaults",
+      "machine_label": "Apple M5 Pro (Mac17,16)",
+      "cpu_model": "Apple M5 Pro",
+      "computer_model": "Mac17,16",
+      "os": "macOS",
+      "average_s": 0.8156339416000264
+    },
+    {
+      "protocol": "fixed_temperature_forward_model_v2",
+      "exsplosyn": "0.9.1",
+      "workload_sha256": "4b4553e75d7222b01b31ef18d0341e74649e1ec1306b616f23cbbdf6de48dd5c",
+      "workers": 1,
+      "warmup": 2,
+      "repeat": 5,
+      "thread_policy": "inherit environment and library defaults",
+      "machine_label": "Apple M2 (Mac14,15)",
+      "cpu_model": "Apple M2",
+      "computer_model": "Mac14,15",
+      "os": "macOS",
+      "average_s": 1.4746303418040043
+    },
+    {
+      "protocol": "fixed_temperature_forward_model_v2",
+      "exsplosyn": "0.9.1",
+      "workload_sha256": "9cefacd20b888fe472694153e368c8d6dbc558ba70449201b059356818649842",
+      "workers": 4,
+      "warmup": 2,
+      "repeat": 5,
+      "thread_policy": "inherit environment and library defaults",
+      "machine_label": "Apple M5 Pro (Mac17,16)",
+      "cpu_model": "Apple M5 Pro",
+      "computer_model": "Mac17,16",
+      "os": "macOS",
+      "average_s": 2.1793106920000356
+    },
+    {
+      "protocol": "fixed_temperature_forward_model_v2",
+      "exsplosyn": "0.9.1",
+      "workload_sha256": "9cefacd20b888fe472694153e368c8d6dbc558ba70449201b059356818649842",
+      "workers": 4,
+      "warmup": 2,
+      "repeat": 5,
+      "thread_policy": "inherit environment and library defaults",
+      "machine_label": "Apple M2 (Mac14,15)",
+      "cpu_model": "Apple M2",
+      "computer_model": "Mac14,15",
+      "os": "macOS",
+      "average_s": 2.7401160667999647
+    }
+  ]
+}

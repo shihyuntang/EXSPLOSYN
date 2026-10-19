@@ -1,8 +1,8 @@
 """Compare voluntarily shared FeOH timings without uploading machine data.
 
 Only matching protocols, workloads, EXSPLOSYN versions, process counts and
-sampling settings share a leaderboard. Maintainers explicitly import reports;
-only the descriptive machine label, CPU/OS and timing fields are published.
+sampling settings share a leaderboard. Reference snapshots contain only the
+descriptive machine label, CPU/OS and timing fields needed for comparison.
 """
 
 from datetime import datetime, timezone
@@ -14,8 +14,8 @@ from pathlib import Path
 from urllib.request import urlopen
 
 CATALOG = Path(__file__).with_name("leaderboard.json")
-# Set the public Box direct-download URL after the first reference scores are uploaded.
-LEADERBOARD_URL = ""
+# Stable public file link; upload new Box versions to preserve its token.
+LEADERBOARD_URL = "https://utexas.box.com/shared/static/3hofr4h9v9ustavitee32bhnmuqdzzx5.json"
 DOWNLOAD_TIMEOUT_S = 5
 MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024
 CASE = "synmast_feoh"
@@ -140,25 +140,6 @@ def load_catalog(url=LEADERBOARD_URL, bundled_path=CATALOG):
         json.dumps({"entries": entries}, sort_keys=True, allow_nan=False).encode()
     ).hexdigest()
     return entries, metadata
-
-
-def add_report(report_path, label, catalog_path=CATALOG):
-    """Replace a machine's previous score per compatible workload, not its best run."""
-    if not label.strip():
-        raise ValueError("Provide a descriptive --machine-label, e.g. 'MacBook Air M2'")
-    report = json.loads(Path(report_path).read_text())
-    additions = score_entries(report, label.strip())
-    if not additions:
-        raise ValueError("No successful, complete 1/4-process FeOH timings in this report")
-    entries = read_catalog(catalog_path)
-    for new in additions:
-        entries = [old for old in entries if not (
-            old["machine_label"] == new["machine_label"]
-            and comparison_key(old) == comparison_key(new)
-        )]
-        entries.append(new)
-    Path(catalog_path).write_text(json.dumps({"entries": entries}, indent=2, allow_nan=False) + "\n")
-    return len(additions)
 
 
 def show_rankings(report, catalog_path=CATALOG, *, catalog_entries=None):

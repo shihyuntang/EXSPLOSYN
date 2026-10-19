@@ -22,7 +22,7 @@ during preparation; FeOH is skipped if its library is unavailable.
 
 ## What it runs
 
-The fixed workload uses **five active regions, 20 phases, a 200 × 200 disk
+The fixed workload uses **five active regions, 100 phases, a 200 × 200 disk
 grid**, comparing **one process against four processes**. It tests:
 
 - One TESS light curve.
@@ -47,8 +47,9 @@ are saved in a new timestamped folder under `benchmark_results/`:
 - `benchmark_details.json`: versions, effective settings, individual timings,
   thread information, warnings and output checks.
 
-To share your results, send both files to the developers. Nothing is uploaded
-automatically. Reports omit hostnames, serial numbers and configured library
+To share your results, send the **entire timestamped results folder** to the
+developers, including both files above. You can zip the folder before sending it.
+Nothing is uploaded automatically. Reports omit hostnames, serial numbers and configured library
 paths. Memory values are sampled process-tree RSS sums, not unique physical
 RAM; unavailable or incomplete readings are marked in the detailed report.
 

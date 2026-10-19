@@ -3,6 +3,7 @@
 
 # Local hardware/performance reports.
 /benchmark_results/
+/benchmark_analysis/
 
 # Regenerable spectral and photometry caches.
 /spectral_cache/
