@@ -15,11 +15,13 @@ disk with cool and hot active regions.
 
 ## Documentation
 
-Detailed documentation, installation instructions, and introductory simulation
-tutorials are being prepared for Read the Docs. For now, see the
-[installation notes](docs/installation.md) and [configuration manual](docs/configuration.md).
+Full documentation is available on
+[Read the Docs](https://exsplosyn.readthedocs.io/en/latest/).
+Start with the [installation instructions](https://exsplosyn.readthedocs.io/en/latest/installation.html),
+then follow [Running the demos](https://exsplosyn.readthedocs.io/en/latest/running_demos.html)
+to run your first simulations and learn the key settings.
 
-The current version, **0.9.1**, is intended for internal testing.
+The current version, **0.9.1**, is a testing release.
 
 ## Reference
 

@@ -20,4 +20,4 @@ language = "en"
 exclude_patterns = ["_build", ".DS_Store"]
 
 html_theme = "furo"
-html_title = f"{project} {release}"
+html_title = f"{project} v{release}"
