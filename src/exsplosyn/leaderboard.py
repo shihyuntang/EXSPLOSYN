@@ -200,7 +200,12 @@ def show_rankings(report, catalog_path=CATALOG, *, catalog_entries=None):
             # shifting the rank, timing or computer columns.
             indicator = ">" if entry.get("is_current") else " "
             marker = " (you)" if entry.get("is_current") else ""
-            label = entry["machine_label"]
+            # The arrow and suffix identify this run; omit its generic label.
+            label = (
+                entry["cpu_model"]
+                if entry.get("is_current") and not report.get("machine_label")
+                else entry["machine_label"]
+            )
             if entry["cpu_model"].lower() not in label.lower():
                 label += f" / {entry['cpu_model']}"
             if entry.get("ram_gib") is not None:
