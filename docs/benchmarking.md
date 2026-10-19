@@ -29,10 +29,16 @@ grid**, comparing **one process against four processes**. It tests:
 - One PHOENIX RV band.
 - SYNMAST FeOH RVs and equivalent-width ratios, when available.
 
-Each case and process count prepares its spectra once, performs **two warm-ups and five timed
-evaluations**, then makes one separate memory measurement. Preparation and
-warm-ups are excluded from the average/median evaluation time. The model
-runs in fitting mode, without plots or simulation exports. Existing
+Each case performs **two warm-ups and five timed evaluations**, then makes one
+separate memory measurement. Every evaluation rebuilds the temperature-dependent
+local spectra, including interpolation, limb darkening and spectral preprocessing,
+before calculating the model. Parameters stay fixed between evaluations so every
+computer performs the same workload.
+
+Configuration loading, initial downloads and the **fixed 3800 K RV CCF template**
+are prepared once, outside the evaluation timings. Current source readers may
+read cached library files during local preparation; these reads are included.
+The model runs in fitting mode, without plots or simulation exports. Existing
 NumPy/Numba thread settings are preserved.
 
 ## What you get
@@ -43,7 +49,8 @@ to one process** for each case. The four-process test is skipped if fewer than
 four CPUs are available. Reports
 are saved in a new timestamped folder under `benchmark_results/`:
 
-- `benchmark_summary.csv`: hardware and performance statistics per case.
+- `benchmark_summary.csv`: hardware and performance statistics per case, including
+  total time and separate averages for local preparation and model calculation.
 - `benchmark_details.json`: versions, effective settings, individual timings,
   thread information, warnings and output checks.
 

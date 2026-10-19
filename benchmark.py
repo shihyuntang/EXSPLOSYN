@@ -1,8 +1,9 @@
 """Run a performance benchmark from a source checkout.
 
 Each case prepares its spectra once in a fresh Python process, then repeats the
-same model in fitting mode. Downloads and preparation are excluded from the
-steady-state timings. No results are uploaded automatically.
+same model in fitting mode, rebuilding local spectra for each evaluation.
+Configuration, downloads and the fixed RV template are prepared once.
+No results are uploaded automatically.
 """
 
 import argparse
@@ -259,6 +260,54 @@ def checked_observables(results, phases, case, np):
     return observables
 
 
+def prepare_fixed_templates(star, bands, save_dir):
+    """Prime complete fixed CCF templates before any timed evaluations."""
+    import numpy as np
+    from exsplosyn.ccf_templates import prepare_ccf_template
+
+    star.ccf_template_cache = {}
+    for band, (center, half_width, _, mode, source) in bands.items():
+        if "rv" not in star.band_diagnostics.get(band, ()):
+            continue
+        storage = star.flux_spec if mode == "flux" else star.int_spec
+        prefix = f"{band}_{source}_{mode}_{star.photosphere_temperature:1.4f}"
+        velocity = np.asarray(storage[f"{prefix}_v"], dtype=np.float64)
+        wavelength_center = 0.5 * (int(center - half_width) + int(center + half_width))
+        wavelength = velocity * wavelength_center / 299792.458 + wavelength_center
+        prepare_ccf_template(
+            star, band, mode, source, wavelength, wavelength_center, save_dir, False, 0
+        )
+
+
+def rebuild_local_spectra(star, bands, plot_flag, velocity_step):
+    """Repeat temperature-dependent interpolation/preprocessing without HDF exports.
+
+    PHX flux preparation normally consumes native spectra created during setup.
+    Reload/interpolate those component spectra here so that part is timed too.
+    Intensity/SYNMAST interpolation is already performed by the preparation API.
+    Current source readers may read cached library files; this is not a pure-RAM
+    native-grid benchmark. Fixed PHX template spectra are retained separately.
+    """
+    import numpy as np
+    from exsplosyn import spectral_io
+    from exsplosyn.simulation import prepare_simulation_spectra
+
+    if any(params[3] == "flux" and params[4] == "phx" for params in bands.values()):
+        temperatures = np.unique(np.concatenate(
+            ([star.photosphere_temperature], star.T_cool, star.T_hot)
+        ))
+        star.phx_flux_spectra = {
+            temperature: spectral_io.load_phx2013_flux_spectrum(
+                temperature, star.logg, star.metallicity, 0,
+                spectral_io.require_spectral_path(star.spectral_paths, "phoenix_root"),
+            )
+            for temperature in temperatures
+        }
+    return prepare_simulation_spectra(
+        bands, star, plot_flag, velocity_step, mode="fitting"
+    )
+
+
 def run_case(args, psutil):
     # Preserve the caller's thread settings and numerical-library defaults.
     import numpy as np
@@ -341,6 +390,8 @@ def run_case(args, psutil):
             prepared = prepare_simulation_spectra(
                 bands, star, plot_flag, velocity_step, mode="fitting"
             )
+            prepare_fixed_templates(star, bands, save_dir)
+            record["fixed_ccf_template_count"] = len(star.ccf_template_cache)
             record["preparation_s"] = perf_counter() - started
             print(
                 f"  Preparation complete: {record['preparation_s']:.2f} s",
@@ -384,20 +435,31 @@ def run_case(args, psutil):
                 configuration_bytes
             ).hexdigest()
 
-            def evaluate():
-                # Reuse prepared spectra; isolate per-call Star state.
+            # Do not retain local prepared arrays from the initial setup in RAM.
+            # Only the fixed reference-template inputs/cache survive across calls.
+            del prepared
+            for name in ("phx_flux_spectra", "flux_spec", "int_spec", "LD_coeff", "bolometric_intensities"):
+                setattr(star, name, {})
+
+            def evaluate(timings=None):
+                # Keep fixed templates; rebuild all temperature-dependent local inputs.
+                local_started = perf_counter()
                 evaluation_star = copy(star)
                 evaluation_regions = tuple(
                     None if array is None else array.copy() for array in region_box
                 )
-                return main_model(
+                local_spectra = rebuild_local_spectra(
+                    evaluation_star, bands, plot_flag, velocity_step
+                )
+                local_finished = perf_counter()
+                result = main_model(
                     logger,
                     bands,
                     nrho,
                     grid,
                     evaluation_star,
                     phases,
-                    prepared,
+                    local_spectra,
                     filters,
                     n_regions,
                     evaluation_regions,
@@ -411,6 +473,12 @@ def run_case(args, psutil):
                     silence_pbar=True,
                     mode="fitting",
                 )[1]
+                if timings is not None:
+                    timings.update(
+                        local_preparation_s=local_finished - local_started,
+                        model_s=perf_counter() - local_finished,
+                    )
+                return result
 
             record["warmup_times_s"] = []
             reference = None
@@ -430,8 +498,9 @@ def run_case(args, psutil):
             record["evaluations"] = []
             max_differences = {key: 0.0 for key in reference}
             for index in range(args.repeat):
+                timings = {}
                 started = perf_counter()
-                result = evaluate()
+                result = evaluate(timings)
                 elapsed = perf_counter() - started
                 observed = checked_observables(result, phases, args.worker_case, np)
                 for name, values in observed.items():
@@ -441,7 +510,7 @@ def run_case(args, psutil):
                     )
                 del result, observed
                 record["evaluations"].append(
-                    {"evaluation": index + 1, "wall_time_s": elapsed}
+                    {"evaluation": index + 1, "wall_time_s": elapsed, **timings}
                 )
                 print(
                     f"  Evaluation {index + 1}/{args.repeat}: {elapsed:.2f} s",
@@ -459,6 +528,12 @@ def run_case(args, psutil):
             record.update(
                 status="passed",
                 average_s=statistics.mean(times),
+                average_local_preparation_s=statistics.mean(
+                    item["local_preparation_s"] for item in record["evaluations"]
+                ),
+                average_model_s=statistics.mean(
+                    item["model_s"] for item in record["evaluations"]
+                ),
                 median_s=statistics.median(times),
                 stdev_s=statistics.stdev(times) if len(times) > 1 else 0.0,
                 min_s=min(times),
@@ -472,6 +547,10 @@ def run_case(args, psutil):
             print(
                 f"  Average: {record['average_s']:.2f} s | Median: {record['median_s']:.2f} s",
                 flush=True,
+            )
+            print(
+                f"  Local preparation: {record['average_local_preparation_s']:.2f} s | "
+                f"Model: {record['average_model_s']:.2f} s (averages)", flush=True,
             )
     except Exception as error:
         import traceback
@@ -517,6 +596,8 @@ def write_reports(directory, report):
         "repeat",
         "preparation_s",
         "average_s",
+        "average_local_preparation_s",
+        "average_model_s",
         "speedup_vs_1_process",
         "median_s",
         "stdev_s",
@@ -622,7 +703,7 @@ def main(argv=None):
     # Fail on an invalid config before starting any benchmark subprocesses.
     read_config(args.config)
     report = {
-        "protocol": "fixed_temperature_forward_model_v3",
+        "protocol": "temperature_preparation_forward_model_v4",
         "worker_counts": worker_counts,
         "utc_started": datetime.now(timezone.utc).isoformat(),
         "machine_label": args.machine_label,
@@ -633,7 +714,7 @@ def main(argv=None):
         "configuration": args.config.name,
         "thread_policy": "inherit environment and library defaults",
         "thread_environment": {name: os.environ.get(name) for name in THREAD_VARIABLES},
-        "timing_scope": "main_model in fitting mode; prepared spectra reused; no result exports; input state copied per call",
+        "timing_scope": "temperature-dependent local interpolation, limb darkening and spectral preprocessing plus main_model; cached library-file reads included; config/downloads/fixed CCF template excluded; fixed parameters repeated",
         "memory_metric": "separate evaluation: sampled sum of process-tree RSS every 0.1 s; includes shared pages more than once; may miss brief peaks",
         "cases": [],
     }
@@ -647,7 +728,7 @@ def main(argv=None):
     )
     print(f"Process counts: {', '.join(map(str, worker_counts))}", flush=True)
     print("Threads:        existing environment / library defaults", flush=True)
-    print("Preparation/downloads are excluded from the evaluation timings.", flush=True)
+    print("Local spectral preparation + model evaluation are timed; initial setup/downloads and fixed RV templates are excluded.", flush=True)
     # Fetch once, outside the timed evaluations; all process counts use the same snapshot.
     catalog, report["leaderboard_source"] = load_catalog()
     with tempfile.TemporaryDirectory(prefix="exsplosyn-benchmark-results-") as tmp:
