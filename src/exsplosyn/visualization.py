@@ -618,7 +618,10 @@ def _plot_prepared_frame(
     )
     # Reserve extra width only for a third y-axis (photometry plus EWR).
     show_outer_axis = show_photometry and plot_data["diagnostics"]["show_ewr"]
-    fig = plt.figure(figsize=(7.5 if show_outer_axis else 7, 3.5), dpi=300)
+    # GridSpec positions are manual; ignore automatic layouts from user styles.
+    fig = plt.figure(
+        figsize=(7.5 if show_outer_axis else 7, 3.5), dpi=300, layout="none"
+    )
 
     gs1 = gridspec.GridSpec(1, 1)
     gs1.update(left=0.0, right=0.38, bottom=0.28, top=1.0)
