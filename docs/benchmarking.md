@@ -21,7 +21,7 @@ The script uses one fixed configuration: **five active regions, 200 phases,
 and a 200 × 200 disk grid**, with **TESS/TESS.Red photometry and FeOH
 RV/EWR** running together. It changes only **`cpu : 1` versus `cpu : 4`**.
 
-For each process count, it runs **two warm-ups followed by five timed runs**.
+For each process count, it runs **one warm-up followed by three timed runs**.
 Each run calls the normal EXSPLOSYN CLI with `--quiet --mode fitting`, including
 configuration reading, spectral/template preparation and model calculation.
 No benchmark-specific model caches or simulation-code shortcuts are used.

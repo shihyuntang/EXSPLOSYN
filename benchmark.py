@@ -1,6 +1,6 @@
 """Time complete EXSPLOSYN CLI runs with one and four processes.
 
-Use configs/performance.cfg: 200 phases, two warm-ups, five timed runs.
+Use configs/performance.cfg: 200 phases, one warm-up, three timed runs.
 Each run reads the config and prepares all spectra through the normal CLI.
 Times therefore include spectral/template preparation and surface integration,
 as well as the enabled observables. Warm-up runs are excluded from statistics.
@@ -29,8 +29,8 @@ from exsplosyn.leaderboard import load_catalog, show_rankings
 
 # Each process count gets its own warm-ups and repeated measurements.
 # Change PROTOCOL if the timing method changes; config/phase changes are hashed.
-WARMUP = 2
-REPEAT = 5
+WARMUP = 1
+REPEAT = 3
 PHASE_COUNT = 200
 PROTOCOL = "complete_cli_simulation_v5"
 
@@ -242,7 +242,7 @@ def main(argv=None):
         "Memory": f"{hardware['ram_gib']:.0f} GiB | Python {hardware.get('python_version', platform.python_version())}",
         "Workload": f"{regions} regions | grid {grid} x {grid} | {len(phases)} phases",
         "Signals": " + ".join(enabled + [cfg.get("photometry", "filters")]),
-        "Runs": f"CPU 1 vs 4 | {WARMUP} warm-ups + {REPEAT} timed runs each",
+        "Runs": f"CPU 1 vs 4 | {WARMUP} warm-up + {REPEAT} timed runs each",
     }
     print(
         f"\nEXSPLOSYN {report['software']['exsplosyn']} | Performance benchmark",

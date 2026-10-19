@@ -61,16 +61,17 @@ The fork is based on the [original RASSINE](https://github.com/MichaelCretignier
 ### Optional SYNMAST libraries
 
 The SYNMAST FeOH library covers approximately 1.5444–1.5679 $\mu$m and is
-available in two versions via [Box](https://utexas.box.com/s/34wcqyq0k0glfl4nc95kfidd1j5nr9kt):
+available as a demo via [Box](https://utexas.box.com/s/34wcqyq0k0glfl4nc95kfidd1j5nr9kt),
+with a full version coming soon:
 
 - **Demo — `FeOH_synmast1.9_marcs_spirou_demo` (9.8 MB): recommended for
   running the supplied demos and performance benchmark.** Contains ten spectra
   spanning 3200–4100 K in 100 K steps, at $\log g = 4.0$, [Fe/H] = 0.0,
   and magnetic-field strength 0 G.
-- **Full — `FeOH_synmast1.9_marcs_spirou_full` (approximately 10.3 GB):**
-  provides the full parameter grid described in
-  [Model applicability and spectral grids](model_limits.md). Depending on your
-  internet connection, the download may take several minutes or longer.
+- **Full — `FeOH_synmast1.9_marcs_spirou_full` (approximately 10.3 GB): coming soon.**
+  This version will provide the full parameter grid described in
+  [Model applicability and spectral grids](model_limits.md). Please use the demo
+  version until the full library is released.
 
 Store the downloaded folder wherever you keep your synthetic spectral libraries.
 Set `synmast_feoh` in `[paths]` to that folder; it does not need to be inside

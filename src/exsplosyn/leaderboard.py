@@ -55,6 +55,7 @@ def score_entries(report, label):
             "machine_label": label,
             "cpu_model": hardware.get("cpu_model") or "unknown CPU",
             "computer_model": hardware.get("computer_model"),
+            "ram_gib": hardware.get("ram_gib"),
             "os": hardware.get("os"),
             "average_s": average,
         }
@@ -90,6 +91,12 @@ def validate_catalog(document):
         average = entry.get("average_s")
         if type(average) not in (int, float) or not math.isfinite(average) or average <= 0:
             raise ValueError("Leaderboard contains an invalid timing")
+        # RAM is optional so snapshots created before this field remain readable.
+        ram = entry.get("ram_gib")
+        if ram is not None and (
+            type(ram) not in (int, float) or not math.isfinite(ram) or ram <= 0
+        ):
+            raise ValueError("Leaderboard contains an invalid RAM size")
         identity = (comparison_key(entry), entry["machine_label"])
         if identity in seen:
             raise ValueError("Duplicate machine score for the same benchmark settings")
@@ -189,11 +196,16 @@ def show_rankings(report, catalog_path=CATALOG, *, catalog_entries=None):
         print("  Rank    Mean time    Computer / CPU", flush=True)
         for entry in candidates[:5]:
             place = 1 + sum(row["average_s"] < entry["average_s"] for row in candidates)
+            # Reserve a leading column so the current result stands out without
+            # shifting the rank, timing or computer columns.
+            indicator = ">" if entry.get("is_current") else " "
             marker = " (you)" if entry.get("is_current") else ""
             label = entry["machine_label"]
             if entry["cpu_model"].lower() not in label.lower():
                 label += f" / {entry['cpu_model']}"
-            print(f"  {place:>4}    {entry['average_s']:>7.2f} s    {label}{marker}", flush=True)
+            if entry.get("ram_gib") is not None:
+                label += f" | {entry['ram_gib']:.0f} GiB RAM"
+            print(f" {indicator}{place:>4}    {entry['average_s']:>7.2f} s    {label}{marker}", flush=True)
             top_five.append(dict(entry, rank=place))
         if rank <= 5:
             print(f"\n  Your rank: #{rank} of {total} computers.", flush=True)

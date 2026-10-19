@@ -1,9 +1,9 @@
 {
   "entries": [
     {
-      "protocol": "fixed_temperature_forward_model_v2",
+      "protocol": "complete_cli_simulation_v5",
       "exsplosyn": "0.9.1",
-      "workload_sha256": "4b4553e75d7222b01b31ef18d0341e74649e1ec1306b616f23cbbdf6de48dd5c",
+      "workload_sha256": "06017f2455c3e1700f3aee709c541c75dfeee8d10b332ba746f7f11b5a29ab53",
       "workers": 1,
       "warmup": 2,
       "repeat": 5,
@@ -11,13 +11,14 @@
       "machine_label": "Apple M5 Pro (Mac17,16)",
       "cpu_model": "Apple M5 Pro",
       "computer_model": "Mac17,16",
+      "ram_gib": 48.0,
       "os": "macOS",
-      "average_s": 0.8156339416000264
+      "average_s": 5.934402241200223
     },
     {
-      "protocol": "fixed_temperature_forward_model_v2",
+      "protocol": "complete_cli_simulation_v5",
       "exsplosyn": "0.9.1",
-      "workload_sha256": "4b4553e75d7222b01b31ef18d0341e74649e1ec1306b616f23cbbdf6de48dd5c",
+      "workload_sha256": "06017f2455c3e1700f3aee709c541c75dfeee8d10b332ba746f7f11b5a29ab53",
       "workers": 1,
       "warmup": 2,
       "repeat": 5,
@@ -25,13 +26,14 @@
       "machine_label": "Apple M2 (Mac14,15)",
       "cpu_model": "Apple M2",
       "computer_model": "Mac14,15",
+      "ram_gib": 16.0,
       "os": "macOS",
-      "average_s": 1.4746303418040043
+      "average_s": 11.828516141601721
     },
     {
-      "protocol": "fixed_temperature_forward_model_v2",
+      "protocol": "complete_cli_simulation_v5",
       "exsplosyn": "0.9.1",
-      "workload_sha256": "9cefacd20b888fe472694153e368c8d6dbc558ba70449201b059356818649842",
+      "workload_sha256": "40ac22aa614cf5d24d7791e2f0d2e54cd6893e2fdbe3672e7fc0de57bca6127a",
       "workers": 4,
       "warmup": 2,
       "repeat": 5,
@@ -39,13 +41,14 @@
       "machine_label": "Apple M5 Pro (Mac17,16)",
       "cpu_model": "Apple M5 Pro",
       "computer_model": "Mac17,16",
+      "ram_gib": 48.0,
       "os": "macOS",
-      "average_s": 2.1793106920000356
+      "average_s": 15.915824016400439
     },
     {
-      "protocol": "fixed_temperature_forward_model_v2",
+      "protocol": "complete_cli_simulation_v5",
       "exsplosyn": "0.9.1",
-      "workload_sha256": "9cefacd20b888fe472694153e368c8d6dbc558ba70449201b059356818649842",
+      "workload_sha256": "40ac22aa614cf5d24d7791e2f0d2e54cd6893e2fdbe3672e7fc0de57bca6127a",
       "workers": 4,
       "warmup": 2,
       "repeat": 5,
@@ -53,8 +56,9 @@
       "machine_label": "Apple M2 (Mac14,15)",
       "cpu_model": "Apple M2",
       "computer_model": "Mac14,15",
+      "ram_gib": 16.0,
       "os": "macOS",
-      "average_s": 2.7401160667999647
+      "average_s": 31.84535994179605
     }
   ]
 }
