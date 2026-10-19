@@ -6,7 +6,7 @@ save_ccf_template exports its arrays, physical parameters and model association.
 CCF evaluation and RV search settings are handled separately in ccf_search.
 """
 
-from .model_identity import identity_arrays, identity_suffix
+from .model_identity import identity_arrays, identity_suffix, output_stem
 
 import json
 import logging
@@ -480,10 +480,11 @@ def save_ccf_template(
     temperature_label = f"T{temperature:g}K" if temperature is not None else "Tunknown"
     directory = Path("outputs") / save_dir / "rv_ccf_templates"
     directory.mkdir(parents=True, exist_ok=True)
-    path = (
-        directory
-        / f"{band}_rv_ccf_template_{temperature_label}{identity_suffix(star)}.npz"
+    template_source = "file" if is_file else "phx"
+    stem = output_stem(
+        star, template_source, band, details=f"rv_ccf_template_{temperature_label}"
     )
+    path = directory / f"{stem}.npz"
     arrays = dict(
         wavelength_angstrom=wavelength,
         flux=flux,

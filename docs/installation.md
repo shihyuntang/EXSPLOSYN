@@ -4,6 +4,9 @@ EXSPLOSYN was developed and tested with Python 3.11. Python 3.12 and 3.13 are
 also supported by the package requirements, but have not yet been validated.
 If you encounter issues with either version, please let us know.
 
+Windows installation and simulations have not yet been validated for this release.
+If you are a Windows user, and run into any issue, please let us know!
+
 We recommend using Conda to manage the environment, as shown below.
 
 ## 1. Download EXSPLOSYN

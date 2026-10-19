@@ -1469,7 +1469,7 @@ def build_surface_temperature_cube(
     surface_t_cube = np.empty((n_phases, grid_size, grid_size), dtype=np.float32)
     surface_t_cube[...] = single_layer[None, ...]
 
-    logger.info("Building active-region surface maps...")
+    logger.info("\nBuilding active-region surface maps...")
     # Construct each placed boundary once, then rotate it for all phases.
     for region_index in range(active_regions_number):
         xyz = spot_location_init(

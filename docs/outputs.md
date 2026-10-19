@@ -22,6 +22,31 @@ Debug mode adds intermediate diagnostics and a configuration snapshot named
 `configuration_id-<model_id>.cfg`. See the [command-line options](command_line.md)
 for the differences between simulation, fitting, and debug modes.
 
+## Output filenames
+
+Final outputs use the order **spectral source, band, model ID**. CSV filenames
+also retain the model parameters between the band and ID, without equals signs.
+For example:
+
+```text
+synmast_FeOH_P3.4_i70.0_Tp3600_logg4.0_SpotNum25_Ta3278-3377-3484-3722-3859-4026_id-T3600i70_a262a0bef0.csv
+synmast_FeOH_id-T3600i70_a262a0bef0.pdf
+synmast_FeOH_id-T3600i70_a262a0bef0.gif
+synmast_FeOH_id-T3600i70_a262a0bef0.npz
+```
+
+Photometry-only plots include `lightcurves` before the ID. RV-template archives
+include their purpose and template temperature, for example:
+
+```text
+phx_photo_lightcurves_id-T3600i70_a262a0bef0.pdf
+phx_FeOH_rv_ccf_template_T3800K_id-T3600i70_a262a0bef0.npz
+```
+
+The source prefix of an RV-template archive describes the **template**, which
+may differ from the source of the simulated spectra. User-supplied templates
+use `file` as the prefix; an unknown template temperature is labeled `Tunknown`.
+
 ## CSV columns
 
 Each row corresponds to one simulated phase. Columns depend on the band:
@@ -98,7 +123,7 @@ To load the first saved `w154` spectrum from the basic demo:
 from pathlib import Path
 import numpy as np
 
-path = next(Path("outputs/demo/simulated_spotted_spectra").glob("w154_id-*.npz"))
+path = next(Path("outputs/demo/simulated_spotted_spectra").glob("phx_w154_id-*.npz"))
 with np.load(path, allow_pickle=False) as data:
     phase = data["phase"].copy()
     wavelength = data["wavelength_angstrom"].copy()
@@ -113,7 +138,7 @@ also includes `metadata_json` with additional preparation information.
 
 ## Model IDs and rerunning a model
 
-Output filenames include an ID such as `id-T3730i70_0123456789` (illustrative).
+Output filenames include an ID such as `id-T3670i70_0123456789` (illustrative).
 The readable prefix gives the photospheric temperature and inclination; the
 hash identifies effective stellar and active-region parameters, including
 the disk grid size. Use this ID to match CSVs, spectra, and plots from the

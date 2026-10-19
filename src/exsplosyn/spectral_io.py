@@ -543,11 +543,15 @@ def _resolve_phx2013_intensity_corner(coordinates, alpha, library_path, client):
                 f"No official PHOENIX intensity model at logg={gravity}, "
                 f"metallicity={abundance}, alpha={alpha}; cannot replace temperature."
             )
+        # Debug logging already supplies a [WARNING] prefix.
+        warning_prefix = "" if logger.isEnabledFor(logging.DEBUG) else "Warning: "
         logger.warning(
-            "Missing official PHOENIX intensity corner: T=%g K, logg=%g, "
-            "metallicity=%.1f; using T=%g K at the same logg and metallicity. "
-            "Check results near this grid gap.",
-            temperature, gravity, abundance if abundance != 0 else 0.0, selected_temperature,
+            "%sMissing official PHOENIX intensity corner:\n"
+            "  Requested: T=%g K, logg=%g, metallicity=%.1f\n"
+            "  Using T=%g K; logg and metallicity unchanged.\n"
+            "  Check results near this grid gap.",
+            warning_prefix, temperature, gravity,
+            abundance if abundance != 0 else 0.0, selected_temperature,
         )
     path = library_path / directory / filename
     if not path.is_file():

@@ -4,7 +4,12 @@ RASSINE runs with the EXSPLOSYN Python interpreter. Intermediate file layout
 and cache reuse behavior follow the existing simulation workflow.
 """
 
+from contextlib import contextmanager
+from itertools import cycle
 import logging
+import shutil
+from threading import Event, Thread
+from time import perf_counter
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +18,45 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _rassine_progress():
+    """Show elapsed time while waiting, without claiming a completion percentage."""
+    label = "Fitting PHX continuum with RASSINE..."
+    stream = sys.stderr
+    if not stream.isatty() or not logger.isEnabledFor(logging.INFO):
+        logger.info(label)
+        yield
+        return
+
+    started = perf_counter()
+    stopped = Event()
+
+    def display(message):
+        width = max(1, shutil.get_terminal_size().columns - 1)
+        stream.write("\r\033[2K" + message[:width])
+        stream.flush()
+
+    def animate():
+        for symbol in cycle("|/-\\"):
+            display(f"{label} {symbol} elapsed {perf_counter() - started:.0f} s")
+            if stopped.wait(0.2):
+                break
+
+    # Only the display runs in a thread; the subprocess call is unchanged.
+    thread = Thread(target=animate, daemon=True)
+    thread.start()
+    status = "failed"
+    try:
+        yield
+        status = "done"
+    finally:
+        stopped.set()
+        thread.join()
+        display(f"{label} {status} ({perf_counter() - started:.1f} s)")
+        stream.write("\n")
+        stream.flush()
 
 
 def flatten_phx_with_rassine(
@@ -66,7 +110,6 @@ def flatten_phx_with_rassine(
             raise FileNotFoundError(f"Required RASSINE file not found: {required_file}")
     rassine_py = rassine_root / "Rassine.py"
 
-    logger.info("Fitting PHX continuum with RASSINE...")
     logger.debug("RASSINE continuum output: %s", out_hdf)
 
     # 1) Convert the full input table to the pickle format RASSINE reads.
@@ -93,7 +136,8 @@ def flatten_phx_with_rassine(
     logger.debug("Running > %s", " ".join(cmd))
 
     try:
-        process_result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        with _rassine_progress():
+            process_result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         if process_result.stdout:
             logger.debug("RASSINE stdout:\n%s", process_result.stdout.strip())
         if process_result.stderr:

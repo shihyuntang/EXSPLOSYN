@@ -15,7 +15,7 @@ from .gaussian_profiles import integrate_gaussian_profiles
 from .spectral_data import PreparedSpectrum
 from .simulation_setup import SOLAR_RADIUS
 from .output_options import resolve_output_options
-from .model_identity import assign_model_identity, register_model_identity, identity_arrays, identity_suffix
+from .model_identity import assign_model_identity, register_model_identity, identity_arrays, output_stem
 from pathlib import Path
 
 
@@ -28,7 +28,7 @@ class _UniqueGridWarning(logging.Filter):
 
     def filter(self, record):
         message = record.getMessage()
-        if message.startswith("Missing official PHOENIX intensity corner:"):
+        if message.removeprefix("Warning: ").startswith("Missing official PHOENIX intensity corner:"):
             if message in self.seen:
                 return False
             self.seen.add(message)
@@ -194,7 +194,8 @@ def simulation_plot(
     if band == "photo":
         vis.save_lightcurve_plot(
             phases, filters, relative_flux_curves,
-            Path("outputs") / save_dir / f'{outdir.split("/")[-1]}_{band}_lightcurves.pdf',
+            Path("outputs") / save_dir
+            / f"{output_stem(star, spectrum_source, band, details='lightcurves')}.pdf",
         )
         return
 
@@ -348,9 +349,13 @@ def _run_gaussian_band(
     disk_pixels = np.count_nonzero(region_cube[0] >= 0)
     fspot = np.count_nonzero(region_cube > 0, axis=(1, 2)) / disk_pixels
     result = {"phase": np.asarray(phases), "first_moment_rv_km_s": rv, "active_filling_f": fspot}
-    outdir = (
-        f"./outputs/{save_dir}/gaussian_profile_P={star.prot:.1f}"
-        f"_i={star.inclination_angle:.1f}_Tp={star.photosphere_temperature:.0f}_logg={star.logg:.1f}_{band}{identity_suffix(star)}"
+    csv_parameters = (
+        f"P{star.prot:.1f}_i{star.inclination_angle:.1f}"
+        f"_Tp{star.photosphere_temperature:.0f}_logg{star.logg:.1f}"
+    )
+    outdir = str(
+        Path("outputs") / save_dir
+        / output_stem(star, "gaussian_profile", band, details=csv_parameters)
     )
     if not in_memory:
         if save_spectra:
@@ -373,7 +378,8 @@ def _run_gaussian_band(
                 )
             # Keep the local profile, physical settings and processed spectra together.
             np.savez(
-                f"./outputs/{save_dir}/simulated_spotted_spectra/{band}_gaussian_profiles{identity_suffix(star)}.npz",
+                Path("outputs") / save_dir / "simulated_spotted_spectra"
+                / f"{output_stem(star, 'gaussian_profile', band)}.npz",
                 **identity_arrays(star),
                 phase=np.asarray(phases),
                 velocity_kms=velocity,
@@ -420,7 +426,7 @@ def _run_gaussian_band(
                 normalized,
                 rv,
                 flux_maps,
-                outdir.removesuffix(f"_{band}"),
+                outdir,
                 cpu_use,
                 np.full(len(phases), np.nan),
                 band,
@@ -540,64 +546,36 @@ def _sort_active_regions(star, active_region_box):
     return active_region_box, region_order
 
 
-def _build_output_base(star, save_dir, active_regions_number, active_region_box):
-    """Build the parameter-based output name shared by physical bands."""
-    (
-        active_region_longitudes,
-        active_region_latitudes,
-        active_region_radii,
-        region_temperatures,
-    ) = active_region_box
-    # ---- Build outdir base (independent of band) ----
-    sizes_percent = (active_region_radii**2) * 100.0
+def _build_output_parameters(star, active_regions_number, active_region_box):
+    """Retain the detailed model parameters in CSV filenames, without equals signs."""
+    longitudes, latitudes, radii, temperatures = active_region_box
 
-    def _fmt_arr(a):
-        if a is None:
+    def format_array(values):
+        if values is None:
             return "none"
         return (
             np.array2string(
-                a, separator="-", formatter={"float_kind": lambda x: f"{int(x):d}"}
+                values, separator="-", formatter={"float_kind": lambda x: f"{int(x):d}"}
             )
             .strip("[]")
             .replace(" ", "")
         )
 
-    temp_str = _fmt_arr(region_temperatures)
-    temp_str_uniq = (
-        _fmt_arr(np.unique(region_temperatures))
-        if region_temperatures is not None
-        else "none"
+    parameters = (
+        f"P{star.prot:.1f}_i{star.inclination_angle:.1f}"
+        f"_Tp{star.photosphere_temperature:.0f}_logg{star.logg:.1f}"
     )
-    long_str = _fmt_arr(active_region_longitudes)
-    lat_str = _fmt_arr(active_region_latitudes)
-    size_str = _fmt_arr(sizes_percent)
-
     if active_regions_number < 4:
-        outdir_base = "./outputs/{}/{}_P={:.1f}_i={:.1f}_Tp={:1.0f}_logg={:1.1f}_Ta={}_lon={}_lat={}_size={}".format(
-            save_dir,
-            "MODEL",
-            star.prot,
-            star.inclination_angle,
-            star.photosphere_temperature,
-            star.logg,
-            temp_str,
-            long_str,
-            lat_str,
-            size_str,
+        return (
+            f"{parameters}_Ta{format_array(temperatures)}"
+            f"_lon{format_array(longitudes)}_lat{format_array(latitudes)}"
+            f"_size{format_array(radii**2 * 100.0)}"
         )
-    else:
-        outdir_base = "./outputs/{}/{}_P={:.1f}_i={:.1f}_Tp={:1.0f}_logg={:1.1f}_SpotNum={:1.0f}_Ta={}".format(
-            save_dir,
-            "MODEL",
-            star.prot,
-            star.inclination_angle,
-            star.photosphere_temperature,
-            star.logg,
-            active_regions_number,
-            temp_str_uniq,
-        )
-
-    return outdir_base + identity_suffix(star)
+    unique_temperatures = None if temperatures is None else np.unique(temperatures)
+    return (
+        f"{parameters}_SpotNum{active_regions_number:.0f}"
+        f"_Ta{format_array(unique_temperatures)}"
+    )
 
 
 def _build_band_result(
@@ -658,7 +636,7 @@ def _write_band_csv(
         tab[column].format = "%.4f"
     if write_csv:
         tab.write(
-            f'./outputs/{save_dir}/{outdir.split("/")[-1]}_{band}.csv',
+            f"{outdir}.csv",
             format="csv", overwrite=True,
         )
 
@@ -676,7 +654,8 @@ def _save_spotted_spectra(star, save_dir, band, arrays):
         }, allow_nan=False))
     directory = Path("outputs") / save_dir / "simulated_spotted_spectra"
     directory.mkdir(parents=True, exist_ok=True)
-    np.savez(directory / f"{band}{identity_suffix(star)}.npz", **output_arrays)
+    spectrum_source = star.bands[band][4]
+    np.savez(directory / f"{output_stem(star, spectrum_source, band)}.npz", **output_arrays)
 
 
 def main_model(
@@ -777,7 +756,7 @@ def main_model(
         region_temperatures,
     ) = active_region_box
 
-    outdir_base = _build_output_base(star, save_dir, active_regions_number, active_region_box)
+    output_parameters = _build_output_parameters(star, active_regions_number, active_region_box)
 
     results_by_band = {}  # only filled if in_memory=True
     photometry_for_plot = None
@@ -836,9 +815,9 @@ def main_model(
         _, _, _, spectrum_mode, spectrum_source = bands[band]
 
         if band == "photo":
-            logger.info("\nCalculating photometry (photo)...")
+            logger.info("\n>>> Calculating photometry (photo) <<<")
         else:
-            logger.info("\nCalculating band: %s", band)
+            logger.info("\n>>> Calculating band: %s <<<", band)
 
         if spectrum_source == "gaussian_profile":
             # Index 0 is the photosphere; reorder region brightness to match the map IDs.
@@ -874,7 +853,10 @@ def main_model(
 
         spectra_by_temperature = band_spectra[band_index]
 
-        outdir = outdir_base.replace("/MODEL_", f"/{spectrum_source}_")
+        outdir = str(
+            Path("outputs") / save_dir
+            / output_stem(star, spectrum_source, band, details=output_parameters)
+        )
 
         spectral_output = {} if save_spectra else None
 

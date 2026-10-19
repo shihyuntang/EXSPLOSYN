@@ -21,6 +21,11 @@ dependencies:
   - pytables>=3.10,<4
   - pqdm>=0.2,<0.3
   - tqdm>=4,<5
+  # Required by pyphot when reading/downloading SVO filter profiles.
+  - requests>=2,<3
+  # Optional forward-model benchmark: memory metrics and thread-pool metadata.
+  - psutil>=5.9,<8
+  - threadpoolctl>=3,<4
   # Download missing PHOENIX flux files.
   - curl
   # LDTk dependencies that are available from conda-forge.

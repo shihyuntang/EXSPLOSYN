@@ -116,3 +116,9 @@ def identity_arrays(star):
 def identity_suffix(star):
     """Return the filename suffix _id-<model_id>, or empty if no ID is assigned."""
     return f"_id-{star.model_id}" if hasattr(star, "model_id") else ""
+
+
+def output_stem(star, spectrum_source, band, *, details=""):
+    """Use source_band_[optional parameters or purpose]_id for final outputs."""
+    middle = f"_{details}" if details else ""
+    return f"{spectrum_source}_{band}{middle}{identity_suffix(star)}"

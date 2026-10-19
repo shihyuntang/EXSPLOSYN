@@ -50,6 +50,7 @@ outputs
 configuration
 command_line
 model_limits
+benchmarking
 version_roadmap
 ```
 

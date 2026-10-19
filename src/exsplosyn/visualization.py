@@ -18,6 +18,8 @@ from matplotlib.transforms import ScaledTranslation
 import numpy as np
 from pqdm.processes import pqdm
 
+from .model_identity import output_stem
+
 logger = logging.getLogger(__name__)
 
 MODEL_INFO_FONT_SIZE = 4.8
@@ -344,7 +346,7 @@ def _plot_phase_diagnostics(
     *,
     plot_data=None,
 ):
-    """Plot RV on the left, EWR on the right, and the first two light curves outside."""
+    """Plot RV on the left and photometry on the right; place EWR outside when both exist."""
     if plot_data is None:
         plot_data = _prepare_phase_plot_data(
             star, band, rv, ewr, gaussian, photometry_for_plot, phases=phases
@@ -378,8 +380,12 @@ def _plot_phase_diagnostics(
     else:
         ax.set_yticks([])
 
+    curves = [] if photometry_for_plot is None else photometry_for_plot["curves"][:2]
     if show_ewr:
         ewr_axis = ax.twinx()
+        # Photometry takes the inner right axis; EWR moves out only when needed.
+        if curves:
+            ewr_axis.spines["right"].set_position(("axes", 1.18))
         ewr_axis.set_zorder(1)
         axes.append(ewr_axis)
         ewr_axis.plot(phases[:end], ewr[:end], "-o", color="tab:grey", ms=2, mew=2)
@@ -403,13 +409,11 @@ def _plot_phase_diagnostics(
             width=0.7,
         )
 
-    curves = [] if photometry_for_plot is None else photometry_for_plot["curves"][:2]
     if curves:
         photo_axis = ax.twinx()
         # Draw light curves behind RV/EWR, including across separate axes.
         photo_axis.set_zorder(0)
         axes.append(photo_axis)
-        photo_axis.spines["right"].set_position(("axes", 1.18))
         photo_phases = photometry_for_plot["phases"]
         for (name, curve), color in zip(curves, ("tab:red", "tab:purple")):
             curve = np.asarray(curve)
@@ -612,7 +616,9 @@ def _plot_prepared_frame(
     show_photometry = photometry_for_plot is not None and bool(
         photometry_for_plot["curves"]
     )
-    fig = plt.figure(figsize=(7.5 if show_photometry else 7, 3.5), dpi=300)
+    # Reserve extra width only for a third y-axis (photometry plus EWR).
+    show_outer_axis = show_photometry and plot_data["diagnostics"]["show_ewr"]
+    fig = plt.figure(figsize=(7.5 if show_outer_axis else 7, 3.5), dpi=300)
 
     gs1 = gridspec.GridSpec(1, 1)
     gs1.update(left=0.0, right=0.38, bottom=0.28, top=1.0)
@@ -621,7 +627,7 @@ def _plot_prepared_frame(
     gs2 = gridspec.GridSpec(2, 1)
     gs2.update(
         left=0.46,
-        right=0.88 if show_photometry else 1.0,
+        right=0.88 if show_outer_axis else 1.0,
         bottom=0.0,
         top=1.0,
         wspace=0.0,
@@ -920,8 +926,9 @@ def save_simulation_plots(
             region_fspot=region_fspot,
         )
 
+    stem = output_stem(star, spectrum_source, band)
     if make_plots:
-        pdf_path = output_directory / f"{Path(outdir).name}_{band}.pdf"
+        pdf_path = output_directory / f"{stem}.pdf"
         logger.info("Saving phase-summary PDF for %s...", band)
         logger.debug("Phase-summary PDF: %s", pdf_path)
         # The last frame includes every configured phase in the diagnostic panel.
@@ -941,7 +948,7 @@ def save_simulation_plots(
     frame_paths = [
         frame_directory / f"frame_{index:05d}.png" for index in range(len(phases))
     ]
-    gif_path = output_directory / f"{Path(outdir).name}_{band}.gif"
+    gif_path = output_directory / f"{stem}.gif"
     try:
         quiet = logger.getEffectiveLevel() >= logging.WARNING
         frames = (frame_input(index) for index in range(len(phases)))

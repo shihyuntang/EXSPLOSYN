@@ -2,6 +2,8 @@
 
 - `demo.cfg`: PHOENIX simulation example.
 - `demo_lkca4.cfg`: 25-region example requiring a SYNMAST FeOH library.
+- `benchmark.cfg`: fixed five-region workload for `python benchmark.py`; see the
+  [benchmark guide](../docs/benchmarking.md).
 - `temperature_tables/`: region-temperature lookup tables.
 - `phases/`: optional phase lists.
 

@@ -26,8 +26,8 @@ settings as described in the installation guide.
 The `[star]` section defines the stellar radius, rotation period, inclination
 angle, quiet photospheric temperature (`Tphot`), surface gravity (`logg`), and
 metallicity. Together, these determine the rotating stellar geometry and the
-local spectra used in the simulation. This demo uses `Tphot : 3730`,
-`logg : 3.2`, and `metallicity : 0.05`.
+local spectra used in the simulation. This demo uses `Tphot : 3670`,
+`logg : 4.0`, and `metallicity : 0.0`.
 
 The `[active_regions]` section defines each circular region's longitude,
 latitude, size, and temperature. **Each column represents one region:** keep
@@ -38,7 +38,8 @@ of the projected stellar disk covered by that region when its center is at
 disk center. It is NOT a percentage of the entire stellar surface. Individual
 sizes above 80% are currently unsupported.
 
-The basic demo specifies temperatures directly:
+The basic demo contains **three cool regions and one hot region**, with
+temperatures specified directly:
 
 ```ini
 temperature_mode : absolute
@@ -49,10 +50,10 @@ Alternatively, use signed offsets from `Tphot`:
 
 ```ini
 temperature_mode    : offset
-temperature_offsets : -452, -353, -246, -8
+temperature_offsets : -392, -293, -186, 52
 ```
 
-With `Tphot : 3730`, these two examples produce the same region temperatures.
+With `Tphot : 3670`, these two examples produce the same region temperatures.
 `relative` is an alias for `offset`. The LkCa 4 demo below introduces a third
 option: a temperature lookup table.
 
@@ -203,8 +204,11 @@ This demo enables both the PHOENIX RV bands and the SYNMAST FeOH band:
 enabled : phx_rv, FeOH
 ```
 
-The PHOENIX wavelength grid is set separately in `[phx_rv]`. The FeOH band
-uses the following configuration:
+The `[phx_rv]` settings use `wavelength_start : 10000`,
+`wavelength_end : 10501`, and `wavelength_step : 200`, producing three bands:
+**w100**, **w102**, and **w104**, centered at 10000, 10200, and 10400 Å.
+Each has `window_half_width : 100` Å. Together with FeOH, this demo runs
+four spectroscopic bands. The FeOH band uses the following configuration:
 
 ```ini
 [band:FeOH]

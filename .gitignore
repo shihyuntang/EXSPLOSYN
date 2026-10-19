@@ -1,6 +1,9 @@
 # Simulation results.
 /outputs/
 
+# Local hardware/performance reports.
+/benchmark_results/
+
 # Regenerable spectral and photometry caches.
 /spectral_cache/
 /bandpass_cache/
