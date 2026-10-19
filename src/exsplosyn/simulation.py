@@ -314,7 +314,7 @@ def _run_gaussian_band(
         spectra = apply_instrumental_broadening(instrument_res, wavelength, spectra)
     normalized = spectral_processing.normalize_gaussian_profiles(
         star, spectra, phases, band, "flux", "gaussian_profile", save_dir,
-        getattr(getattr(star, "output_options", None), "save_intermediate", False)
+        getattr(getattr(star, "output_options", None), "make_plots", False)
     )
     rv = diagnostics.calculate_first_moment_rv(
         star,
@@ -739,7 +739,8 @@ def main_model(
     write_csv = options.write_csv if mode is not None or selected_mode != "simulation" else write_csv
     save_spectra = int(options.save_spectra)
     plot_flag = int(options.make_plots or options.make_gif_animation)
-    diagnostic_plot_flag = int(options.save_intermediate)
+    # Continuum checks accompany summary plots; CCF debug plots remain debug-only.
+    continuum_plot_flag = int(options.make_plots)
     star.output_options = options
     star.save_ccf_template_metadata = options.save_intermediate
 
@@ -967,7 +968,7 @@ def main_model(
             spectrum_mode,
             spectrum_source,
             save_dir,
-            diagnostic_plot_flag,
+            continuum_plot_flag,
         )
         if save_spectra:
             spectral_output["normalized_processed_spotted_flux"] = integrated_stellar_spectrum
@@ -999,7 +1000,7 @@ def main_model(
                 spectrum_source,
                 save_dir,
                 spectrum_vel_step,
-                diagnostic_plot_flag,
+                continuum_plot_flag,
                 save_spectra,
             )
             ccf_rv_shift = np.asarray(ccf_rv_shift, dtype=np.float32)

@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "exsplosyn"
 version = "0.9.1"
+readme = "README.md"
 description = "EXOplanetary Spotted Photosphere LOw-mass SYNthesizer. High-resolution spectral simulation for spotted low-mass stars."
 requires-python = ">=3.11,<3.14"
 dependencies = [

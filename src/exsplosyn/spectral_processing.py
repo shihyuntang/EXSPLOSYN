@@ -456,7 +456,7 @@ def normalize_gaussian_profiles(
                 ax.set_ylabel("Flux")
                 ax.set_ylim(0.9, 1.02)
                 fig.savefig(
-                    f"./outputs/{save_dir}/debug/continuum_fitting/flatten_{band}{identity_suffix(star)}_{phases[phase_index]:1.2f}.png",
+                    f"./outputs/{save_dir}/continuum_fitting/flatten_{band}{identity_suffix(star)}_{phases[phase_index]:1.2f}.png",
                     bbox_inches="tight",
                 )
                 plt.close(fig)
@@ -574,7 +574,7 @@ def normalize_simulated_spectra(
                 ax.set_ylabel("Flux")
                 ax.set_ylim(0.4, 1.05)
                 fig.savefig(
-                    f"./outputs/{save_dir}/debug/continuum_fitting/flatten_{band}{identity_suffix(star)}_{phases[phase_index]:1.2f}.png",
+                    f"./outputs/{save_dir}/continuum_fitting/flatten_{band}{identity_suffix(star)}_{phases[phase_index]:1.2f}.png",
                     bbox_inches="tight",
                 )
                 plt.close(fig)

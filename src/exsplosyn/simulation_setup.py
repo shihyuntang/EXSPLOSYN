@@ -645,7 +645,7 @@ def _create_output_directories(save_dir, options):
         if options.save_spectra:
             directories.extend([output_directory / "simulated_spotted_spectra", output_directory / "rv_ccf_templates"])
         if options.make_plots:
-            directories.extend([output_directory / "debug" / "continuum_fitting", Path("outputs/CCF")])
+            directories.extend([output_directory / "continuum_fitting", Path("outputs/CCF")])
     for directory in directories:
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -754,10 +754,11 @@ def init_setup_cfg(
     save_folder_name = cfg.get("output", "save_folder_name", fallback="").strip()
 
     save_dir = (
-        f"{save_folder_name}_{output_suffix}_{selected_profile}"
-        if output_suffix
-        else f"{save_folder_name}_{selected_profile}"
+        f"{save_folder_name}_{output_suffix}" if output_suffix else save_folder_name
     )
+    # Append a profile name only when a named path profile is selected.
+    if selected_profile != "default":
+        save_dir = f"{save_dir}_{selected_profile}"
 
     # --- Spectroscopic bands ---
     spectral_paths = resolve_spectral_paths(cfg, selected_profile)

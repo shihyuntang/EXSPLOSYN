@@ -20,3 +20,9 @@ __pycache__/
 
 # Local editor settings.
 /.vscode/
+
+# Generated documentation website.
+/docs/_build/
+
+# External tool checkouts installed locally.
+/external/

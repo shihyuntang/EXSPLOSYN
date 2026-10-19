@@ -626,9 +626,10 @@ def save_phx2013_intensity_spectrum(spectrum, out_path):
 
 def parse_synmast_filename(name: str):
     """Read temperature, logg, metallicity, and B in Gauss from a grid filename."""
-    # Negative-metallicity models may include the library's a+ abundance suffix.
+    # Accept the optional a+ suffix before _b or after the field value.
     match = re.match(
-        r"^mc_(\d{4})(\d{3})([+-]\d{3})(?:a\+)?_b(\d+)_.*\.prf\.gz$", Path(name).name
+        r"^mc_(\d{4})(\d{3})([+-]\d{3})(?:a\+)?_b(\d+)(?:a\+)?_.*\.prf\.gz$",
+        Path(name).name,
     )
     if match is None:
         raise ValueError(f"Unexpected SYNMAST .prf.gz filename: {name}")

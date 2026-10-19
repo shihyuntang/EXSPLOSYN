@@ -194,7 +194,7 @@ def normalize_ccf_template(wavelength, flux, band, save_dir, plot_template):
             ax.set_ylabel("Flux")
             ax.set_ylim(0.4, 1.05)
             fig.savefig(
-                f"./outputs/{save_dir}/debug/continuum_fitting/flatten_{band}_CCF_template.png",
+                f"./outputs/{save_dir}/continuum_fitting/flatten_{band}_CCF_template.png",
                 bbox_inches="tight",
             )
             plt.close(fig)
