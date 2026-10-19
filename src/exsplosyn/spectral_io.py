@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from astropy.io import fits
@@ -219,7 +220,7 @@ PHX2013_WAVELENGTH_BASE_URL = "ftp://phoenix.astro.physik.uni-goettingen.de/HiRe
 PHX2013_WAVELENGTH_FILENAME = "WAVE_PHOENIX-ACES-AGSS-COND-2011.fits"
 
 
-def _download_if_missing(url, destination):
+def _download_if_missing(url, destination, *, report=True):
     """Download a missing source file without leaving a partial final file."""
     destination = Path(destination)
     if destination.is_file():
@@ -228,7 +229,8 @@ def _download_if_missing(url, destination):
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = destination.with_suffix(destination.suffix + ".part")
-    logger.info("Downloading PHOENIX source file: %s", destination.name)
+    if report:
+        logger.info("Downloading PHOENIX source file: %s", destination.name)
     try:
         subprocess.run(
             [
@@ -360,6 +362,59 @@ def _grid_metadata(records, temperature, logg, metallicity, library_path):
     }
 
 
+def _phx2013_flux_source(coordinates, alpha, flux_directory):
+    """Resolve one grid corner identically for download planning and reading."""
+    temperature, gravity, abundance = coordinates
+    grid_alpha = PHX2013_ALPHA_GRID[np.argmin(np.abs(PHX2013_ALPHA_GRID - alpha))]
+    selected_alpha = 0.0 if abundance > 0 else grid_alpha
+    directory, filename = phx2013_grid_filename(
+        temperature, gravity, abundance, selected_alpha
+    )
+    return (
+        f"{PHX2013_FLUX_BASE_URL.rstrip('/')}/{directory}/{filename}",
+        flux_directory / directory / filename,
+    )
+
+
+def download_phx2013_flux_sources(temperatures, logg, metallicity, alpha, phx_path):
+    """Download unique missing flux sources, counting only files not in the cache."""
+    flux_directory = Path(phx_path).expanduser() / "SpecFlux"
+    sources = {
+        flux_directory / PHX2013_WAVELENGTH_FILENAME:
+            f"{PHX2013_WAVELENGTH_BASE_URL.rstrip('/')}/{PHX2013_WAVELENGTH_FILENAME}"
+    }
+    for temperature in temperatures:
+        corners = _get_interpolation_corners(
+            (temperature, logg, metallicity),
+            (PHX2013_FLUX_TEMPERATURE_GRID, PHX2013_FLUX_LOGG_GRID,
+             PHX2013_FLUX_METALLICITY_GRID),
+        )
+        for coordinates, _ in corners:
+            url, path = _phx2013_flux_source(coordinates, alpha, flux_directory)
+            sources[path] = url
+    missing = [(path, url) for path, url in sources.items() if not path.is_file()]
+
+    # Replace the current line only on an interactive terminal. Logs and debug
+    # runs retain complete filenames on separate lines; quiet mode stays quiet.
+    stream = sys.stderr
+    interactive = stream.isatty() and logger.getEffectiveLevel() == logging.INFO
+    try:
+        for index, (path, url) in enumerate(missing, start=1):
+            message = f"Downloading PHOENIX source file ({index}/{len(missing)}): {path.name}"
+            if interactive:
+                width = max(1, shutil.get_terminal_size().columns - 1)
+                display = message if len(message) <= width else message[:max(0, width - 3)] + "..."
+                stream.write("\r\033[2K" + display[:width])
+                stream.flush()
+            else:
+                logger.info("%s", message)
+            _download_if_missing(url, path, report=False)
+    finally:
+        if interactive and missing:
+            stream.write("\n")
+            stream.flush()
+
+
 def load_phx2013_flux_spectrum(temp, logg, metallicity, alpha, phx_path):
     """Read PHOENIX 2013 flux and interpolate temperature, logg, and metallicity."""
     logger.debug("PHOENIX 2013 flux target: T=%g K, logg=%g, metallicity=%g, alpha=%g",
@@ -375,18 +430,9 @@ def load_phx2013_flux_spectrum(temp, logg, metallicity, alpha, phx_path):
 
     wave = fits.getdata(wave_file)
     selected = (wave >= wavelength_min - 500) & (wave <= wavelength_max + 500)
-    grid_alpha = PHX2013_ALPHA_GRID[np.argmin(np.abs(PHX2013_ALPHA_GRID - alpha))]
-
     def read_corner(coordinates):
-        temperature, gravity, abundance = coordinates
-        selected_alpha = 0.0 if abundance > 0 else grid_alpha
-        directory, filename = phx2013_grid_filename(
-            temperature, gravity, abundance, selected_alpha
-        )
-        path = flux_directory / directory / filename
-        _download_if_missing(
-            f"{PHX2013_FLUX_BASE_URL.rstrip('/')}/{directory}/{filename}", path
-        )
+        url, path = _phx2013_flux_source(coordinates, alpha, flux_directory)
+        _download_if_missing(url, path)
         logger.debug("Reading PHOENIX flux: %s", path.absolute())
         return wave[selected], fits.getdata(path)[selected], None, path
 
@@ -499,9 +545,9 @@ def _resolve_phx2013_intensity_corner(coordinates, alpha, library_path, client):
             )
         logger.warning(
             "Missing official PHOENIX intensity corner: T=%g K, logg=%g, "
-            "metallicity=%g; using T=%g K at the same logg and metallicity. "
+            "metallicity=%.1f; using T=%g K at the same logg and metallicity. "
             "Check results near this grid gap.",
-            temperature, gravity, abundance, selected_temperature,
+            temperature, gravity, abundance if abundance != 0 else 0.0, selected_temperature,
         )
     path = library_path / directory / filename
     if not path.is_file():

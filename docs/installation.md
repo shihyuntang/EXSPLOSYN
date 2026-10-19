@@ -6,21 +6,32 @@ If you encounter issues with either version, please let us know.
 
 We recommend using Conda to manage the environment, as shown below.
 
-## 1. Create the environment
+## 1. Download EXSPLOSYN
 
-Download or clone this repository, open a terminal in its root directory, and run:
+Open a terminal in the directory where you want to keep EXSPLOSYN, then run:
+
+```sh
+git clone https://github.com/shihyuntang/EXSPLOSYN.git
+cd EXSPLOSYN
+```
+
+Run the remaining commands from this repository directory unless stated otherwise.
+
+## 2. Create the environment
+
+Create and activate the Conda environment:
 
 ```sh
 conda env create -f environment.yml
 conda activate exsplosyn
 ```
 
-The environment uses conda-forge packages and specifies Python 3.11 and
-Numba 0.62.1 for compatibility. LDTk and pyphot are installed through the
-`pip` section of `environment.yml`. Other dependencies have version ranges
-rather than exact pins.
+The environment uses conda-forge packages and specifies Python 3.11,
+Numba 0.62.1, and LDTk 1.8.4 to match the tested setup. LDTk and pyphot are
+installed through the `pip` section of `environment.yml`. Other dependencies
+have version ranges rather than exact pins.
 
-## 2. Install external tools and optional spectral data
+## 3. Install external tools and optional spectral data
 
 ### RASSINE for PHOENIX RV templates
 
@@ -30,11 +41,16 @@ from the EXSPLOSYN repository root:
 
 ```sh
 mkdir -p external
-git clone --branch exsplosyn-v0.9.1 --single-branch \
+git -c advice.detachedHead=false clone \
+  --depth 1 --filter=blob:none --sparse --branch exsplosyn-v0.9.1 \
   https://github.com/shihyuntang/Rassine_public.git external/Rassine_public
 ```
 
-This tag (`exsplosyn-v0.9.1`) provides a fixed version with the normalization settings and
+This downloads the root-level files needed by EXSPLOSYN without the upstream
+example spectra or full Git history. The `-c advice.detachedHead=false` option
+suppresses Git's tag-checkout advice for this command only.
+
+The tag (`exsplosyn-v0.9.1`) provides a fixed version with the normalization settings and
 pandas 3 compatibility fixes used by EXSPLOSYN. For details, see the
 [EXSPLOSYN usage notes](https://github.com/shihyuntang/Rassine_public/blob/exsplosyn-v0.9.1/EXSPLOSYN.md).
 The fork is based on the [original RASSINE](https://github.com/MichaelCretignier/Rassine_public).
@@ -43,16 +59,16 @@ The fork is based on the [original RASSINE](https://github.com/MichaelCretignier
 
 The following SYNMAST library is currently available:
 
-- **FeOH:** approximately 1.5444–1.5679 $\mu$m.
+- **FeOH — `FeOH_synmast1.9_marcs_spirou`:** approximately 1.5444–1.5679 $\mu$m.
   [Download from Box](https://utexas.box.com/s/34wcqyq0k0glfl4nc95kfidd1j5nr9kt).
 <!-- - **Ti:** 2.2200–2.2322 $\mu$m. -->
 <!-- - **CO:** 2.3052–2.3224 $\mu$m. -->
 
-After downloading the library, set `synmast_feoh` in the `[paths]` section
-of your configuration file to the directory containing the spectral files,
-as described below.
+Store the downloaded `FeOH_synmast1.9_marcs_spirou` folder wherever you keep
+your synthetic spectral libraries. Set `synmast_feoh` in `[paths]` to this
+folder; it does not need to be inside the EXSPLOSYN repository.
 
-## 3. Configure spectral data and external tools
+## 4. Configure spectral data and external tools
 
 Update the `[paths]` section of your configuration file so that EXSPLOSYN can
 find RASSINE and the spectral libraries. Two demo configurations are provided
@@ -78,15 +94,12 @@ use the default spectral-data locations.**
   low-resolution intensity spectra.
 - `rassine_root`: the directory containing the EXSPLOSYN-compatible RASSINE fork.
 
-For SYNMAST libraries, set the corresponding paths:
+For the SYNMAST FeOH library, replace `/path/to` below with its parent directory:
 
 ```ini
 [paths]
-synmast_feoh           : ./data/synmast/FeOH
+synmast_feoh           : /path/to/FeOH_synmast1.9_marcs_spirou
 ```
-
-<!-- synmast_co             : ./data/synmast/CO -->
-<!-- synmast_ti             : ./data/synmast/Ti -->
 
 SYNMAST bands are disabled by default in `demo.cfg`, so this example
 does not require the SYNMAST library. The `demo_lkca4.cfg` example, however,
@@ -94,7 +107,7 @@ has FeOH enabled and thus requires the SYNMAST FeOH library.
 
 For more options, see the [configuration manual](configuration.md).
 
-## 4. Check the command-line entry point
+## 5. Check the command-line entry point
 
 We recommend running EXSPLOSYN directly from the source repository; no package
 installation is required. With the `exsplosyn` Conda environment activated,

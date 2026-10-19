@@ -645,7 +645,7 @@ def _create_output_directories(save_dir, options):
         if options.save_spectra:
             directories.extend([output_directory / "simulated_spotted_spectra", output_directory / "rv_ccf_templates"])
         if options.make_plots:
-            directories.extend([output_directory / "continuum_fitting", Path("outputs/CCF")])
+            directories.append(output_directory / "continuum_fitting")
     for directory in directories:
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -871,6 +871,7 @@ def init_setup_cfg(
     star.simulation_config_file = str(Path(config_file).resolve())
     rv_template_temperature = _configure_rv_template(star, cfg, config_file)
 
+    logger.info("\nPreparing spectral inputs...")
     # Prepare shared spectral inputs before constructing RV templates.
     star.prepare_spectral_inputs(
         rv_template_temperature=rv_template_temperature

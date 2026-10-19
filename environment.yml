@@ -29,5 +29,5 @@ dependencies:
   - semantic_version>=2,<3
   # These packages are not available from conda-forge.
   - pip:
-      - ldtk>=1.8,<2
+      - ldtk==1.8.4
       - pyphot>=2.1,<3

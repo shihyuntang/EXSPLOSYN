@@ -7,6 +7,7 @@ may change based on testing and user feedback.
 
 - **v0.9.x:**
   - Improvements based on test-group feedback.
+  - Evaluate an upgrade to LDTk 1.9.2, including its impact on limb-darkening coefficients and simulation results.
 - **v1.0.x:**
   - First official public release.
 - **v1.1:**

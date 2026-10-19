@@ -447,6 +447,12 @@ def prepare_phx2013_flux_inputs(star, temperatures, alpha=0):
                 f"PHOENIX flux temperature must be between {MIN_TEMPERATURE_K} and {MAX_TEMPERATURE_K} K; "
                 f"got {component_temperature!r}."
             )
+    # Count shared corners once, and finish downloads before reading the spectra.
+    spectral_io.download_phx2013_flux_sources(
+        temperatures, star.logg, star.metallicity, alpha,
+        spectral_io.require_spectral_path(paths, "phoenix_root"),
+    )
+    for component_temperature in temperatures:
         spectrum = spectral_io.load_phx2013_flux_spectrum(
             component_temperature,
             star.logg,

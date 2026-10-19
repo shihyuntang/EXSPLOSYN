@@ -247,8 +247,12 @@ python main.py --config demo_lkca4
 
 With `save_folder_name : demo_lkca4` under `[output]`, results are written to
 `outputs/demo_lkca4/`.
-This demo enables summary PDFs and GIF animations;
-`save_spectra : 0` leaves final spectral export disabled. CSV results are
-still saved.
+This demo saves summary PDFs and CSV results. GIF animations are disabled
+(`make_gif_animation : 0`) to keep the run shorter; set this option to `1`
+if you would like an animation. Final spectral export is disabled
+(`save_spectra : 0`).
+
+The default `cpu : 2` uses two worker processes. Use `cpu : 1` to reduce
+memory use, or increase it if your computer has sufficient CPU and memory resources.
 
 See [Understanding the outputs](outputs.md) for the saved files and column definitions.

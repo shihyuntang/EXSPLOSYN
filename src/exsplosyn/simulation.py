@@ -19,6 +19,22 @@ from .model_identity import assign_model_identity, register_model_identity, iden
 from pathlib import Path
 
 
+class _UniqueGridWarning(logging.Filter):
+    """Report each missing PHOENIX corner once per logging setup/run."""
+
+    def __init__(self):
+        super().__init__()
+        self.seen = set()
+
+    def filter(self, record):
+        message = record.getMessage()
+        if message.startswith("Missing official PHOENIX intensity corner:"):
+            if message in self.seen:
+                return False
+            self.seen.add(message)
+        return True
+
+
 def setup_logging(debug: bool = False, *, quiet: bool = False) -> logging.Logger:
     """Set the EXSPLOSYN log level and return its terminal logger."""
     level = logging.WARNING if quiet else (logging.DEBUG if debug else logging.INFO)
@@ -33,6 +49,10 @@ def setup_logging(debug: bool = False, *, quiet: bool = False) -> logging.Logger
     )
     for handler in logger.handlers:
         handler.setFormatter(formatter)
+        for log_filter in list(handler.filters):
+            if isinstance(log_filter, _UniqueGridWarning):
+                handler.removeFilter(log_filter)
+        handler.addFilter(_UniqueGridWarning())
     return logger
 
 
@@ -956,7 +976,7 @@ def main_model(
             if plot_flag == 1:
                 del final_2d_surface_flux_sum
             spectral_output = None
-            logger.info("Band %s complete: %.2f s", band, time() - start_time)
+            logger.info("Photometry complete: %.2f s", time() - start_time)
             continue
 
         # Normalize the pseudo-continuum before measuring EWR and CCF RV.

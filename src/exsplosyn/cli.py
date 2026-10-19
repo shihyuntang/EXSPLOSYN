@@ -141,5 +141,6 @@ def main(argv=None):
     )
     logger.info("\nSimulation complete: %.2f s", perf_counter() - run_start)
     if mode != "fitting":
-        logger.info("Output directory: %s", Path("outputs") / save_dir)
+        logger.info("%19s: %s", "Model ID", star.model_hash[:10])
+        logger.info("%19s: %s", "Output directory", Path("outputs") / save_dir)
     return result
