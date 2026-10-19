@@ -225,13 +225,6 @@ def prepare_ccf_template(
     full template interval so its wavelength margins remain available for Doppler
     shifts. Finer sampling does not increase the physical spectral resolution.
 
-    Notes
-    -----
-    Repeated fitting calls may opt into RAM reuse by providing an empty
-    ``star.ccf_template_cache`` dictionary. Treat its source arrays as immutable;
-    replace the arrays when changing the reference spectrum. Plot/export calls
-    bypass this cache. Without the dictionary, preparation proceeds normally.
-
     Parameters
     ----------
     star : Star
@@ -264,30 +257,6 @@ def prepare_ccf_template(
         the built-in template's continuum normalization.
     """
     c_kms = 299792.458
-
-    # Opt-in RAM reuse for repeated fitting calls with a fixed reference template.
-    # Normal simulation/debug calls keep their existing plot/export behavior.
-    cache = getattr(star, "ccf_template_cache", None)
-    cache_key = None
-    if cache is not None and not plot_template and not save_template:
-        source = getattr(star, "ccf_template_source", "phx")
-        if source == "file":
-            input_arrays = tuple(star.ccf_file_template)
-        else:
-            prefix = f"{band}_{spectrum_source}_{spectrum_mode}_{star.ccf_temp:1.4f}"
-            input_arrays = tuple(star.spec_flatten[f"{prefix}_{key}"] for key in ("v", "f"))
-        inputs = tuple(id(value) for value in input_arrays)
-        cache_key = (
-            band, spectrum_mode, spectrum_source, source, inputs, float(w_center),
-            getattr(star, "ccf_temp", None), getattr(star, "vsini", None),
-            getattr(star, "inst_res", None),
-            getattr(star, "ccf_template_rotation_vel", None),
-            getattr(star, "ccf_template_resolution", None),
-            getattr(star, "ccf_template_oversample_factor", 5.0),
-        )
-        cached = cache.get(cache_key)
-        if cached is not None and np.array_equal(wave_obs, cached[0]):
-            return cached[1]
 
     # Select PHOENIX or an explicitly supplied spectral template.
     if getattr(star, "ccf_template_source", "phx") == "file":
@@ -402,11 +371,7 @@ def prepare_ccf_template(
             template_flux,
             template_velocity,
         )
-    result = template_wavelength, template_flux, template_velocity
-    if cache_key is not None:
-        # Retain source arrays so replaced inputs cannot accidentally reuse old IDs.
-        cache[cache_key] = (np.asarray(wave_obs).copy(), result, input_arrays)
-    return result
+    return template_wavelength, template_flux, template_velocity
 
 
 def _finite_parameter(obj, name):

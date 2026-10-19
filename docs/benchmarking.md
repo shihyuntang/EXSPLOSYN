@@ -11,54 +11,39 @@ and run from the source repository:
 python benchmark.py
 ```
 
-The required dependencies are included in `environment.yml`. No separate
-installation or benchmark configuration is needed.
-
-The script reuses the `[paths]` settings in `configs/demo.cfg` for photometry/PHX and
-`configs/demo_lkca4.cfg` for FeOH.
-
-Missing PHOENIX inputs may be downloaded
-during preparation; FeOH is skipped if its library is unavailable.
+The required dependencies are included in `environment.yml`. Set the `[paths]`
+entries in **`configs/performance.cfg`** to your local libraries, as in the demos.
+The small FeOH demo library is sufficient; if unavailable, FeOH is omitted.
 
 ## What it runs
 
-The fixed workload uses **five active regions, 100 phases, a 200 × 200 disk
-grid**, comparing **one process against four processes**. It tests:
+The script uses one fixed configuration: **five active regions, 100 phases,
+and a 200 × 200 disk grid**, with photometry, PHOENIX RVs and FeOH RV/EWR
+running together. It changes only **`cpu : 1` versus `cpu : 4`**.
 
-- One TESS light curve.
-- One PHOENIX RV band.
-- SYNMAST FeOH RVs and equivalent-width ratios, when available.
-
-Each case performs **two warm-ups and five timed evaluations**, then makes one
-separate memory measurement. Every evaluation rebuilds the temperature-dependent
-local spectra, including interpolation, limb darkening and spectral preprocessing,
-before calculating the model. Parameters stay fixed between evaluations so every
-computer performs the same workload.
-
-Configuration loading, initial downloads and the **fixed 3800 K RV CCF template**
-are prepared once, outside the evaluation timings. Current source readers may
-read cached library files during local preparation; these reads are included.
-The model runs in fitting mode, without plots or simulation exports. Existing
-NumPy/Numba thread settings are preserved.
+For each process count, it runs **two warm-ups followed by five timed runs**.
+Each run calls the normal EXSPLOSYN CLI with `--quiet --mode fitting`, including
+configuration reading, spectral/template preparation and model calculation.
+No benchmark-specific model caches or simulation-code shortcuts are used.
+Fitting mode returns results in RAM without simulation exports or plots.
+NumPy/Numba thread settings are left unchanged. Initial downloads and imports
+may occur during warm-up and are excluded from the reported timed runs.
 
 ## What you get
 
 The terminal shows the computer/CPU, OS, core and worker counts, individual
 evaluation times, the **average and median time**, and the **speedup relative
-to one process** for each case. The four-process test is skipped if fewer than
-four CPUs are available. Reports
-are saved in a new timestamped folder under `benchmark_results/`:
+to one process** for the complete simulation. The four-process test is skipped
+if fewer than four CPUs are available. Reports are saved in a new timestamped folder under `benchmark_results/`:
 
-- `benchmark_summary.csv`: hardware and performance statistics per case, including
-  total time and separate averages for local preparation and model calculation.
+- `benchmark_summary.csv`: total-run timing statistics for one and four processes.
 - `benchmark_details.json`: versions, effective settings, individual timings,
-  thread information, warnings and output checks.
+  thread information and any failure messages.
 
 To share your results, send the **entire timestamped results folder** to the
 developers, including both files above. You can zip the folder before sending it.
-Nothing is uploaded automatically. Reports omit hostnames, serial numbers and configured library
-paths. Memory values are sampled process-tree RSS sums, not unique physical
-RAM; unavailable or incomplete readings are marked in the detailed report.
+Nothing is uploaded automatically. Reports omit hostnames, serial numbers and
+configured library paths. Hardware information is included in the JSON report.
 
 Run while the computer is otherwise idle; connect laptops to power. Windows
 has not yet been validated. For optional settings, use `python benchmark.py -h`.
