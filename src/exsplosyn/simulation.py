@@ -164,7 +164,7 @@ def simulation_plot(
     instrument_res,
     star,
     spectrum_source,
-    save_dir,
+    output_dir,
     active_regions_number,
     active_region_box,
     phases,
@@ -194,7 +194,7 @@ def simulation_plot(
     if band == "photo":
         vis.save_lightcurve_plot(
             phases, filters, relative_flux_curves,
-            Path("outputs") / save_dir
+            Path(output_dir)
             / f"{output_stem(star, spectrum_source, band, details='lightcurves')}.pdf",
         )
         return
@@ -299,7 +299,7 @@ def _run_gaussian_band(
     region_cube,
     brightness,
     instrument_res,
-    save_dir,
+    output_dir,
     save_spectra,
     plot_flag,
     in_memory,
@@ -334,7 +334,7 @@ def _run_gaussian_band(
     if instrument_res > 0:
         spectra = apply_instrumental_broadening(instrument_res, wavelength, spectra)
     normalized = spectral_processing.normalize_gaussian_profiles(
-        star, spectra, phases, band, "flux", "gaussian_profile", save_dir,
+        star, spectra, phases, band, "flux", "gaussian_profile", output_dir,
         getattr(getattr(star, "output_options", None), "make_plots", False)
     )
     rv = diagnostics.calculate_first_moment_rv(
@@ -354,7 +354,7 @@ def _run_gaussian_band(
         f"_Tp{star.photosphere_temperature:.0f}_logg{star.logg:.1f}"
     )
     outdir = str(
-        Path("outputs") / save_dir
+        Path(output_dir)
         / output_stem(star, "gaussian_profile", band, details=csv_parameters)
     )
     if not in_memory:
@@ -378,7 +378,7 @@ def _run_gaussian_band(
                 )
             # Keep the local profile, physical settings and processed spectra together.
             np.savez(
-                Path("outputs") / save_dir / "simulated_spotted_spectra"
+                Path(output_dir) / "simulated_spotted_spectra"
                 / f"{output_stem(star, 'gaussian_profile', band)}.npz",
                 **identity_arrays(star),
                 phase=np.asarray(phases),
@@ -419,7 +419,7 @@ def _run_gaussian_band(
                 instrument_res,
                 star,
                 "gaussian_profile",
-                save_dir,
+                output_dir,
                 len(brightness) - 1,
                 (*region_geometry, None),
                 phases,
@@ -608,7 +608,7 @@ def _build_band_result(
 
 def _write_band_csv(
     star, band_phases, bolometric_teff_curve, bolometric_luminosity_curve,
-    save_dir, outdir, band, write_csv,
+    output_dir, outdir, band, write_csv,
     *, ccf_rv_shift=None, ewr_oh_fe=None, filters=(), relative_flux_curves=None,
 ):
     """Write physical-band CSV columns at their existing stored precision."""
@@ -641,7 +641,7 @@ def _write_band_csv(
         )
 
 
-def _save_spotted_spectra(star, save_dir, band, arrays):
+def _save_spotted_spectra(star, output_dir, band, arrays):
     """Save one archive per band, retaining each processing stage's flux scale."""
     output_arrays = dict(arrays, **identity_arrays(star))
     if star.save_ccf_template_metadata:
@@ -652,7 +652,7 @@ def _save_spotted_spectra(star, save_dir, band, arrays):
             "processed_flux": "phase percentile-99 scaling followed by instrumental broadening; spectroscopic bands only",
             "normalized_flux": "continuum normalization of processed flux; spectroscopic bands only",
         }, allow_nan=False))
-    directory = Path("outputs") / save_dir / "simulated_spotted_spectra"
+    directory = Path(output_dir) / "simulated_spotted_spectra"
     directory.mkdir(parents=True, exist_ok=True)
     spectrum_source = star.bands[band][4]
     np.savez(directory / f"{output_stem(star, spectrum_source, band)}.npz", **output_arrays)
@@ -672,7 +672,7 @@ def main_model(
     spectral_paths,
     instrument_res,
     cpu_use,
-    save_dir,
+    output_dir,
     save_spectra,
     plot_flag,
     spectrum_vel_step,
@@ -705,7 +705,7 @@ def main_model(
         spectral_paths (dict): Library/tool paths keyed by config option name.
         instrument_res (int): Instrumental resolution.
         cpu_use (int): # of logical CPUs to use downstream.
-        save_dir (str): Output directory name under ./outputs/.
+        output_dir (str or Path): Complete output directory path.
         save_spectra (int): Save final spectra and CCF templates in simulation mode.
         plot_flag (int): Produce final model plots in simulation mode.
         mode (str or None): simulation, fitting or debug. Fitting returns results
@@ -745,7 +745,7 @@ def main_model(
 
     assign_model_identity(star, active_region_box, grid_size)
     if not in_memory and (write_csv or save_spectra or plot_flag):
-        register_model_identity(Path("outputs") / save_dir, star)
+        register_model_identity(Path(output_dir), star)
 
     active_region_box, region_order = _sort_active_regions(star, active_region_box)
     original_region_indices = region_order
@@ -778,7 +778,7 @@ def main_model(
             # Temperature maps are shared across bands; save them once in debug mode.
             vis.save_surface_temperature_frames(
                 surface_t_cube, surface_y, surface_z,
-                outdir=Path("outputs") / save_dir / "debug" / "surface_temperature"
+                outdir=Path(output_dir) / "debug" / "surface_temperature"
                 / f"id-{star.model_id}",
                 phase_values=phases,
                 black_spot_sentinel=getattr(star, "black_spot_sentinel", None),
@@ -831,7 +831,7 @@ def main_model(
                 surface_region_cube,
                 brightness,
                 instrument_res,
-                save_dir,
+                output_dir,
                 save_spectra,
                 plot_flag,
                 in_memory,
@@ -854,7 +854,7 @@ def main_model(
         spectra_by_temperature = band_spectra[band_index]
 
         outdir = str(
-            Path("outputs") / save_dir
+            Path(output_dir)
             / output_stem(star, spectrum_source, band, details=output_parameters)
         )
 
@@ -873,7 +873,7 @@ def main_model(
             spectra_by_temperature,
             instrument_res,
             cpu_use,
-            save_dir,
+            output_dir,
             band,
             save_spectra,
             spectrum_mode.lower(),
@@ -891,7 +891,7 @@ def main_model(
 
         if band == "photo":
             if save_spectra:
-                _save_spotted_spectra(star, save_dir, band, spectral_output)
+                _save_spotted_spectra(star, output_dir, band, spectral_output)
             # Photometry only
             relative_flux_curves = diagnostics.calculate_relative_photometry(
                 integrated_stellar_spectrum,
@@ -920,7 +920,7 @@ def main_model(
             else:
                 _write_band_csv(
                     star, band_phases, bolometric_teff_curve, bolometric_luminosity_curve,
-                    save_dir, outdir, band, write_csv,
+                    output_dir, outdir, band, write_csv,
                     filters=filters, relative_flux_curves=relative_flux_curves,
                 )
 
@@ -931,7 +931,7 @@ def main_model(
                     instrument_res,
                     star,
                     spectrum_source,
-                    save_dir,
+                    output_dir,
                     active_regions_number,
                     active_region_box,
                     band_phases,
@@ -969,12 +969,12 @@ def main_model(
             band,
             spectrum_mode,
             spectrum_source,
-            save_dir,
+            output_dir,
             continuum_plot_flag,
         )
         if save_spectra:
             spectral_output["normalized_processed_spotted_flux"] = integrated_stellar_spectrum
-            _save_spotted_spectra(star, save_dir, band, spectral_output)
+            _save_spotted_spectra(star, output_dir, band, spectral_output)
 
         # Run enabled diagnostics; keep NaN columns for those not requested.
         selected_diagnostics = getattr(star, "band_diagnostics", {}).get(band, ("rv",))
@@ -1000,7 +1000,7 @@ def main_model(
                 band,
                 spectrum_mode,
                 spectrum_source,
-                save_dir,
+                output_dir,
                 spectrum_vel_step,
                 continuum_plot_flag,
                 save_spectra,
@@ -1017,7 +1017,7 @@ def main_model(
         else:
             _write_band_csv(
                 star, band_phases, bolometric_teff_curve, bolometric_luminosity_curve,
-                save_dir, outdir, band, write_csv,
+                output_dir, outdir, band, write_csv,
                 ccf_rv_shift=ccf_rv_shift, ewr_oh_fe=ewr_oh_fe,
             )
 
@@ -1028,7 +1028,7 @@ def main_model(
                     instrument_res,
                     star,
                     spectrum_source,
-                    save_dir,
+                    output_dir,
                     active_regions_number,
                     active_region_box,
                     band_phases,

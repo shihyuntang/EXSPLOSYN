@@ -1591,7 +1591,7 @@ def calculate_activity_signal_spec(
     Spec,
     instrumental_resolution,
     cpu_use,
-    save_dir,
+    output_dir,
     band,
     save_spectra,
     spectrum_mode,
@@ -1629,8 +1629,8 @@ def calculate_activity_signal_spec(
         Instrument resolving power; zero disables instrumental broadening.
     cpu_use : int
         Number of workers for phase integration.
-    save_dir : str
-        Output directory name under outputs.
+    output_dir : str or Path
+        Complete output directory path.
     band : str
         Configured band name; 'photo' selects the photometric treatment.
     save_spectra : bool
@@ -1790,7 +1790,7 @@ def calculate_activity_signal_spec(
             arrays["processed_spotted_flux"] = integrated_stellar_spectrum
         if spectral_output is None:
             # Standalone integration can export contributions without continuum fitting.
-            directory = Path("outputs") / save_dir / "simulated_spotted_spectra"
+            directory = Path(output_dir) / "simulated_spotted_spectra"
             directory.mkdir(parents=True, exist_ok=True)
             np.savez(directory / f"{band}{identity_suffix(star)}.npz", **arrays, **identity_arrays(star))
         else:

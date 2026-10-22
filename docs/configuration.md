@@ -64,9 +64,11 @@ regions; otherwise supply one value per region. Final temperatures are rounded
 to integer Kelvin. Cooler non-emitting regions can be selected with
 `black_below_temperature`.
 
-A bare `temperature_table` filename is resolved in `temperature_tables/`
-beside the configuration file. Explicit relative paths use the working
-directory; absolute paths are accepted. Include the `.ini` extension.
+A filename alone uses `configs/temperature_tables/` inside the code folder you
+are running, regardless of the configuration file's location. To use a table
+elsewhere, give `./my_tables/custom.ini` from your terminal's current folder,
+or a full path such as `/path/to/custom.ini`. An installed package requires
+one of these paths. Include `.ini` in the filename.
 
 ### `[spectroscopic]`
 
@@ -192,16 +194,32 @@ Choose the rotation phases to simulate, in cycles.
 Control final outputs in **simulation mode**.
 
 - `make_plots`: `1` saves summary PDFs and continuum-fitting plots; `0` skips
-  them. Continuum-fitting plots are saved in
-  `outputs/<run>/continuum_fitting/`.
+  them. Continuum-fitting plots are saved in a `continuum_fitting/` subfolder
+  inside the chosen results folder.
 - `make_gif_animation`: `1` saves phase animations; `0` skips them. Independent
   of `make_plots`.
 - `save_spectra`: `1` saves final NPZ spectra and RV CCF templates under
   `simulated_spotted_spectra/` and `rv_ccf_templates/` in the run folder;
   `0` skips these exports.
-- `save_folder_name`: results-folder name under `outputs/`. The optional CLI
-  `--output-suffix` is appended; explicitly selected named path profiles also
-  append their name. Base `[paths]` settings add no profile suffix.
+- `output_root`: folder that holds your runs; defaults to `outputs`.
+  Relative paths start from your terminal's current folder, not the configuration
+  file's folder. Full paths, `~`, and environment variables such as `$HOME` work too.
+- `run_name`: folder name for one run inside `output_root`, such as `LkCa4_trial_01`.
+  Required unless you use `--output-dir`. Using `--paths NAME` adds `_NAME`
+  to the folder name.
+
+For example:
+
+```ini
+[output]
+output_root : /path/to/EXSPLOSYN/results
+run_name    : LkCa4_trial_01
+```
+
+This saves results in `/path/to/EXSPLOSYN/results/LkCa4_trial_01/`.
+`--output-dir PATH` replaces both settings and saves directly into `PATH`,
+without adding any names. Missing folders are created when saving results.
+Rename the old `save_folder_name` setting to `run_name`.
 
 CSV results are saved in simulation mode regardless of these plot/spectrum
 switches. For fitting and debug output behavior, see

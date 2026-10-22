@@ -135,7 +135,7 @@ def configure_ccf_template(star, cfg, config_file):
         setattr(star, f"ccf_{key}", value)
 
 
-def normalize_ccf_template(wavelength, flux, band, save_dir, plot_template):
+def normalize_ccf_template(wavelength, flux, band, output_dir, plot_template):
     """Normalize a CCF template using a continuum fitted to spectral peaks.
 
     Divide by the peak-fitted continuum, then rescale to the 99th percentile.
@@ -149,8 +149,8 @@ def normalize_ccf_template(wavelength, flux, band, save_dir, plot_template):
         Template spectral values, matching wavelength.
     band : str
         Band name used in plot filenames.
-    save_dir : str
-        Output directory name under outputs.
+    output_dir : str or Path
+        Complete output directory path.
     plot_template : bool
         Whether to save the normalization plot.
 
@@ -194,7 +194,7 @@ def normalize_ccf_template(wavelength, flux, band, save_dir, plot_template):
             ax.set_ylabel("Flux")
             ax.set_ylim(0.4, 1.05)
             fig.savefig(
-                f"./outputs/{save_dir}/continuum_fitting/flatten_{band}_CCF_template.png",
+                f"{output_dir}/continuum_fitting/flatten_{band}_CCF_template.png",
                 bbox_inches="tight",
             )
             plt.close(fig)
@@ -208,7 +208,7 @@ def prepare_ccf_template(
     spectrum_source,
     wave_obs,
     w_center,
-    save_dir,
+    output_dir,
     plot_template,
     save_template,
 ):
@@ -240,8 +240,8 @@ def prepare_ccf_template(
         Increasing wavelength grid of the simulated spectra, in Angstroms.
     w_center : float
         Reference wavelength in Angstroms for converting velocity to wavelength.
-    save_dir : str
-        Run directory name under outputs.
+    output_dir : str or Path
+        Complete output directory path.
     plot_template : bool
         Whether to save the PHOENIX continuum-normalization plot.
     save_template : int
@@ -307,7 +307,7 @@ def prepare_ccf_template(
             template_wavelength,
             template_flux,
             band + identity_suffix(star),
-            save_dir,
+            output_dir,
             plot_template,
         )
 
@@ -364,7 +364,7 @@ def prepare_ccf_template(
             band,
             spectrum_mode,
             spectrum_source,
-            save_dir,
+            output_dir,
             w_center,
             wave_obs,
             template_wavelength,
@@ -386,7 +386,7 @@ def save_ccf_template(
     band,
     spectrum_mode,
     spectrum_source,
-    save_dir,
+    output_dir,
     wavelength_center,
     wave_obs,
     wavelength,
@@ -447,7 +447,7 @@ def save_ccf_template(
             "schema_version": 1,
             "template": template,
             "simulation": {
-                "run_directory": str(save_dir),
+                "run_directory": str(output_dir),
                 "config_file": getattr(star, "simulation_config_file", None),
                 "configuration": getattr(star, "simulation_config", None),
                 "band": band,
@@ -478,7 +478,7 @@ def save_ccf_template(
             metadata["input_metadata"] = input_metadata
     # Use the template temperature in the filename; full parameters live in metadata.
     temperature_label = f"T{temperature:g}K" if temperature is not None else "Tunknown"
-    directory = Path("outputs") / save_dir / "rv_ccf_templates"
+    directory = Path(output_dir) / "rv_ccf_templates"
     directory.mkdir(parents=True, exist_ok=True)
     template_source = "file" if is_file else "phx"
     stem = output_stem(

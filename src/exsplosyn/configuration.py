@@ -35,15 +35,43 @@ def resolve_config_file(config_file) -> Path:
     raise FileNotFoundError(f"Configuration file not found: {requested}")
 
 
-def resolve_temperature_table_file(table_file, config_file) -> Path:
-    """Find bare filenames in the config's temperature_tables directory."""
+def resolve_temperature_table_file(table_file) -> Path:
+    """Find a table in this code folder's configs/temperature_tables, or at a given path."""
     requested = Path(table_file).expanduser()
-    # Explicit relative paths use the working directory.
+    # A filename alone selects a table from this code folder; paths select another location.
     if str(table_file) == requested.name:
-        requested = Path(config_file).resolve().parent / "temperature_tables" / requested
+        if PROJECT_ROOT is None:
+            raise ValueError(
+                "A filename alone works only when running EXSPLOSYN from a code folder. "
+                "Give the table location, such as ./my_tables/custom.ini or /path/to/custom.ini."
+            )
+        requested = PROJECT_ROOT / "configs" / "temperature_tables" / requested
     if requested.is_file():
         return requested.resolve()
     raise FileNotFoundError(f"Temperature table not found: {requested}")
+
+
+def resolve_output_directory(cfg, output_dir=None, *, path_profile="default") -> Path:
+    """Choose output_root/run_name or the command-line destination.
+
+    Relative paths start from the current folder; ~ and environment variables
+    are supported. No folders are created here.
+    """
+    if output_dir is not None:
+        destination = str(output_dir).strip()
+        if not destination:
+            raise ValueError("--output-dir needs a folder path, such as outputs/trial_01.")
+        return Path(os.path.expandvars(destination)).expanduser().resolve()
+
+    output_root = cfg.get("output", "output_root", fallback="outputs").strip()
+    if not output_root:
+        raise ValueError("[output] output_root needs a folder path, such as outputs.")
+    run_name = cfg.get("output", "run_name", fallback="").strip()
+    if not run_name or run_name in {".", ".."} or Path(run_name).name != run_name:
+        raise ValueError("[output] run_name needs a folder name, such as trial_01, rather than a path.")
+    if path_profile != "default":
+        run_name = f"{run_name}_{path_profile}"
+    return (Path(os.path.expandvars(output_root)).expanduser() / run_name).resolve()
 
 
 def _collect_path_profiles(cfg: configparser.ConfigParser) -> dict[str, tuple[str, str]]:

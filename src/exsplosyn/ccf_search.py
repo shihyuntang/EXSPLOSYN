@@ -276,7 +276,7 @@ def calculate_ccf_rv(
     band,
     spectrum_mode,
     spectrum_source,
-    save_dir,
+    output_dir,
     spectrum_vel_step,
     plot_template,
     save_template,
@@ -311,8 +311,8 @@ def calculate_ccf_rv(
         Local spectrum representation: 'flux' or 'intensity'.
     spectrum_source : str
         Simulation spectral source, used to locate its wavelength grid.
-    save_dir : str
-        Run directory under outputs for template exports and normalization plots.
+    output_dir : str or Path
+        Complete run directory path for template exports and normalization plots.
     spectrum_vel_step : float
         Simulation velocity sampling in km/s; sets the base CCF RV step.
     plot_template : bool
@@ -361,7 +361,7 @@ def calculate_ccf_rv(
         spectrum_source,
         wavelength,
         wavelength_center,
-        save_dir,
+        output_dir,
         plot_template,
         save_template,
     )
@@ -385,7 +385,7 @@ def calculate_ccf_rv(
         debug_options = {}
         if getattr(getattr(star, "output_options", None), "save_intermediate", False):
             directory = (
-                Path("outputs") / save_dir / "debug" / "ccf_profiles"
+                Path(output_dir) / "debug" / "ccf_profiles"
                 / f"id-{getattr(star, 'model_id', 'model')}" / band
                 / f"attempt_{attempt + 1:02d}"
             )

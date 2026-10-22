@@ -125,8 +125,13 @@ python main.py --config demo
 A bare configuration name is resolved inside `configs/`, and `.cfg` is added
 when omitted. Explicit relative paths and absolute paths are also accepted.
 
-Use `save_folder_name` under `[output]` to name the results folder inside
-`outputs/`. This demo uses `save_folder_name : demo`.
+This demo uses `output_root : outputs` and `run_name : demo` under `[output]`,
+saving to `outputs/demo/` in your terminal's current folder. To save elsewhere:
+
+```bash
+python main.py --config demo --output-dir /path/to/results/demo_trial_02
+```
+
 The demo enables summary PDF plots, GIF animations, and saved
 final spectra through its `[output]` settings. Reusable spectral data are
 stored separately in `spectral_cache/`.
@@ -150,9 +155,10 @@ temperature_mode  : t_lookup_table
 temperature_table : temperature_table_lkca4_demo.ini
 ```
 
-A bare table filename is resolved inside `temperature_tables/` beside the
-configuration file. Here, the full location is
-`configs/temperature_tables/temperature_table_lkca4_demo.ini`.
+This filename uses `configs/temperature_tables/temperature_table_lkca4_demo.ini`
+inside the code folder you are running, regardless of the configuration file's
+location. You can also give a relative or full path; see
+[temperature-table paths](configuration.md#active-regions).
 
 The `temperature_levels` list assigns one table label to each region. The
 first three entries in this example are:
@@ -249,8 +255,8 @@ observation phases.
 python main.py --config demo_lkca4
 ```
 
-With `save_folder_name : demo_lkca4` under `[output]`, results are written to
-`outputs/demo_lkca4/`.
+With `output_root : outputs` and `run_name : demo_lkca4` under `[output]`,
+results are written to `outputs/demo_lkca4/`.
 This demo saves summary PDFs and CSV results. GIF animations are disabled
 (`make_gif_animation : 0`) to keep the run shorter; set this option to `1`
 if you would like an animation. Final spectral export is disabled

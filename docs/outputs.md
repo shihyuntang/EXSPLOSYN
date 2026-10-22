@@ -1,8 +1,11 @@
 # Understanding the outputs
 
-Simulation results are saved under `outputs/<run>/`, where `<run>` comes from
-`[output] save_folder_name` and any command-line suffix or named path profile.
-The basic demo writes to `outputs/demo/`.
+Results go to `output_root/run_name`, set under `[output]`, or directly into
+`--output-dir PATH` when supplied. `output_root` defaults to `outputs` in your
+terminal's current folder. See [output settings](configuration.md#output)
+for path rules and the effect of `--paths`.
+
+Examples below use `outputs/demo/`. Replace it with your results folder.
 
 ## Files in the run folder
 
@@ -147,10 +150,10 @@ same physical model.
 **A model ID is not a unique run ID.** It does not include every calculation
 setting, such as the phase list, spectral bands, instrumental resolution, or
 CCF sampling. Rerunning a model can overwrite files with matching names.
-Use a different `save_folder_name` or `-o` suffix to retain separate runs.
+Choose a different `run_name` or `--output-dir` folder to keep runs separate.
 
 ## Spectral cache
 
-`spectral_cache/` stores reusable library spectra and preparation products,
-separately from the final results in `outputs/`. These inputs can be reused
-between runs; debug mode also exports additional intermediate spectra there.
+`spectral_cache/` holds spectra and prepared data for reuse between runs,
+including additional spectra saved in debug mode. It stays in your terminal's
+current folder when you change the results location.

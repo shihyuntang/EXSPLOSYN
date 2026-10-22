@@ -19,13 +19,25 @@ Select the simulation configuration.
 - The source-checkout default is `demo.cfg`. An installed package requires an
   explicit configuration path.
 
-### `-o SUFFIX` / `--output-suffix SUFFIX`
+### `--output-dir PATH`
 
-Append a suffix to `[output] save_folder_name` for this run, before any named
-path-profile suffix. For example, `-o test` with `save_folder_name : demo`
-saves results in `outputs/demo_test/` when using the base `[paths]` settings.
+Save results directly into this folder, replacing `output_root` and `run_name`.
+Nothing is added to the folder name, even with `--paths`.
+Relative paths start from your terminal's current folder; full paths choose
+that location directly. The configuration file's location does not affect this.
 
-`-out` is also accepted as an alias.
+You can also use `~` or `$HOME` for your home folder. Both single and double
+quotes work, for example `'~/results/trial_02'` or `"~/results/trial_02"`.
+Put quotes around any path containing spaces.
+
+```bash
+python main.py --config demo --output-dir outputs/trial_02
+python main.py --config /path/to/model.cfg --output-dir '~/results/trial_02'
+```
+
+Without this option, results go to `output_root/run_name`; `output_root`
+defaults to `outputs`. See [output settings](configuration.md#output).
+
 
 ### `--quiet`
 

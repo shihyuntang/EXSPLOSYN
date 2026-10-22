@@ -24,7 +24,7 @@ def main(argv=None):
         description="EXOplanetary Spotted Photosphere LOw-mass SYNthesizer.\n"
         "High-resolution spectral simulation for spotted low-mass stars.",
         epilog="Example (source checkout, default configuration):\n"
-        "  python main.py -o my_run\n\n"
+        "  python main.py --output-dir outputs/my_run\n\n"
         "Contact: shihyun.tang@austin.utexas.edu, tang.shih.yun@gmail.com",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -58,10 +58,10 @@ def main(argv=None):
     )
 
     parser.add_argument(
-        "-o",
-        "--output-suffix",
-        "-out",
-        help="Suffix appended to the output folder prefix, before the path profile.",
+        "--output-dir",
+        metavar="PATH",
+        help="Save directly into this folder instead of output_root/run_name. "
+        "Relative paths start from your terminal folder; no names are added.",
         default=None,
     )
 
@@ -97,7 +97,7 @@ def main(argv=None):
     (
         star,
         bands,
-        save_dir,
+        output_dir,
         nrho,
         grid_size,
         instrument_res,
@@ -111,7 +111,7 @@ def main(argv=None):
         filters,
         spectrum_vel_step,
     ) = init_setup_cfg(
-        logger, args.config, output_suffix=args.output_suffix, path_profile=args.paths,
+        logger, args.config, output_dir=args.output_dir, path_profile=args.paths,
         mode=mode
     )
 
@@ -135,7 +135,7 @@ def main(argv=None):
         spectral_paths,
         instrument_res,
         cpu_use,
-        save_dir,
+        output_dir,
         save_spectra,
         plot_flag,
         spectrum_vel_step,
@@ -152,5 +152,5 @@ def main(argv=None):
     logger.info("\nSimulation complete: %s", duration)
     if mode != "fitting":
         logger.info("%19s: %s", "Model ID", star.model_hash[:10])
-        logger.info("%19s: %s", "Output directory", Path("outputs") / save_dir)
+        logger.info("%19s: %s", "Output directory", Path(output_dir))
     return result

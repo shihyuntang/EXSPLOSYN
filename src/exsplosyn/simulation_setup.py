@@ -14,6 +14,7 @@ from .configuration import (
     MIN_TEMPERATURE_K,
     MAX_TEMPERATURE_K,
     resolve_config_file,
+    resolve_output_directory,
     resolve_temperature_table_file,
     resolve_spectral_paths,
     resolve_path_profile,
@@ -440,7 +441,7 @@ def _setup_star_and_regions(cfg, bands, config_file, logger):
             if not table_raw:
                 raise ValueError("t_lookup_table mode requires a temperature_table path.")
 
-            table_file = resolve_temperature_table_file(table_raw, config_file)
+            table_file = resolve_temperature_table_file(table_raw)
 
             region_temperatures = resolve_table_temperatures(
                 region_labels,
@@ -627,10 +628,10 @@ def _setup_star_and_regions(cfg, bands, config_file, logger):
     return star, active_region_box
 
 
-def _create_output_directories(save_dir, options):
+def _create_output_directories(output_dir, options):
     """Create output and spectral cache directories."""
     # --- Output and spectral cache directories ---
-    output_directory = Path("outputs") / save_dir
+    output_directory = Path(output_dir)
     directories = [
         Path("spectral_cache/local_spectra/library_interpolated"),
         Path("spectral_cache/local_spectra/rassine_continuum"),
@@ -726,7 +727,7 @@ def _configure_rv_template(star, cfg, config_file):
 def init_setup_cfg(
     logger: logging.Logger,
     config_file: str,
-    output_suffix: str | None = None,
+    output_dir: str | Path | None = None,
     *,
     path_profile: str | None = None,
     debug: bool = False,
@@ -735,7 +736,7 @@ def init_setup_cfg(
     """Read configuration settings and prepare simulation inputs.
 
     Returns:
-        (star, bands, save_dir, nrho, grid_size, instrument_res, cpu_use, plot_flag,
+        (star, bands, output_dir, nrho, grid_size, instrument_res, cpu_use, plot_flag,
          save_spectra, spectral_paths, phases,
          active_regions_number, active_region_box, filters, spectrum_vel_step)
     """
@@ -751,14 +752,9 @@ def init_setup_cfg(
     selected_profile = resolve_path_profile(cfg, path_profile)
     logger.info("Selected path profile: %s", selected_profile)
 
-    save_folder_name = cfg.get("output", "save_folder_name", fallback="").strip()
-
-    save_dir = (
-        f"{save_folder_name}_{output_suffix}" if output_suffix else save_folder_name
+    output_dir = resolve_output_directory(
+        cfg, output_dir, path_profile=selected_profile
     )
-    # Append a profile name only when a named path profile is selected.
-    if selected_profile != "default":
-        save_dir = f"{save_dir}_{selected_profile}"
 
     # --- Spectroscopic bands ---
     spectral_paths = resolve_spectral_paths(cfg, selected_profile)
@@ -848,11 +844,11 @@ def init_setup_cfg(
     assign_model_identity(star, active_region_box, grid_size)
     star.output_options = options
     star.save_ccf_template_metadata = options.save_intermediate
-    _create_output_directories(save_dir, options)
+    _create_output_directories(output_dir, options)
     if not options.in_memory:
-        register_model_identity(Path("outputs") / save_dir, star)
+        register_model_identity(Path(output_dir), star)
     if options.save_intermediate:
-        with (Path("outputs") / save_dir / f"configuration_id-{star.model_id}.cfg").open("w", encoding="utf-8") as stream:
+        with (Path(output_dir) / f"configuration_id-{star.model_id}.cfg").open("w", encoding="utf-8") as stream:
             cfg.write(stream)
 
     phases = _read_phases(cfg)
@@ -886,7 +882,7 @@ def init_setup_cfg(
     return (
         star,
         bands,
-        save_dir,
+        output_dir,
         nrho,
         grid_size,
         instrument_res,

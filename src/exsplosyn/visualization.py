@@ -1081,10 +1081,10 @@ def plot_cc(drvs, cc, new_rv, phase, band, properties, ccf_plot_dir):
         width=0.7,
     )
 
-    out_dir_pre = f'./outputs/{ccf_plot_dir.split("/")[2]}'
-    os.makedirs(f"{out_dir_pre}/CCF", exist_ok=True)
+    output_directory = Path(ccf_plot_dir)
+    output_directory.mkdir(parents=True, exist_ok=True)
     fig.savefig(
-        f"{out_dir_pre}/CCF/{band}_phase_{phase:1.3f}.png",
+        output_directory / f"{band}_phase_{phase:1.3f}.png",
         format="png",
         bbox_inches="tight",
     )

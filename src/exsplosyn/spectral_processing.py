@@ -1,5 +1,7 @@
 """Instrumental broadening, continuum fitting and spectrum normalization."""
 
+from pathlib import Path
+
 from .model_identity import identity_suffix
 
 import matplotlib.pyplot as plt
@@ -357,7 +359,7 @@ def normalize_gaussian_profiles(
     band,
     spectrum_mode,
     spectrum_source,
-    save_dir,
+    output_dir,
     plot,
     continuum_velocity_min=65.0,
 ):
@@ -385,8 +387,8 @@ def normalize_gaussian_profiles(
         Spectral storage mode: 'flux' or 'intensity'.
     spectrum_source : str
         Profile label used in storage keys, normally 'gaussian_profile'.
-    save_dir : str
-        Output directory name under outputs.
+    output_dir : str or Path
+        Complete output directory path.
     plot : bool
         Whether to save a normalization plot for each phase.
     continuum_velocity_min : float
@@ -456,7 +458,7 @@ def normalize_gaussian_profiles(
                 ax.set_ylabel("Flux")
                 ax.set_ylim(0.9, 1.02)
                 fig.savefig(
-                    f"./outputs/{save_dir}/continuum_fitting/flatten_{band}{identity_suffix(star)}_{phases[phase_index]:1.2f}.png",
+                    f"{output_dir}/continuum_fitting/flatten_{band}{identity_suffix(star)}_{phases[phase_index]:1.2f}.png",
                     bbox_inches="tight",
                 )
                 plt.close(fig)
@@ -471,7 +473,7 @@ def normalize_simulated_spectra(
     band: str,
     spectrum_mode: str,
     spectrum_source: str,
-    save_dir: str,
+    output_dir: str | Path,
     plot: bool,
 ) -> np.ndarray:
     """Continuum-normalize the simulated stellar spectra for all rotation phases.
@@ -497,8 +499,8 @@ def normalize_simulated_spectra(
         Spectral storage mode: 'flux' or 'intensity'.
     spectrum_source : str
         Library label used in spectral storage keys.
-    save_dir : str
-        Output directory name under outputs.
+    output_dir : str or Path
+        Complete output directory path.
     plot : bool
         Whether to save a normalization plot for each phase.
 
@@ -574,7 +576,7 @@ def normalize_simulated_spectra(
                 ax.set_ylabel("Flux")
                 ax.set_ylim(0.4, 1.05)
                 fig.savefig(
-                    f"./outputs/{save_dir}/continuum_fitting/flatten_{band}{identity_suffix(star)}_{phases[phase_index]:1.2f}.png",
+                    f"{output_dir}/continuum_fitting/flatten_{band}{identity_suffix(star)}_{phases[phase_index]:1.2f}.png",
                     bbox_inches="tight",
                 )
                 plt.close(fig)
