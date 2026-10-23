@@ -13,6 +13,11 @@ disk with cool and hot active regions.
 - High-resolution spectra, radial velocities, and the FeOH equivalent-width ratio as functions of rotational phase.
 - Relative photometric light curves, apparent effective temperatures, and apparent luminosities as functions of rotational phase.
 
+CCF radial velocities use the shared
+[`rv-ccf` package](https://github.com/shihyuntang/rv-ccf), allowing simulated
+and observed spectra to be measured with the same pipeline. The tested release
+is installed automatically with the Conda environment.
+
 ## Documentation
 
 Full documentation is available on

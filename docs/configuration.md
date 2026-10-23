@@ -301,3 +301,17 @@ paths with your own before selecting it with `--paths demo`.
 Optional space for citation comments associated with a configuration.
 It contains no simulation controls.
 
+
+### Shared CCF implementation
+
+RV correlation, common-interval selection, coarse/fine peak search and retries
+are supplied by the shared [`rv-ccf` package](https://github.com/shihyuntang/rv-ccf). EXSPLOSYN passes its known
+`spectrum_vel_step`, so the fine step remains
+`spectrum_vel_step / ccf_rv_oversample_factor`; it does not use the package's
+wavelength-based sampling estimate. The 1 km/s coarse step, one retry at twice
+the range, debug profiles, and finite-phase mean subtraction are unchanged.
+Template preparation and spectrum normalization remain in EXSPLOSYN.
+
+EXSPLOSYN pins the tested `rv-ccf` release in `environment.yml` and
+`pyproject.toml`. Use the same release for observation processing; update the
+pin in both files only after validating a new release.

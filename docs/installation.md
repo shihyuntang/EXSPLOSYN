@@ -30,9 +30,11 @@ conda activate exsplosyn
 ```
 
 The environment uses conda-forge packages and specifies Python 3.11,
-Numba 0.62.1, and LDTk 1.8.4 to match the tested setup. LDTk and pyphot are
-installed through the `pip` section of `environment.yml`. Other dependencies
-have version ranges rather than exact pins.
+Numba 0.62.1, and LDTk 1.8.4 to match the tested setup. LDTk, pyphot and
+[`rv-ccf`](https://github.com/shihyuntang/rv-ccf) are installed through 
+the `pip` section of `environment.yml`.
+The `rv-ccf` release tag is fixed; other dependencies generally use version
+ranges rather than exact pins.
 
 ## 3. Install external tools and optional spectral data
 
