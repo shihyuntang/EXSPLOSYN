@@ -2,7 +2,7 @@
 
 Results go to `output_root/run_name`, set under `[output]`, or directly into
 `--output-dir PATH` when supplied. `output_root` defaults to `outputs` in your
-terminal's current folder. See [output settings](configuration.md#output)
+terminal's current folder. See {ref}`output settings <output>`
 for path rules and the effect of `--paths`.
 
 Examples below use `outputs/demo/`. Replace it with your results folder.

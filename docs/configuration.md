@@ -36,6 +36,7 @@ Define the quiet star and the stellar parameters used to select local spectra.
 - `metallicity`: metallicity, [Fe/H], in dex.
 
 
+(active-regions)=
 ### `[active_regions]`
 
 Define circular cool and hot regions on the stellar surface. **Each column
@@ -189,6 +190,7 @@ Choose the rotation phases to simulate, in cycles.
   `phase_step`. Relative paths use the working directory; absolute paths are
   accepted.
 
+(output)=
 ### `[output]`
 
 Control final outputs in **simulation mode**.

@@ -36,7 +36,7 @@ python main.py --config /path/to/model.cfg --output-dir '~/results/trial_02'
 ```
 
 Without this option, results go to `output_root/run_name`; `output_root`
-defaults to `outputs`. See [output settings](configuration.md#output).
+defaults to `outputs`. See {ref}`output settings <output>`.
 
 
 ### `--quiet`

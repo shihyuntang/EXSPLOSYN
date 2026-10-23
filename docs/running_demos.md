@@ -158,7 +158,7 @@ temperature_table : temperature_table_lkca4_demo.ini
 This filename uses `configs/temperature_tables/temperature_table_lkca4_demo.ini`
 inside the code folder you are running, regardless of the configuration file's
 location. You can also give a relative or full path; see
-[temperature-table paths](configuration.md#active-regions).
+{ref}`temperature-table paths <active-regions>`.
 
 The `temperature_levels` list assigns one table label to each region. The
 first three entries in this example are:
